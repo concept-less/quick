@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { loadConfig, matchProject, paths, REPO_ROOT, WORKER_EXTENSION } from "../shared/config.ts";
+import { loadConfig, matchProject, paths, REPO_ROOT } from "../shared/config.ts";
 const EXTENSION_DIR = join(REPO_ROOT, "browser");
 import {
 	ACTIVE_STATUSES,
@@ -147,7 +147,8 @@ async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: stri
 	const dir = taskDir(t.id);
 	const briefPath = join(dir, "brief.md");
 	const model = opts.model ?? cfg.workerModel ?? cfg.model;
-	const piArgs = ["-e", WORKER_EXTENSION, "--model", model];
+	// The quick-agent pi package is installed globally; QA_TASK_ID selects the worker role.
+	const piArgs = ["--model", model];
 	let initial: string[];
 	if (opts.resumeMessage && t.sessionFile && existsSync(t.sessionFile)) {
 		piArgs.push("--session", t.sessionFile);
@@ -197,6 +198,7 @@ async function createTask(body: any): Promise<Task> {
 		attachments,
 		unread: false,
 		messages: 0,
+		owner: typeof body.owner === "string" ? body.owner : undefined,
 	};
 	tasks.set(id, t);
 	mkdirSync(taskDir(id), { recursive: true });
@@ -406,6 +408,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	if (mt) {
 		const t = getTask(mt[1]!);
 		const action = mt[2];
+		if (action === "screen" && m === "GET") {
+			// Live terminal of the worker (tmux capture), for the dashboard.
+			if (!t.tmuxTarget || t.closed) return send(res, 200, { alive: false, text: "" });
+			try {
+				const { stdout } = await tmux("capture-pane", "-p", "-J", "-t", t.tmuxTarget);
+				return send(res, 200, { alive: true, text: stdout.replace(/\s+$/, "") });
+			} catch {
+				return send(res, 200, { alive: false, text: "" });
+			}
+		}
 		if (!action && m === "GET") {
 			const n = Math.min(Number(url.searchParams.get("events") ?? 30) || 30, 500);
 			return send(res, 200, { task: t, events: readEvents(t.id, n) });

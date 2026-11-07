@@ -1,9 +1,19 @@
 {
   "name": "quick-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Front/worker agent workflow on top of pi: a quick interactive front agent delegates tasks to independent worker agents.",
+  "description": "Front/worker agent workflow for pi: your interactive pi becomes a quick front agent that delegates tasks to independent worker agents.",
+  "keywords": ["pi-package"],
   "bin": { "qa": "bin/qa" },
-  "engines": { "node": ">=22.18" }
+  "engines": { "node": ">=22.18" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions/quick-agent.ts"]
+  }
 }

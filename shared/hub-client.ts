@@ -61,6 +61,7 @@ export class HubClient {
 		attachments?: string[];
 		source?: Task["source"];
 		model?: string;
+		owner?: string;
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}

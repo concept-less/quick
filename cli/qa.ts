@@ -1,8 +1,9 @@
 // qa — quick-agent command line.
-import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { FRONT_EXTENSION, hubUrl, loadConfig, paths, REPO_ROOT } from "../shared/config.ts";
+import { hubUrl, loadConfig, paths } from "../shared/config.ts";
+import { ensureHub, hubAlive as alive } from "../shared/hub-process.ts";
 import { HubClient } from "../shared/hub-client.ts";
 import type { Task } from "../shared/types.ts";
 
@@ -18,42 +19,28 @@ function die(msg: string): never {
 }
 
 async function hubAlive() {
-	try {
-		await hub.health();
-		return true;
-	} catch {
-		return false;
-	}
+	return alive(hub);
 }
 
 async function hubStart(quiet = false) {
-	if (await hubAlive()) {
-		if (!quiet) console.log(`hub already running at ${hubUrl(cfg)}`);
-		return;
-	}
-	const out = openSync(paths.log, "a");
-	const child = spawn(process.execPath, [join(REPO_ROOT, "hub", "server.ts")], {
-		detached: true,
-		stdio: ["ignore", out, out],
-		env: { ...process.env, NODE_NO_WARNINGS: "1" },
-	});
-	child.unref();
-	closeSync(out);
-	for (let i = 0; i < 40; i++) {
-		await new Promise((r) => setTimeout(r, 150));
-		if (await hubAlive()) {
-			if (!quiet) console.log(`hub started at ${hubUrl(cfg)} (pid ${child.pid}, log ${paths.log})`);
-			return;
-		}
-	}
-	die(`hub failed to start, see ${paths.log}`);
+	const r = await ensureHub(cfg, hub).catch((e) => die((e as Error).message));
+	if (!quiet) console.log(r === "running" ? `hub already running at ${hubUrl(cfg)}` : `hub started at ${hubUrl(cfg)} (log ${paths.log})`);
 }
 
-function hubStop() {
+async function hubStop() {
 	if (!existsSync(paths.pid)) return console.log("hub not running");
 	const pid = Number(readFileSync(paths.pid, "utf8"));
 	try {
 		process.kill(pid, "SIGTERM");
+		// Wait until the process is gone so a following start does not see the old hub.
+		for (let i = 0; i < 50; i++) {
+			await new Promise((r) => setTimeout(r, 100));
+			try {
+				process.kill(pid, 0);
+			} catch {
+				break;
+			}
+		}
 		console.log(`stopped hub (pid ${pid})`);
 	} catch {
 		console.log("hub not running");
@@ -66,9 +53,6 @@ function hubStop() {
 function tmuxOk(...args: string[]) {
 	return spawnSync("tmux", args, { stdio: "ignore" }).status === 0;
 }
-function sh(s: string) {
-	return `'${s.replace(/'/g, `'\\''`)}'`;
-}
 
 function line(t: Task) {
 	const detail = (["starting", "running"].includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 90) ?? "";
@@ -76,25 +60,10 @@ function line(t: Task) {
 	return `${t.unread ? "•" : " "} ${ICON[t.status] ?? "·"} ${t.id}  ${t.status.padEnd(11)} ${t.title}  \x1b[2m${ago}m · ${detail}\x1b[0m`;
 }
 
+/** quick-agent lives inside pi now: `qa front` is just `pi`. */
 async function front(args: string[]) {
 	await hubStart(true);
-	const model = cfg.frontModel ?? cfg.model;
-	const piCmd = ["env", "QA_ROLE=front", "NODE_NO_WARNINGS=1", "pi", "-e", FRONT_EXTENSION, "--model", model, "--exclude-tools", "bash,edit,write,codemode", ...args];
-	if (process.env.TMUX) {
-		// Already inside tmux: run the front agent right here.
-		const r = spawnSync(piCmd[0]!, piCmd.slice(1), { stdio: "inherit" });
-		process.exit(r.status ?? 0);
-	}
-	const s = cfg.tmuxSession;
-	// pi needs extended keys to tell Shift+Enter from Enter (docs/tmux.md).
-	spawnSync("tmux", ["start-server", ";", "set", "-g", "extended-keys", "on"], { stdio: "ignore" });
-	const shellCmd = `cd ${sh(process.cwd())} && ${piCmd.map(sh).join(" ")}`;
-	if (!tmuxOk("has-session", "-t", `=${s}`)) {
-		execFileSync("tmux", ["new-session", "-d", "-s", s, "-n", "front", shellCmd]);
-	} else if (!tmuxOk("select-window", "-t", `=${s}:front`)) {
-		execFileSync("tmux", ["new-window", "-t", `=${s}:`, "-n", "front", shellCmd]);
-	}
-	const r = spawnSync("tmux", ["attach-session", "-t", `=${s}:front`], { stdio: "inherit" });
+	const r = spawnSync("pi", args, { stdio: "inherit", env: { ...process.env, NODE_NO_WARNINGS: "1" } });
 	process.exit(r.status ?? 0);
 }
 
@@ -108,7 +77,7 @@ function attach(id: string) {
 
 const HELP = `qa — quick-agent
 
-  qa front [pi args]        打开前台 agent（在 tmux 会话 "${cfg.tmuxSession}" 中，自动启动 hub）
+  pi                        直接打开 pi 就是前台 agent（qa front 是它的别名）；pi --qa-off 为普通 pi
   qa hub start|stop|restart|status|logs
   qa ls [-a]                列出任务（-a 包含已关闭）
   qa show <id>              查看任务汇报、事件、简报
@@ -133,8 +102,7 @@ async function main() {
 			if (sub === "start") return hubStart();
 			if (sub === "stop") return hubStop();
 			if (sub === "restart") {
-				hubStop();
-				await new Promise((r) => setTimeout(r, 400));
+				await hubStop();
 				return hubStart();
 			}
 			if (sub === "logs") return void spawnSync("tail", ["-n", "80", "-f", paths.log], { stdio: "inherit" });

@@ -34,8 +34,8 @@ export const QA_HOME = process.env.QA_HOME ?? join(homedir(), ".quick-agent");
 export const CONFIG_PATH = join(QA_HOME, "config.json");
 /** Repository root (…/quick-agent). */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const FRONT_EXTENSION = join(REPO_ROOT, "extensions", "quick-front", "index.ts");
-export const WORKER_EXTENSION = join(REPO_ROOT, "extensions", "quick-worker", "index.ts");
+/** The pi extension entry point (installed into pi as a package). */
+export const PI_EXTENSION = join(REPO_ROOT, "extensions", "quick-agent.ts");
 
 export const paths = {
 	home: QA_HOME,

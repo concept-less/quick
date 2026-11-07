@@ -1,9 +1,9 @@
-// quick-worker: turns a pi session into the owner ("负责人") of one quick-agent task.
-// Active only when QA_TASK_ID is set (the hub sets it when spawning the worker in tmux).
+// Worker role: turns a pi session into the owner ("负责人") of one quick-agent task.
+// Selected by extensions/quick-agent.ts when QA_TASK_ID is set (the hub sets it when spawning a worker).
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { HubClient } from "../../shared/hub-client.ts";
+import { HubClient } from "../shared/hub-client.ts";
 
 const WORKER_RULES = `你是 quick-agent 工作流中的 **负责人 worker**。前台 agent 把一个任务完整地交给了你，由你独立负责到底：
 - 任务简报在第一条消息里。按简报的目标和验收标准把事情完整做完，不要只做一半就回头请示。
@@ -13,10 +13,7 @@ const WORKER_RULES = `你是 quick-agent 工作流中的 **负责人 worker**。
 - 较长任务中途可以用 status="progress" 汇报关键进展（不要频繁）。
 - 之后可能收到以【quick-agent 追加指令】开头的消息，把它当作同一任务的延续，处理完再次 qa_report。`;
 
-export default function quickWorker(pi: ExtensionAPI) {
-	const taskId = process.env.QA_TASK_ID;
-	if (!taskId) return;
-
+export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	let hub: HubClient | undefined;
 	let abort: AbortController | undefined;
 	let reportedThisRun = false;

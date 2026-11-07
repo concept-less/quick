@@ -42,6 +42,8 @@ export interface Task {
 	tmuxTarget?: string;
 	/** Number of follow-up messages sent to the worker. */
 	messages: number;
+	/** pi session id of the front agent that dispatched the task (receives its reports). */
+	owner?: string;
 	/** Arbitrary flag set when the worker has closed its window. */
 	closed?: boolean;
 }
