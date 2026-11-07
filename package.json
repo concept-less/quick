@@ -1,6 +1,6 @@
 {
   "name": "quick-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Front/worker agent workflow for pi: your interactive pi becomes a quick front agent that delegates tasks to independent worker agents.",

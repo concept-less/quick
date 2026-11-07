@@ -1,29 +1,53 @@
-// quick-agent hub: task registry, attention inbox, worker lifecycle (tmux), intake, SSE.
-// Run: node hub/server.ts   (normally via `qa hub start`)
+// quick-agent hub: task registry, attention inbox, worker lifecycle (tmux), intake, SSE,
+// and the multi-machine mesh (see mesh.ts).
+// Run: node hub/server.ts   (normally started automatically by pi or `qa hub start`)
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join } from "node:path";
+import { hostname, platform } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig, matchProject, paths, REPO_ROOT } from "../shared/config.ts";
-const EXTENSION_DIR = join(REPO_ROOT, "browser");
 import {
 	ACTIVE_STATUSES,
 	ATTENTION_STATUSES,
 	type HubEvent,
 	type Intake,
+	type MachineInfo,
 	type Task,
 	type TaskEvent,
 	type TaskStatus,
 } from "../shared/types.ts";
 import { dashboardHtml } from "./dashboard.ts";
+import { Mesh } from "./mesh.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
+const SELF = cfg.machine.id;
+const EXTENSION_DIR = join(REPO_ROOT, "browser");
+const STARTED_AT = Date.now();
+const MAX_TRANSFER = 25 * 1024 * 1024;
+
+/** Tasks owned (executed) by this machine. */
 const tasks = new Map<string, Task>();
+/** Replicas of tasks owned by other machines. */
+const mirrorTasks = new Map<string, Task>();
 const intakes = new Map<string, Intake>();
+const mirrorIntakes = new Map<string, Intake>();
 const pendingMessages = new Map<string, string[]>();
+
+class HttpError extends Error {
+	status: number;
+	constructor(status: number, message: string) {
+		super(message);
+		this.status = status;
+	}
+}
+
+function log(msg: string) {
+	console.log(`${new Date().toISOString()} ${msg}`);
+}
 
 // ---------------------------------------------------------------- persistence
 
@@ -42,12 +66,17 @@ function loadAll() {
 	for (const id of safeReaddir(paths.tasks)) {
 		try {
 			const t = JSON.parse(readFileSync(join(taskDir(id), "task.json"), "utf8")) as Task;
-			tasks.set(t.id, t);
+			t.machine ??= SELF;
+			t.rev ??= 0;
+			if (t.machine === SELF) tasks.set(t.id, t);
 		} catch {}
 	}
 	for (const id of safeReaddir(paths.intake)) {
 		try {
 			const i = JSON.parse(readFileSync(join(paths.intake, id, "intake.json"), "utf8")) as Intake;
+			i.machine ??= SELF;
+			i.rev ??= 0;
+			if (i.machine !== SELF) continue; // local copies of remote intakes (screenshots) are not authoritative
 			// Claims do not survive a hub restart: let a front agent pick them up again.
 			if (i.status === "claimed") i.status = "pending";
 			intakes.set(i.id, i);
@@ -67,7 +96,6 @@ function readEvents(id: string, limit: number): TaskEvent[] {
 	const lines = readFileSync(f, "utf8").trim().split("\n").filter(Boolean);
 	return lines.slice(-limit).map((l) => JSON.parse(l) as TaskEvent);
 }
-
 function newId(prefix: string, exists: (id: string) => boolean) {
 	for (;;) {
 		const id = prefix + randomBytes(3).toString("hex").slice(0, 4);
@@ -75,7 +103,7 @@ function newId(prefix: string, exists: (id: string) => boolean) {
 	}
 }
 
-// ---------------------------------------------------------------- SSE
+// ---------------------------------------------------------------- local SSE clients
 
 interface SseClient {
 	res: ServerResponse;
@@ -93,7 +121,69 @@ function workerConnected(taskId: string) {
 	return false;
 }
 
-// ---------------------------------------------------------------- task mutations
+// ---------------------------------------------------------------- mesh
+
+function machineInfo(): MachineInfo {
+	return {
+		id: SELF,
+		description: cfg.machine.description,
+		defaultCwd: cfg.defaultCwd,
+		projects: cfg.projects.filter((p) => !p.machine || p.machine === SELF),
+		hostname: hostname(),
+		platform: platform(),
+		startedAt: STARTED_AT,
+		activeTasks: [...tasks.values()].filter((t) => ACTIVE_STATUSES.includes(t.status)).length,
+	};
+}
+
+const mesh = new Mesh({
+	selfId: SELF,
+	secret: cfg.mesh.secret,
+	peers: cfg.mesh.peers,
+	info: machineInfo,
+	log,
+	onTopologyChange: () => broadcast({ type: "machines", machines: mesh.machines() }),
+	snapshot: () => {
+		const recent = (o: { updatedAt?: number; createdAt: number }) => Date.now() - (o.updatedAt ?? o.createdAt) < 14 * 86400_000;
+		return [
+			...[...tasks.values(), ...mirrorTasks.values()].filter(recent).map((task) => ({ kind: "task", data: { task } })),
+			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => recent(i)).map((intake) => ({ kind: "intake", data: { intake } })),
+		];
+	},
+	onEvent: (kind, data) => {
+		if (kind === "task") {
+			const t = data.task as Task;
+			if (!t || t.machine === SELF) return false;
+			const cur = mirrorTasks.get(t.id);
+			if (cur && cur.machine === t.machine && cur.rev >= t.rev) return false;
+			mirrorTasks.set(t.id, t);
+			broadcast({ type: "task", task: t, event: data.event });
+			return true;
+		}
+		if (kind === "intake") {
+			const i = data.intake as Intake;
+			if (!i || i.machine === SELF) return false;
+			const cur = mirrorIntakes.get(i.id);
+			if (cur && cur.machine === i.machine && cur.rev >= i.rev) return false;
+			mirrorIntakes.set(i.id, i);
+			broadcast({ type: "intake", intake: i });
+			return true;
+		}
+		return false;
+	},
+	onRequest: (method, params, from) => {
+		const fn = methods[method];
+		if (!fn) throw new Error(`unknown method ${method}`);
+		return fn(params ?? {}, from);
+	},
+});
+
+/** Call a method on a machine (locally when it is us). */
+function call<T = any>(machine: string, method: string, params: any): Promise<T> {
+	return mesh.request<T>(machine, method, params);
+}
+
+// ---------------------------------------------------------------- local task mutations
 
 function recordEvent(t: Task, ev: Omit<TaskEvent, "ts" | "taskId">) {
 	const full: TaskEvent = { ts: Date.now(), taskId: t.id, ...ev };
@@ -104,12 +194,27 @@ function recordEvent(t: Task, ev: Omit<TaskEvent, "ts" | "taskId">) {
 
 function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "taskId">) {
 	const prev = t.status;
-	Object.assign(t, patch, { updatedAt: Date.now() });
+	Object.assign(t, patch, { updatedAt: Date.now(), rev: (t.rev ?? 0) + 1 });
 	if (patch.status && patch.status !== prev && ATTENTION_STATUSES.includes(patch.status)) t.unread = true;
 	if (patch.status && ACTIVE_STATUSES.includes(patch.status)) t.unread = false;
 	saveTask(t);
 	const full = ev ? recordEvent(t, ev) : undefined;
 	broadcast({ type: "task", task: t, event: full });
+	mesh.flood("task", { task: t, event: full });
+	return t;
+}
+
+function updateIntake(i: Intake, patch: Partial<Intake>) {
+	Object.assign(i, patch, { rev: (i.rev ?? 0) + 1 });
+	saveIntake(i);
+	broadcast({ type: "intake", intake: i });
+	mesh.flood("intake", { intake: i });
+	return i;
+}
+
+function ownTask(id: string) {
+	const t = tasks.get(id);
+	if (!t) throw new HttpError(404, `no such task on ${SELF}: ${id}`);
 	return t;
 }
 
@@ -177,17 +282,62 @@ async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: stri
 	update(t, { status: "starting", tmuxTarget: target, closed: false, activity: "启动中" }, { kind: "status", status: "starting", text: opts.resumeMessage ? "resumed" : "spawned" });
 }
 
-async function createTask(body: any): Promise<Task> {
+// ---------------------------------------------------------------- methods (local implementations, callable over the mesh)
+
+type FileBlob = { name: string; data: string };
+
+function readFiles(list: string[]): FileBlob[] {
+	let total = 0;
+	const out: FileBlob[] = [];
+	for (const f of list) {
+		try {
+			if (!statSync(f).isFile()) continue;
+			const buf = readFileSync(f);
+			total += buf.length;
+			if (total > MAX_TRANSFER) throw new HttpError(413, `attachments exceed ${MAX_TRANSFER / 1048576} MB`);
+			out.push({ name: f, data: buf.toString("base64") });
+		} catch (e) {
+			if (e instanceof HttpError) throw e;
+		}
+	}
+	return out;
+}
+
+/** Write transferred files into dir; returns original path → new path. */
+function writeFiles(dir: string, files: FileBlob[] | undefined): Map<string, string> {
+	const map = new Map<string, string>();
+	if (!files?.length) return map;
+	mkdirSync(dir, { recursive: true });
+	for (const [n, f] of files.entries()) {
+		const target = join(dir, `${n}-${basename(f.name).replace(/[^\w.-]/g, "_")}`);
+		writeFileSync(target, Buffer.from(f.data, "base64"));
+		map.set(f.name, target);
+	}
+	return map;
+}
+
+async function createTaskLocal(body: any): Promise<Task> {
 	const title = String(body.title ?? "").trim() || "untitled";
-	const brief = String(body.brief ?? "").trim();
+	let brief = String(body.brief ?? "").trim();
 	if (!brief) throw new HttpError(400, "brief is required");
 	let cwd = String(body.cwd ?? "").trim();
-	if (!cwd) cwd = matchProject(cfg, body.source?.url)?.cwd ?? cfg.defaultCwd;
-	if (!existsSync(cwd)) throw new HttpError(400, `cwd does not exist: ${cwd}`);
-	const id = newId("t", (x) => tasks.has(x));
-	const attachments: string[] = Array.isArray(body.attachments) ? body.attachments.map(String) : [];
+	if (!cwd) {
+		const p = matchProject(cfg, body.source?.url);
+		cwd = p && (!p.machine || p.machine === SELF) ? p.cwd : cfg.defaultCwd;
+	}
+	if (!existsSync(cwd)) throw new HttpError(400, `cwd does not exist on ${SELF}: ${cwd}`);
+	const id = newId("t", (x) => tasks.has(x) || mirrorTasks.has(x));
+	let attachments: string[] = Array.isArray(body.attachments) ? body.attachments.map(String) : [];
+	// Files shipped from another machine: store them with the task and rewrite references.
+	const moved = writeFiles(join(taskDir(id), "attachments"), body.files);
+	if (moved.size) {
+		attachments = attachments.map((a) => moved.get(a) ?? a);
+		for (const [from, to] of moved) brief = brief.split(from).join(to);
+	}
 	const t: Task = {
 		id,
+		machine: SELF,
+		rev: 0,
 		title,
 		brief,
 		cwd,
@@ -205,6 +355,7 @@ async function createTask(body: any): Promise<Task> {
 	const briefDoc = [
 		`# 任务 ${id}: ${title}`,
 		"",
+		`- 机器: ${SELF}`,
 		`- 工作目录: ${cwd}`,
 		`- 来源: ${t.source.kind}${t.source.url ? ` (${t.source.url})` : ""}`,
 		attachments.length ? `- 附件:\n${attachments.map((a) => `  - ${a}`).join("\n")}` : "",
@@ -221,15 +372,6 @@ async function createTask(body: any): Promise<Task> {
 		await spawnWorker(t, { model: body.model });
 	} catch (err) {
 		update(t, { status: "failed", summary: `spawn failed: ${(err as Error).message}` }, { kind: "status", status: "failed", text: (err as Error).message });
-	}
-	if (t.source.intakeId) {
-		const i = intakes.get(t.source.intakeId);
-		if (i) {
-			i.status = "dispatched";
-			i.taskId = id;
-			saveIntake(i);
-			broadcast({ type: "intake", intake: i });
-		}
 	}
 	return t;
 }
@@ -253,17 +395,147 @@ async function deliverMessage(t: Task, text: string) {
 	await spawnWorker(t, { resumeMessage: text });
 }
 
-// Periodically reconcile tasks whose tmux window disappeared.
-async function reconcile() {
-	const live = await liveWindows();
-	for (const t of tasks.values()) {
-		if (t.closed) continue;
-		if (!live.has(t.id) && t.tmuxTarget && Date.now() - t.updatedAt > 5000) {
-			const patch: Partial<Task> = { closed: true };
-			if (ACTIVE_STATUSES.includes(t.status)) patch.status = "exited";
-			update(t, patch, { kind: "close", text: "tmux window closed" });
+function resolvePath(p: unknown): string {
+	const s = String(p ?? "").trim();
+	if (!s) throw new HttpError(400, "path is required");
+	return resolve(s.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
+}
+
+const methods: Record<string, (p: any, from: string) => Promise<any>> = {
+	"machine.info": async () => machineInfo(),
+
+	"task.create": async (p) => createTaskLocal(p),
+	"task.get": async (p) => ({ task: ownTask(p.id), events: readEvents(p.id, Math.min(Number(p.events ?? 30) || 30, 500)) }),
+	"task.message": async (p) => {
+		const t = ownTask(p.id);
+		const text = String(p.text ?? "").trim();
+		if (!text) throw new HttpError(400, "text is required");
+		await deliverMessage(t, text);
+		return t;
+	},
+	"task.cancel": async (p) => {
+		const t = ownTask(p.id);
+		broadcast({ type: "task.cancel", taskId: t.id, ts: Date.now() }, (c) => c.taskId === t.id);
+		if (!workerConnected(t.id) && t.tmuxTarget) await tmux("send-keys", "-t", t.tmuxTarget, "Escape").catch(() => {});
+		return update(t, { status: "cancelled", activity: undefined }, { kind: "cancel" });
+	},
+	"task.close": async (p) => {
+		const t = ownTask(p.id);
+		if (t.tmuxTarget) await tmux("kill-window", "-t", t.tmuxTarget).catch(() => {});
+		return update(t, { closed: true, unread: false, ...(ACTIVE_STATUSES.includes(t.status) ? { status: "cancelled" as TaskStatus } : {}) }, { kind: "close", text: "closed by user" });
+	},
+	"task.ack": async (p) => update(ownTask(p.id), { unread: false }),
+	"task.screen": async (p) => {
+		const t = ownTask(p.id);
+		if (!t.tmuxTarget || t.closed) return { alive: false, text: "" };
+		try {
+			const { stdout } = await tmux("capture-pane", "-p", "-J", "-t", t.tmuxTarget);
+			return { alive: true, text: stdout.replace(/\s+$/, "") };
+		} catch {
+			return { alive: false, text: "" };
 		}
+	},
+
+	"intake.claim": async (p) => {
+		const i = intakes.get(p.id);
+		if (!i) throw new HttpError(404, `no such intake on ${SELF}: ${p.id}`);
+		if (i.status !== "pending") throw new HttpError(409, `intake already ${i.status}`);
+		updateIntake(i, { status: "claimed", claimedBy: String(p.by ?? "front") });
+		return { intake: i, files: p.withFiles ? readFiles(i.screenshots) : [] };
+	},
+	"intake.update": async (p) => {
+		const i = intakes.get(p.id);
+		if (!i) throw new HttpError(404, `no such intake on ${SELF}: ${p.id}`);
+		const patch: Partial<Intake> = {};
+		if (p.status) patch.status = p.status;
+		if (p.taskId) patch.taskId = p.taskId;
+		return updateIntake(i, patch);
+	},
+
+	// Read-only file system access for front agents assembling context on other machines.
+	"fs.ls": async (p) => {
+		const dir = resolvePath(p.path);
+		const entries = readdirSync(dir, { withFileTypes: true })
+			.filter((e) => p.all || !e.name.startsWith("."))
+			.slice(0, 500)
+			.map((e) => `${e.name}${e.isDirectory() ? "/" : ""}`)
+			.sort();
+		return { path: dir, entries };
+	},
+	"fs.read": async (p) => {
+		const f = resolvePath(p.path);
+		const st = statSync(f);
+		if (!st.isFile()) throw new HttpError(400, `not a file: ${f}`);
+		const lines = readFileSync(f, "utf8").split("\n");
+		const offset = Math.max(1, Number(p.offset ?? 1) || 1);
+		const limit = Math.min(Math.max(1, Number(p.limit ?? 400) || 400), 2000);
+		let text = lines.slice(offset - 1, offset - 1 + limit).join("\n");
+		if (text.length > 100_000) text = `${text.slice(0, 100_000)}\n…(truncated)`;
+		return { path: f, totalLines: lines.length, offset, text };
+	},
+	"fs.grep": async (p) => {
+		const dir = resolvePath(p.path);
+		const pattern = String(p.pattern ?? "");
+		if (!pattern) throw new HttpError(400, "pattern is required");
+		try {
+			const { stdout } = await run("grep", ["-rnIE", "--max-count=5", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=dist", "-e", pattern, dir], {
+				timeout: 15_000,
+				maxBuffer: 4 * 1024 * 1024,
+			});
+			return { text: stdout.slice(0, 60_000) };
+		} catch (e: any) {
+			if (e.code === 1) return { text: "" };
+			return { text: String(e.stdout ?? "").slice(0, 60_000), error: e.message };
+		}
+	},
+};
+
+// ---------------------------------------------------------------- global (mesh-wide) views
+
+function findTask(id: string): Task {
+	const t = tasks.get(id) ?? mirrorTasks.get(id);
+	if (!t) throw new HttpError(404, `no such task: ${id}`);
+	return t;
+}
+function findIntake(id: string): Intake {
+	const i = intakes.get(id) ?? mirrorIntakes.get(id);
+	if (!i) throw new HttpError(404, `no such intake: ${id}`);
+	return i;
+}
+function allTasks() {
+	return [...tasks.values(), ...mirrorTasks.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+function allIntakes() {
+	return [...intakes.values(), ...mirrorIntakes.values()];
+}
+
+async function apiCreateTask(body: any): Promise<Task> {
+	let machine = String(body.machine ?? "").trim();
+	if (!machine && !body.cwd) machine = matchProject(cfg, body.source?.url)?.machine ?? "";
+	machine ||= SELF;
+	if (!mesh.reachable(machine)) throw new HttpError(400, `machine ${machine} is not reachable (see /api/machines)`);
+	const params = { ...body };
+	delete params.machine;
+	if (machine !== SELF && Array.isArray(body.attachments) && body.attachments.length) params.files = readFiles(body.attachments.map(String));
+	const task = await call<Task>(machine, "task.create", params);
+	if (task.machine !== SELF) mirrorTasks.set(task.id, task);
+	// Mark the originating browser comment as dispatched (on whichever machine owns it).
+	if (task.source?.intakeId) {
+		const i = intakes.get(task.source.intakeId) ?? mirrorIntakes.get(task.source.intakeId);
+		if (i) await call(i.machine, "intake.update", { id: i.id, status: "dispatched", taskId: task.id }).catch((e) => log(`intake.update failed: ${e.message}`));
 	}
+	return task;
+}
+
+/** Claim an intake wherever it lives; remote screenshots are copied here so local front agents can read them. */
+async function apiClaimIntake(id: string, by: string): Promise<Intake> {
+	const i = findIntake(id);
+	if (i.machine === SELF) return (await call<{ intake: Intake }>(SELF, "intake.claim", { id, by })).intake;
+	const r = await call<{ intake: Intake; files: FileBlob[] }>(i.machine, "intake.claim", { id, by, withFiles: true });
+	const moved = writeFiles(join(paths.intake, id), r.files);
+	const local: Intake = { ...r.intake, screenshots: r.intake.screenshots.map((s) => moved.get(s) ?? s) };
+	mirrorIntakes.set(id, { ...local });
+	return local;
 }
 
 // ---------------------------------------------------------------- intake
@@ -279,7 +551,7 @@ function storeDataUrl(dir: string, name: string, dataUrl: string): string | unde
 function createIntake(body: any): Intake {
 	const comment = String(body.comment ?? "").trim();
 	if (!comment) throw new HttpError(400, "comment is required");
-	const id = newId("c", (x) => intakes.has(x));
+	const id = newId("c", (x) => intakes.has(x) || mirrorIntakes.has(x));
 	const dir = join(paths.intake, id);
 	mkdirSync(dir, { recursive: true });
 	const screenshots: string[] = [];
@@ -289,6 +561,8 @@ function createIntake(body: any): Intake {
 	}
 	const i: Intake = {
 		id,
+		machine: SELF,
+		rev: 0,
 		createdAt: Date.now(),
 		status: "pending",
 		kind: "browser-comment",
@@ -304,20 +578,24 @@ function createIntake(body: any): Intake {
 		userAgent: body.userAgent,
 	};
 	intakes.set(id, i);
-	saveIntake(i);
-	broadcast({ type: "intake", intake: i });
+	updateIntake(i, {});
 	return i;
 }
 
-// ---------------------------------------------------------------- HTTP
-
-class HttpError extends Error {
-	status: number;
-	constructor(status: number, message: string) {
-		super(message);
-		this.status = status;
+// Periodically reconcile local tasks whose tmux window disappeared.
+async function reconcile() {
+	const live = await liveWindows();
+	for (const t of tasks.values()) {
+		if (t.closed) continue;
+		if (!live.has(t.id) && t.tmuxTarget && Date.now() - t.updatedAt > 5000) {
+			const patch: Partial<Task> = { closed: true };
+			if (ACTIVE_STATUSES.includes(t.status)) patch.status = "exited";
+			update(t, patch, { kind: "close", text: "tmux window closed" });
+		}
 	}
 }
+
+// ---------------------------------------------------------------- HTTP
 
 function send(res: ServerResponse, status: number, data: unknown) {
 	res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...cors() });
@@ -335,7 +613,7 @@ async function readJson(req: IncomingMessage): Promise<any> {
 	let size = 0;
 	for await (const c of req) {
 		size += (c as Buffer).length;
-		if (size > 30 * 1024 * 1024) throw new HttpError(413, "body too large");
+		if (size > 40 * 1024 * 1024) throw new HttpError(413, "body too large");
 		chunks.push(c as Buffer);
 	}
 	if (!size) return {};
@@ -350,14 +628,6 @@ function authorized(req: IncomingMessage, url: URL) {
 	if (h === `Bearer ${cfg.token}`) return true;
 	return url.searchParams.get("token") === cfg.token;
 }
-function getTask(id: string) {
-	const t = tasks.get(id);
-	if (!t) throw new HttpError(404, `no such task: ${id}`);
-	return t;
-}
-function sortedTasks() {
-	return [...tasks.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-}
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
 	const url = new URL(req.url ?? "/", "http://localhost");
@@ -367,7 +637,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		res.writeHead(204, cors());
 		return res.end();
 	}
-	if (p === "/health") return send(res, 200, { ok: true, pid: process.pid, tasks: tasks.size });
+	if (p === "/health") return send(res, 200, { ok: true, machine: SELF, pid: process.pid, tasks: tasks.size, mesh: mesh.enabled });
 	if (p === "/" || p === "/dashboard") {
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 		return res.end(dashboardHtml());
@@ -379,6 +649,20 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		res.writeHead(200, { "content-type": "application/zip", "content-disposition": 'attachment; filename="quick-agent-extension.zip"' });
 		return res.end(readFileSync(zip));
 	}
+
+	// ---- hub ↔ hub (mesh secret)
+	if (p === "/mesh/link" || p === "/mesh/send") {
+		if (!mesh.checkSecret(req)) throw new HttpError(401, "bad mesh secret");
+		if (p === "/mesh/link" && m === "GET") return mesh.handleLinkRequest(req, res);
+		if (p === "/mesh/send" && m === "POST") {
+			const body = await readJson(req);
+			mesh.handleSend(String(req.headers["x-qa-machine"] ?? ""), Array.isArray(body.frames) ? body.frames : []);
+			return send(res, 200, { ok: true });
+		}
+		throw new HttpError(405, "method not allowed");
+	}
+
+	// ---- local clients (API token)
 	if (!authorized(req, url)) throw new HttpError(401, "unauthorized");
 
 	if (p === "/api/events" && m === "GET") {
@@ -401,109 +685,83 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return;
 	}
 
-	if (p === "/api/tasks" && m === "GET") return send(res, 200, { tasks: sortedTasks() });
-	if (p === "/api/tasks" && m === "POST") return send(res, 200, { task: await createTask(await readJson(req)) });
+	if (p === "/api/machines" && m === "GET") return send(res, 200, { self: SELF, machines: mesh.machines(), links: mesh.linkStatus() });
+	if (p === "/api/fs" && m === "POST") {
+		const body = await readJson(req);
+		const op = String(body.op ?? "");
+		if (!["ls", "read", "grep"].includes(op)) throw new HttpError(400, "op must be ls, read or grep");
+		return send(res, 200, await call(String(body.machine || SELF), `fs.${op}`, body));
+	}
+
+	if (p === "/api/tasks" && m === "GET") return send(res, 200, { tasks: allTasks() });
+	if (p === "/api/tasks" && m === "POST") return send(res, 200, { task: await apiCreateTask(await readJson(req)) });
 
 	let mt = /^\/api\/tasks\/([\w-]+)(?:\/(\w+))?$/.exec(p);
 	if (mt) {
-		const t = getTask(mt[1]!);
+		const id = mt[1]!;
 		const action = mt[2];
-		if (action === "screen" && m === "GET") {
-			// Live terminal of the worker (tmux capture), for the dashboard.
-			if (!t.tmuxTarget || t.closed) return send(res, 200, { alive: false, text: "" });
-			try {
-				const { stdout } = await tmux("capture-pane", "-p", "-J", "-t", t.tmuxTarget);
-				return send(res, 200, { alive: true, text: stdout.replace(/\s+$/, "") });
-			} catch {
-				return send(res, 200, { alive: false, text: "" });
+		if (action === "report") {
+			// Worker → its own hub only.
+			if (m !== "POST") throw new HttpError(405, "method not allowed");
+			const t = ownTask(id);
+			const body = await readJson(req);
+			const patch: Partial<Task> = {};
+			if (body.status) patch.status = body.status;
+			// A worker exiting after it finished (or after the user closed it) is not news.
+			if (body.status === "exited" && (t.closed || !ACTIVE_STATUSES.includes(t.status))) {
+				return send(res, 200, { task: update(t, { activity: "pi 已退出" }) });
 			}
+			if (typeof body.summary === "string") patch.summary = body.summary;
+			if (typeof body.activity === "string") patch.activity = body.activity;
+			if (typeof body.sessionFile === "string") patch.sessionFile = body.sessionFile;
+			const kind = body.kind ?? (body.status ? "status" : body.summary ? "report" : "activity");
+			const text = body.summary ?? body.activity ?? body.sessionFile;
+			// Activity pings are frequent: replicate them but keep the event log lean.
+			return send(res, 200, { task: update(t, patch, kind === "activity" && !body.status ? undefined : { kind, status: body.status, text }) });
 		}
-		if (!action && m === "GET") {
-			const n = Math.min(Number(url.searchParams.get("events") ?? 30) || 30, 500);
-			return send(res, 200, { task: t, events: readEvents(t.id, n) });
-		}
+		const owner = findTask(id).machine;
+		if (action === "screen" && m === "GET") return send(res, 200, await call(owner, "task.screen", { id }));
+		if (!action && m === "GET") return send(res, 200, await call(owner, "task.get", { id, events: url.searchParams.get("events") ?? 30 }));
 		if (m !== "POST") throw new HttpError(405, "method not allowed");
 		const body = await readJson(req);
-		switch (action) {
-			case "message": {
-				const text = String(body.text ?? "").trim();
-				if (!text) throw new HttpError(400, "text is required");
-				await deliverMessage(t, text);
-				return send(res, 200, { task: t });
-			}
-			case "cancel":
-				broadcast({ type: "task.cancel", taskId: t.id, ts: Date.now() }, (c) => c.taskId === t.id);
-				if (!workerConnected(t.id) && t.tmuxTarget) await tmux("send-keys", "-t", t.tmuxTarget, "Escape").catch(() => {});
-				return send(res, 200, { task: update(t, { status: "cancelled", activity: undefined }, { kind: "cancel" }) });
-			case "close":
-				if (t.tmuxTarget) await tmux("kill-window", "-t", t.tmuxTarget).catch(() => {});
-				return send(res, 200, {
-					task: update(t, { closed: true, unread: false, ...(ACTIVE_STATUSES.includes(t.status) ? { status: "cancelled" as TaskStatus } : {}) }, { kind: "close", text: "closed by user" }),
-				});
-			case "ack":
-				return send(res, 200, { task: update(t, { unread: false }) });
-			case "report": {
-				const patch: Partial<Task> = {};
-				if (body.status) patch.status = body.status;
-				// A worker exiting after it finished (or after the user closed it) is not news.
-				if (body.status === "exited" && (t.closed || !ACTIVE_STATUSES.includes(t.status))) {
-					return send(res, 200, { task: update(t, { activity: "pi 已退出" }) });
-				}
-				if (typeof body.summary === "string") patch.summary = body.summary;
-				if (typeof body.activity === "string") patch.activity = body.activity;
-				if (typeof body.sessionFile === "string") patch.sessionFile = body.sessionFile;
-				const kind = body.kind ?? (body.status ? "status" : body.summary ? "report" : "activity");
-				const text = body.summary ?? body.activity ?? body.sessionFile;
-				// Activity pings are frequent: persist them but keep the event log lean.
-				return send(res, 200, { task: update(t, patch, kind === "activity" && !body.status ? undefined : { kind, status: body.status, text }) });
-			}
-		}
-		throw new HttpError(404, "unknown action");
+		if (!["message", "cancel", "close", "ack"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		const task = await call<Task>(owner, `task.${action}`, { ...body, id });
+		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
+		return send(res, 200, { task });
 	}
 
-	if (p === "/api/intake" && m === "POST") {
-		const i = createIntake(await readJson(req));
-		return send(res, 200, { intake: i });
-	}
+	if (p === "/api/intake" && m === "POST") return send(res, 200, { intake: createIntake(await readJson(req)) });
 	if (p === "/api/intake" && m === "GET") {
 		const status = url.searchParams.get("status");
-		const list = [...intakes.values()].filter((i) => !status || i.status === status).sort((a, b) => a.createdAt - b.createdAt);
+		const list = allIntakes().filter((i) => !status || i.status === status).sort((a, b) => a.createdAt - b.createdAt);
 		return send(res, 200, { intake: list });
 	}
 	mt = /^\/api\/intake\/([\w-]+)(?:\/(\w+))?$/.exec(p);
 	if (mt) {
-		const i = intakes.get(mt[1]!);
-		if (!i) throw new HttpError(404, "no such intake");
-		if (m === "GET" && !mt[2]) return send(res, 200, { intake: i, task: i.taskId ? tasks.get(i.taskId) : undefined });
+		const id = mt[1]!;
+		const i = findIntake(id);
+		if (m === "GET" && !mt[2]) return send(res, 200, { intake: i, task: i.taskId ? (tasks.get(i.taskId) ?? mirrorTasks.get(i.taskId)) : undefined });
 		if (m === "GET" && mt[2] === "screenshot") {
 			const f = i.screenshots[Number(url.searchParams.get("n") ?? 0)];
-			if (!f || !existsSync(f)) throw new HttpError(404, "no screenshot");
+			if (!f || !existsSync(f)) throw new HttpError(404, "no screenshot on this machine");
 			res.writeHead(200, { "content-type": f.endsWith(".png") ? "image/png" : "image/jpeg" });
 			return res.end(readFileSync(f));
 		}
 		const body = await readJson(req);
-		if (mt[2] === "claim") {
-			if (i.status !== "pending") throw new HttpError(409, `intake already ${i.status}`);
-			i.status = "claimed";
-			i.claimedBy = String(body.by ?? "front");
-		} else {
-			if (body.status) i.status = body.status;
-			if (body.taskId) i.taskId = body.taskId;
-		}
-		saveIntake(i);
-		broadcast({ type: "intake", intake: i });
-		return send(res, 200, { intake: i });
+		if (mt[2] === "claim") return send(res, 200, { intake: await apiClaimIntake(id, String(body.by ?? "front")) });
+		return send(res, 200, { intake: await call(i.machine, "intake.update", { id, status: body.status, taskId: body.taskId }) });
 	}
 
-	// Browser badges: comments on a page and the status of their tasks.
+	// Browser badges: comments on a page (from any machine) and the status of their tasks.
 	if (p === "/api/pages" && m === "GET") {
 		const pageUrl = url.searchParams.get("url") ?? "";
 		const strip = (u: string) => u.split("#")[0];
-		const list = [...intakes.values()]
+		const list = allIntakes()
 			.filter((i) => i.url && strip(i.url) === strip(pageUrl))
+			.sort((a, b) => a.createdAt - b.createdAt)
 			.map((i) => {
-				const t = i.taskId ? tasks.get(i.taskId) : undefined;
-				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary };
+				const t = i.taskId ? (tasks.get(i.taskId) ?? mirrorTasks.get(i.taskId)) : undefined;
+				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine };
 			});
 		return send(res, 200, { comments: list });
 	}
@@ -524,11 +782,13 @@ const server = createServer((req, res) => {
 });
 server.listen(cfg.port, cfg.host, () => {
 	writeFileSync(paths.pid, String(process.pid));
-	console.log(`[quick-agent hub] listening on http://${cfg.host}:${cfg.port} (pid ${process.pid})`);
+	log(`[quick-agent hub] machine "${SELF}" listening on http://${cfg.host}:${cfg.port} (pid ${process.pid}, mesh ${mesh.enabled ? `on, ${cfg.mesh.peers.length} peer(s)` : "off"})`);
+	mesh.start();
 });
 setInterval(() => void reconcile().catch(() => {}), 5000);
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
 	process.on(sig, () => {
+		mesh.stop();
 		for (const c of clients) c.res.end();
 		server.close();
 		process.exit(0);

@@ -24,6 +24,10 @@ export interface TaskSource {
 
 export interface Task {
 	id: string;
+	/** Machine (hub) that owns the task and runs its worker. */
+	machine: string;
+	/** Monotonic revision, bumped by the owning hub on every change (replication ordering). */
+	rev: number;
 	title: string;
 	brief: string;
 	cwd: string;
@@ -68,6 +72,9 @@ export interface IntakeElement {
 
 export interface Intake {
 	id: string;
+	/** Machine (hub) where the intake was submitted; it arbitrates claims. */
+	machine: string;
+	rev: number;
 	createdAt: number;
 	status: "pending" | "claimed" | "dispatched" | "dismissed";
 	kind: "browser-comment";
@@ -87,10 +94,31 @@ export interface Intake {
 	taskId?: string;
 }
 
+/** A machine in the mesh as seen from one hub. */
+export interface MachineInfo {
+	id: string;
+	description?: string;
+	defaultCwd?: string;
+	projects?: { match: string; cwd: string; notes?: string; machine?: string }[];
+	hostname?: string;
+	platform?: string;
+	startedAt?: number;
+	activeTasks?: number;
+}
+export interface MachineView extends MachineInfo {
+	self: boolean;
+	online: boolean;
+	/** 0 = self, 1 = directly linked, … */
+	hops: number;
+	/** Machine id of the next hop (for hops > 1). */
+	via?: string;
+}
+
 /** Messages broadcast over the hub SSE stream. */
 export type HubEvent =
 	| { type: "hello"; ts: number }
 	| { type: "task"; task: Task; event?: TaskEvent }
 	| { type: "task.message"; taskId: string; text: string; ts: number }
 	| { type: "task.cancel"; taskId: string; ts: number }
-	| { type: "intake"; intake: Intake };
+	| { type: "intake"; intake: Intake }
+	| { type: "machines"; machines: MachineView[] };

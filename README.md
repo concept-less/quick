@@ -62,6 +62,50 @@ qa hub start|stop|restart|status|logs
 qa dashboard | qa tunnel | qa token
 ```
 
+## 多机互联（mesh）
+
+quick-agent 自带原生的多机互联，不依赖 codexhost。每台机器跑一个 hub，hub 之间组成网状网络：
+
+- **随处派单**：前台的 `qa_dispatch` 可以带上 `machine`，任务和 worker 就跑在那台机器上。附件（截图等）会随请求一起传过去，简报里的路径也会自动改写。
+- **全局视图**：每个 hub 都能看到全网的任务。`qa ls`、面板、前台的任务组件都会标出 `@机器`。
+- **统一控制**：追加指令、中止、关闭、已读、实时终端（`/peek`、面板）都会自动路由到任务所在的机器。
+- **远程只读浏览**：前台用 `qa_remote_fs`（ls/read/grep）在派单前查看别的机器上的代码。
+- **评论跨机流转**：任何机器上的浏览器评论，都能被任何一台机器上的前台认领，截图会自动拉到认领方本地。
+
+### 组网
+
+```bash
+# 机器 A（例如你的笔记本或主力服务器）
+qa mesh init --id laptop --desc "MacBook，前端项目在 ~/code"
+
+# 方式一：A 能 ssh 到 B（B 上已经装好 quick-agent）。一条命令完成：
+qa mesh add simon@server-b            # 会在 B 上设置密钥、启动 hub，A 自动维护 ssh 隧道
+
+# 方式二：邀请码
+qa mesh invite                        # 在 A 上运行，打印加入命令
+qa mesh join <code> --ssh simon@A     # 在 B 上运行（B 能 ssh 到 A）
+qa mesh join <code> --url http://A:7788   # 或者 A 的端口可以直接访问
+
+qa machines                           # 查看机器、路由、链路状态
+```
+
+### 原理（`hub/mesh.ts`）
+
+| 方面 | 做法 |
+|---|---|
+| 链路 | 由一方主动往外拨：`GET /mesh/link`（SSE，对端 → 我）加 `POST /mesh/send`（我 → 对端）。只需要一个方向能连通，处在 NAT 后面的笔记本也能加入。链路建立后是双向的。 |
+| SSH | peer 写成 `{"ssh": "user@host"}` 时，hub 会自己拉起并维护 `ssh -N -L <空闲端口>:127.0.0.1:<对端 hub 端口>`（BatchMode、断线重连），还会顺带尝试在远端执行 `qa hub start`。 |
+| 鉴权 | 全网共享一个 mesh secret（`Authorization: Mesh <secret>`，用 timingSafeEqual 比较），和本地 API token 分开。 |
+| 路由 | 距离向量加水平分割，最多 8 跳。比如 A→B←C 的拓扑里，A 会经 B 访问 C；存在直连时优先直连，某条路断了会自动绕行。 |
+| 复制 | 任务和评论各有一台归属机器，每次更新带递增的 `rev`，并广播给全网；收到的版本只有比本地新才会应用并继续转发，所以广播一定会结束。新链路建立时会互发一份快照。 |
+| RPC | 请求按目标机器 ID 一跳一跳转发，响应沿路由表返回，超时 30 秒。远程方法包括 `task.create/get/message/cancel/close/ack/screen`、`intake.claim/update`、`fs.ls/read/grep`。 |
+
+安全提示：mesh secret 相当于能在全网所有机器上执行 worker（也就是任意代码），请妥善保管。hub 默认只监听 `127.0.0.1`，跨机连接推荐走 ssh 隧道；如果要把 `host` 设成 `0.0.0.0` 直连，一定要配好防火墙或者用 Tailscale 这类内网。
+
+### 本地电脑 + 浏览器的推荐用法
+
+在本地电脑上也装一份 quick-agent，然后运行 `qa mesh join … --ssh <服务器>` 或 `qa mesh add <服务器>`，这样浏览器插件直接连本机的 `http://127.0.0.1:7788`，不用再手动开 ssh 端口转发。评论会进到 mesh，由服务器上的前台认领，再派给对应机器上的 worker。
+
 ## 浏览器插件（在本地电脑上用）
 
 1. 在本地电脑上开端口转发，保持开启：`ssh -N -L 7788:127.0.0.1:7788 <user>@<server>`（完整命令和 token 可以在服务器上运行 `qa tunnel` 查看）。
@@ -87,10 +131,12 @@ qa dashboard | qa tunnel | qa token
   "token": "…自动生成…",
   "model": "tokenjoy/claude-opus-5-5",   // 前台和 worker 共用；也可以用 frontModel / workerModel 分开设置
   "tmuxSession": "qa",
+  "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work" },
+  "mesh": { "secret": "…qa mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
   "defaultCwd": "/home/simon",
   "projects": [
     // 浏览器评论按 URL 匹配工作目录（子串，或 /正则/）
-    { "match": "localhost:5173", "cwd": "/home/simon/my-app", "notes": "Vite + React，组件在 src/components" }
+    { "match": "localhost:5173", "cwd": "/home/simon/my-app", "notes": "Vite + React，组件在 src/components", "machine": "cloud" }
   ]
 }
 ```
@@ -103,6 +149,7 @@ qa dashboard | qa tunnel | qa token
 bin/qa                       CLI 入口
 cli/qa.ts                    CLI
 hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
+hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/dashboard.ts             网页面板
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
@@ -118,11 +165,14 @@ browser/                     Chrome MV3 插件
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
-| POST | `/api/tasks` | `{title, brief, cwd, attachments?, source?}` 创建任务并拉起 worker |
+| POST | `/api/tasks` | `{title, brief, cwd, machine?, attachments?, source?}` 在指定机器上创建任务并拉起 worker |
 | POST | `/api/tasks/:id/message` | `{text}` 追加指令（必要时恢复会话） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 标记已读 |
 | POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动 |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
+| GET | `/api/machines` | mesh 中的机器、路由与链路状态 |
+| POST | `/api/fs` | `{machine, op: ls/read/grep, path, pattern?}` 远程只读文件访问 |
+| GET/POST | `/mesh/link`、`/mesh/send` | hub 之间的链路（mesh secret） |
 | GET | `/api/events` | SSE 事件流（`?task=<id>` 用于 worker 接收指令） |
 | POST/GET | `/api/intake` | 入口提交（浏览器评论等）/ 列表 |
 | GET | `/api/pages?url=` | 某个页面上的评论及其任务状态（插件角标用） |
@@ -132,6 +182,5 @@ browser/                     Chrome MV3 插件
 
 ## 后续可以做的
 
-- 跨机器：hub 之间互联，按机器路由 worker（参考 codexhost）。
 - 更多入口：IM 机器人、Git 评论、CI 失败。
 - 收件箱优先级、按项目分组、汇报摘要推送。

@@ -6,20 +6,21 @@ import { hostname } from "node:os";
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { hubUrl, loadConfig, matchProject } from "../shared/config.ts";
 import { HubClient } from "../shared/hub-client.ts";
 import { ensureHub } from "../shared/hub-process.ts";
-import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type Task } from "../shared/types.ts";
+import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
 
-const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel"];
+const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_machines", "qa_remote_fs"];
 const FRONT_TOOLS = ["read", "grep", "find", "ls", ...QA_TOOLS];
 
 const ICON: Record<string, string> = {
 	starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏",
 };
 
-function frontRules(cwd: string, defaultCwd: string, projects: string): string {
+function frontRules(cwd: string, defaultCwd: string, projects: string, machines: string): string {
 	return `你是 quick-agent 工作流中的 **前台 agent**：你和人类交互，并且必须 **快**。工作方式类似中断处理的上半部：
 1. 理解任务：只做最少量的澄清。只有在缺少关键信息、无法写出可执行简报时才提问，而且一次问完。
 2. 组装上下文：允许快速读取少量文件、grep/ls 确认工作目录和相关位置，但不要深入调研，不要动手实现。
@@ -31,6 +32,11 @@ function frontRules(cwd: string, defaultCwd: string, projects: string): string {
 8. 纯闲聊或一句话能回答的问题直接回答，不用派单。
 9. 收到 [浏览器评论] 时，它来自人类在网页上框选元素后写的评论：判断它属于哪个项目/工作目录（参考下方项目映射；不确定就问人类），必要时快速确认相关源码位置，然后派单；如果它明显是某个已有任务的追加，就用 qa_task_send。
 10. 你没有 bash/edit/write，这是刻意的：所有实际工作都交给 worker。
+11. 多机：worker 可以跑在 mesh 里的任何在线机器上（qa_dispatch 的 machine 参数，默认是本机）。代码/环境在哪台机器就派到哪台；人类点名机器时照做。需要了解远程机器上的目录或文件时用 qa_remote_fs（ls/read/grep，只读），本地文件仍用 read/grep/ls。cwd 必须是目标机器上的路径。
+
+本机: ${machines.split("\n")[0]}
+mesh 中的机器（qa_machines 查看最新状态）:
+${machines}
 
 当前 pi 的工作目录（人类说"这个项目"时默认指它，也是派单的默认 cwd）: ${cwd}
 兜底工作目录: ${defaultCwd}
@@ -43,6 +49,25 @@ export function setupFront(pi: ExtensionAPI) {
 	const hub = new HubClient(cfg);
 	const owner = `${hostname()}:${process.pid}`;
 	const tasks = new Map<string, Task>();
+	let machines: MachineView[] = [];
+	let machinesAt = 0;
+	const selfId = () => machines.find((m) => m.self)?.id ?? cfg.machine.id;
+	const tag = (t: Task) => (t.machine && t.machine !== selfId() ? `${t.id}@${t.machine}` : t.id);
+	const loadMachines = async (maxAgeMs = 10_000) => {
+		if (Date.now() - machinesAt < maxAgeMs) return machines;
+		try {
+			machines = (await hub.machines()).machines;
+			machinesAt = Date.now();
+		} catch {}
+		return machines;
+	};
+	const describeMachines = (list: MachineView[]) =>
+		(list.length ? list : [{ id: cfg.machine.id, self: true, online: true, hops: 0 } as MachineView])
+			.map(
+				(m) =>
+					`- ${m.id}${m.self ? "（本机）" : ""} ${m.online ? "在线" : "离线"}${m.hops > 1 ? `，经 ${m.via} 转发` : ""}${m.description ? `：${m.description}` : ""}${m.defaultCwd ? `；默认目录 ${m.defaultCwd}` : ""}${m.activeTasks ? `；运行中任务 ${m.activeTasks}` : ""}${m.projects?.length ? `；项目 ${m.projects.map((p) => `${p.match}→${p.cwd}`).join(", ")}` : ""}`,
+			)
+			.join("\n");
 	const claimed = new Set<string>();
 	let abort: AbortController | undefined;
 	let current: ExtensionContext | undefined;
@@ -90,7 +115,7 @@ export function setupFront(pi: ExtensionAPI) {
 				const color = t.status === "done" ? "success" : ACTIVE_STATUSES.includes(t.status) ? "accent" : ATTENTION_STATUSES.includes(t.status) ? "warning" : "dim";
 				const mark = t.unread ? th.fg("warning", "• ") : "  ";
 				const detail = ACTIVE_STATUSES.includes(t.status) ? (t.activity ?? "") : (t.summary ?? "").split("\n")[0];
-				return `${mark}${th.fg(color as any, `${ICON[t.status] ?? "·"} ${t.id}`)} ${t.title}${detail ? th.fg("dim", ` — ${detail.slice(0, 70)}`) : ""}`;
+				return `${mark}${th.fg(color as any, `${ICON[t.status] ?? "·"} ${tag(t)}`)} ${t.title}${detail ? th.fg("dim", ` — ${detail.slice(0, 70)}`) : ""}`;
 			});
 			if (list.length > 8) lines.push(th.fg("dim", `  … 还有 ${list.length - 8} 个任务（/tasks）`));
 			ctx.ui.setWidget("qa-tasks", lines);
@@ -122,7 +147,8 @@ export function setupFront(pi: ExtensionAPI) {
 		if (claimed.has(intake.id)) return;
 		claimed.add(intake.id);
 		try {
-			await hub.claimIntake(intake.id, owner);
+			// The hub copies screenshots of remote intakes to this machine and returns local paths.
+			intake = await hub.claimIntake(intake.id, owner);
 		} catch {
 			return; // another front agent took it
 		}
@@ -139,7 +165,7 @@ export function setupFront(pi: ExtensionAPI) {
 			)
 			.join("\n");
 		const text = [
-			`[浏览器评论 ${intake.id}]`,
+			`[浏览器评论 ${intake.id}]${intake.machine && intake.machine !== selfId() ? `（来自机器 ${intake.machine} 上的浏览器）` : ""}`,
 			`评论: ${intake.comment}`,
 			`页面: ${intake.title ?? ""} ${intake.url ?? ""}`,
 			project ? `项目映射命中: ${project.cwd}${project.notes ? `（${project.notes}）` : ""}` : "项目映射: 未命中",
@@ -182,6 +208,7 @@ export function setupFront(pi: ExtensionAPI) {
 			brief: Type.String({ description: "Self-contained task brief: goal, context, relevant files, constraints, acceptance criteria" }),
 			attachments: Type.Optional(Type.Array(Type.String(), { description: "Absolute paths of files the worker should look at (e.g. screenshots)" })),
 			intake_id: Type.Optional(Type.String({ description: "Browser comment id when dispatching a [浏览器评论]" })),
+			machine: Type.Optional(Type.String({ description: "Machine id (from qa_machines) to run the worker on; default this machine. cwd must exist there." })),
 		}),
 		async execute(_id, p) {
 			const intake = p.intake_id ? await hub.request<{ intake: Intake }>("GET", `/api/intake/${p.intake_id}`).then((r) => r.intake).catch(() => undefined) : undefined;
@@ -191,12 +218,13 @@ export function setupFront(pi: ExtensionAPI) {
 				cwd: p.cwd,
 				attachments: p.attachments,
 				owner,
+				machine: p.machine,
 				source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
 			});
 			tasks.set(task.id, task);
 			renderWidget();
 			return {
-				content: [{ type: "text", text: `Dispatched ${task.id} "${task.title}" in ${task.cwd} (status ${task.status}${task.summary ? `: ${task.summary}` : ""}).` }],
+				content: [{ type: "text", text: `Dispatched ${task.id} "${task.title}" on machine ${task.machine} in ${task.cwd} (status ${task.status}${task.summary ? `: ${task.summary}` : ""}).` }],
 				details: { task },
 			};
 		},
@@ -215,7 +243,7 @@ export function setupFront(pi: ExtensionAPI) {
 			const shown = list.filter((t) => p.include_closed || !t.closed || t.unread).slice(0, 40);
 			const text = shown.length
 				? shown
-						.map((t) => `${t.id} [${t.status}${t.unread ? ", unread" : ""}] ${t.title} — ${t.cwd}\n    ${(ACTIVE_STATUSES.includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 160) ?? ""}`)
+						.map((t) => `${t.id} [${t.status}${t.unread ? ", unread" : ""}] ${t.title} — ${t.machine}:${t.cwd}\n    ${(ACTIVE_STATUSES.includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 160) ?? ""}`)
 						.join("\n")
 				: "No tasks.";
 			return { content: [{ type: "text", text }], details: { count: shown.length } };
@@ -234,7 +262,7 @@ export function setupFront(pi: ExtensionAPI) {
 			tasks.set(task.id, acked);
 			renderWidget();
 			const text = [
-				`${task.id} "${task.title}" status=${task.status} cwd=${task.cwd}`,
+				`${task.id} "${task.title}" status=${task.status} machine=${task.machine} cwd=${task.cwd}`,
 				`tmux: ${task.tmuxTarget ?? "-"}  session: ${task.sessionFile ?? "-"}`,
 				task.activity ? `activity: ${task.activity}` : "",
 				`--- summary ---\n${task.summary ?? "(none yet)"}`,
@@ -276,18 +304,44 @@ export function setupFront(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "qa_machines",
+		label: "Machines",
+		defaultActive: false,
+		description: "List machines in the quick-agent mesh (id, online, description, default cwd, projects, active tasks). Workers can be dispatched to any online machine.",
+		parameters: Type.Object({}),
+		async execute() {
+			const list = await loadMachines(0);
+			return { content: [{ type: "text", text: describeMachines(list) }], details: { machines: list } };
+		},
+	});
+
+	pi.registerTool({
+		name: "qa_remote_fs",
+		label: "Remote FS",
+		defaultActive: false,
+		description:
+			"Read-only file access on another machine of the quick-agent mesh: op=ls (list dir), read (text file, offset/limit lines), grep (regex, recursive). Use it to assemble context before dispatching a worker there.",
+		parameters: Type.Object({
+			machine: Type.String({ description: "Machine id" }),
+			op: StringEnum(["ls", "read", "grep"] as const),
+			path: Type.String({ description: "Absolute path on that machine (~ allowed)" }),
+			pattern: Type.Optional(Type.String({ description: "Regex for grep" })),
+			offset: Type.Optional(Type.Number({ description: "First line for read (1-based)" })),
+			limit: Type.Optional(Type.Number({ description: "Max lines for read (default 400)" })),
+		}),
+		async execute(_id, p) {
+			const r = await hub.fs(p);
+			const text =
+				p.op === "ls" ? `${r.path}\n${r.entries.join("\n")}` : p.op === "read" ? `${r.path} (lines ${r.offset}-, total ${r.totalLines})\n${r.text}` : r.text || "(no matches)";
+			return { content: [{ type: "text", text }], details: {} };
+		},
+	});
+
 	// ---------------------------------------------------------------- watching workers
 
 	const dashboardUrl = (id?: string) => `${hubUrl(cfg)}/?token=${cfg.token}${id ? `#${id}` : ""}`;
 	const targetOf = (id: string) => tasks.get(id)?.tmuxTarget ?? `${cfg.tmuxSession}:${id}`;
-	const windowExists = (target: string) => {
-		try {
-			execFileSync("tmux", ["list-panes", "-t", target], { stdio: "ignore" });
-			return true;
-		} catch {
-			return false;
-		}
-	};
 	const markRead = (id: string) => {
 		if (tasks.get(id)?.unread) void hub.ack(id).then((x) => tasks.set(x.id, x)).then(() => renderWidget()).catch(() => {});
 	};
@@ -295,7 +349,8 @@ export function setupFront(pi: ExtensionAPI) {
 	/** Switch the terminal to the worker's tmux window (only when this pi runs inside tmux). */
 	const attach = (id: string, ctx: ExtensionContext): boolean => {
 		const target = targetOf(id);
-		if (!process.env.TMUX) return false;
+		const t = tasks.get(id);
+		if (!process.env.TMUX || (t?.machine && t.machine !== selfId())) return false; // remote → peek
 		try {
 			execFileSync("tmux", ["switch-client", "-t", target], { stdio: "ignore" });
 			markRead(id);
@@ -312,23 +367,29 @@ export function setupFront(pi: ExtensionAPI) {
 			ctx.ui.notify(`实时画面请在面板查看: ${dashboardUrl(id)}`, "info");
 			return;
 		}
-		const target = targetOf(id);
-		if (!windowExists(target)) {
+		const first = await hub.request<{ alive: boolean; text: string }>("GET", `/api/tasks/${id}/screen`).catch(() => ({ alive: false, text: "" }));
+		if (!first.alive) {
 			const t = tasks.get(id);
 			await ctx.ui.editor(`${id} 的窗口已关闭 — 最新汇报`, t?.summary ?? "(暂无汇报)");
 			return;
 		}
 		markRead(id);
+		const isLocal = !tasks.get(id)?.machine || tasks.get(id)?.machine === selfId();
 		const action = await ctx.ui.custom<"send" | "attach" | undefined>(
 			(tui, theme, keybindings, done) => {
-				let lines: string[] = [];
+				let lines: string[] = first.text.split("\n");
+				let inflight = false;
 				const capture = () => {
-					try {
-						lines = execFileSync("tmux", ["capture-pane", "-p", "-J", "-t", target], { encoding: "utf8" }).replace(/\s+$/, "").split("\n");
-					} catch {
-						lines = ["(窗口已关闭)"];
-					}
-					tui.requestRender();
+					if (inflight) return;
+					inflight = true;
+					hub
+						.request<{ alive: boolean; text: string }>("GET", `/api/tasks/${id}/screen`)
+						.then((r) => (lines = r.alive ? r.text.split("\n") : ["(窗口已关闭)"]))
+						.catch(() => (lines = ["(连接 hub 失败)"]))
+						.finally(() => {
+							inflight = false;
+							tui.requestRender();
+						});
 				};
 				capture();
 				const timer = setInterval(capture, 1000);
@@ -340,15 +401,15 @@ export function setupFront(pi: ExtensionAPI) {
 					render(width: number): string[] {
 						const t = tasks.get(id);
 						const rows = Math.max(8, Math.floor(tui.terminal.rows * 0.8) - 3);
-						const head = `${theme.fg("accent", `⚡ ${id}`)} ${t?.title ?? ""} ${theme.fg("dim", `[${t?.status ?? "?"}]`)}`;
-						const help = theme.fg("dim", `Esc 关闭 · Enter 追加指令${process.env.TMUX ? " · a 接管窗口" : ""}`);
+						const head = `${theme.fg("accent", `⚡ ${t ? tag(t) : id}`)} ${t?.title ?? ""} ${theme.fg("dim", `[${t?.status ?? "?"}]`)}`;
+						const help = theme.fg("dim", `Esc 关闭 · Enter 追加指令${process.env.TMUX && isLocal ? " · a 接管窗口" : ""}`);
 						const body = lines.slice(-rows).map((l) => truncateToWidth(` ${l}`, width));
 						return [truncateToWidth(head, width), truncateToWidth(theme.fg("dim", "─".repeat(width)), width), ...body, truncateToWidth(help, width)];
 					},
 					handleInput(data: string) {
 						if (keybindings.matches(data, "tui.select.cancel") || data === "q") close(undefined);
 						else if (keybindings.matches(data, "tui.select.confirm")) close("send");
-						else if (data === "a" && process.env.TMUX) close("attach");
+						else if (data === "a" && process.env.TMUX && isLocal) close("attach");
 					},
 					invalidate() {},
 				};
@@ -420,7 +481,7 @@ export function setupFront(pi: ExtensionAPI) {
 				});
 				return;
 			}
-			const labels = list.map((t) => `${t.unread ? "• " : "  "}${ICON[t.status] ?? "·"} ${t.id} [${t.status}] ${t.title}`);
+			const labels = list.map((t) => `${t.unread ? "• " : "  "}${ICON[t.status] ?? "·"} ${tag(t)} [${t.status}] ${t.title}`);
 			const picked = await ctx.ui.select("quick-agent 任务", labels);
 			if (picked === undefined) return;
 			const t = list[labels.indexOf(picked)];
@@ -495,6 +556,9 @@ export function setupFront(pi: ExtensionAPI) {
 							{ triggerTurn: false },
 						);
 					}
+				} else if (e.type === "machines") {
+					machines = e.machines;
+					machinesAt = Date.now();
 				} else if (e.type === "intake" && e.intake.status === "pending") {
 					void deliverIntake(e.intake);
 				}
@@ -514,9 +578,11 @@ export function setupFront(pi: ExtensionAPI) {
 		// Other extensions (e.g. MCP activating codemode) may have changed tools since startup.
 		applyFrontTools();
 		const projects = cfg.projects.length
-			? cfg.projects.map((p) => `- URL 含 "${p.match}" → ${p.cwd}${p.notes ? `（${p.notes}）` : ""}`).join("\n")
+			? cfg.projects.map((p) => `- URL 含 "${p.match}" → ${p.machine ? `${p.machine}:` : ""}${p.cwd}${p.notes ? `（${p.notes}）` : ""}`).join("\n")
 			: "- （未配置）";
-		event.systemPromptOptions.sections.quick_agent_front = frontRules(ctx.cwd, cfg.defaultCwd, projects);
+		const ms = await loadMachines();
+		const selfLine = describeMachines(ms.filter((m) => m.self));
+		event.systemPromptOptions.sections.quick_agent_front = frontRules(ctx.cwd, cfg.defaultCwd, projects, `${selfLine}\n${describeMachines(ms.filter((m) => !m.self)) || "- （没有其他机器）"}`);
 	});
 
 	// Defence in depth: in front mode only the front toolset may run.

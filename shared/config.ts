@@ -2,7 +2,7 @@
 // Zero dependencies: runs under plain Node (type stripping) and under pi's jiti loader.
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +13,26 @@ export interface ProjectRule {
 	cwd: string;
 	/** Optional notes passed to the front agent. */
 	notes?: string;
+	/** Machine that hosts `cwd` (default: this machine). */
+	machine?: string;
+}
+
+export interface PeerConfig {
+	/** Direct hub URL of the peer, e.g. http://10.0.0.5:7788 or a manually forwarded port. */
+	url?: string;
+	/** SSH destination (user@host or ~/.ssh/config alias): the hub manages an `ssh -L` tunnel itself. */
+	ssh?: string;
+	/** Hub port on the remote machine (ssh peers, default 7788). */
+	port?: number;
+	/** Extra ssh arguments, e.g. ["-p", "2222"]. */
+	sshArgs?: string[];
+}
+
+export interface MeshConfig {
+	/** Shared secret of the mesh; every member must use the same one. */
+	secret?: string;
+	/** Hubs this hub dials out to (links are bidirectional once established). */
+	peers: PeerConfig[];
 }
 
 export interface QaConfig {
@@ -28,6 +48,9 @@ export interface QaConfig {
 	/** Fallback cwd for tasks when nothing else is known. */
 	defaultCwd: string;
 	projects: ProjectRule[];
+	/** Identity of this machine in the mesh. */
+	machine: { id: string; description?: string };
+	mesh: MeshConfig;
 }
 
 export const QA_HOME = process.env.QA_HOME ?? join(homedir(), ".quick-agent");
@@ -69,11 +92,25 @@ export function loadConfig(): QaConfig {
 		tmuxSession: raw.tmuxSession ?? "qa",
 		defaultCwd: raw.defaultCwd ?? homedir(),
 		projects: raw.projects ?? [],
+		machine: { id: process.env.QA_MACHINE ?? raw.machine?.id ?? sanitizeId(hostname()), description: raw.machine?.description },
+		mesh: { secret: raw.mesh?.secret, peers: raw.mesh?.peers ?? [] },
 	};
 	if (!existsSync(CONFIG_PATH) || raw.token === undefined) {
 		writeFileSync(CONFIG_PATH, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
 	}
 	return cfg;
+}
+
+export function sanitizeId(s: string): string {
+	return s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "machine";
+}
+
+/** Merge a patch into config.json on disk (keeps unknown keys). */
+export function saveConfigPatch(patch: (raw: any) => void): void {
+	ensureDirs();
+	const raw = existsSync(CONFIG_PATH) ? JSON.parse(readFileSync(CONFIG_PATH, "utf8")) : {};
+	patch(raw);
+	writeFileSync(CONFIG_PATH, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
 }
 
 export function hubUrl(cfg: QaConfig): string {

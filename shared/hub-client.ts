@@ -1,6 +1,6 @@
 // Minimal HTTP + SSE client for the quick-agent hub (uses global fetch).
 import { hubUrl, loadConfig, type QaConfig } from "./config.ts";
-import type { HubEvent, Intake, Task, TaskEvent } from "./types.ts";
+import type { HubEvent, Intake, MachineView, Task, TaskEvent } from "./types.ts";
 
 export class HubError extends Error {
 	status?: number;
@@ -62,6 +62,8 @@ export class HubClient {
 		source?: Task["source"];
 		model?: string;
 		owner?: string;
+		/** Machine to run the worker on (default: this hub's machine). */
+		machine?: string;
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}
@@ -80,6 +82,12 @@ export class HubClient {
 	/** Worker → hub state report. */
 	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"] }) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/report`, body).then((r) => r.task);
+	}
+	machines() {
+		return this.request<{ self: string; machines: MachineView[]; links: any }>("GET", "/api/machines");
+	}
+	fs(body: { machine?: string; op: "ls" | "read" | "grep"; path: string; pattern?: string; offset?: number; limit?: number }) {
+		return this.request<any>("POST", "/api/fs", body);
 	}
 	pendingIntake() {
 		return this.request<{ intake: Intake[] }>("GET", "/api/intake?status=pending").then((r) => r.intake);
