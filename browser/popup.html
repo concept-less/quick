@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<style>
+body{width:320px;margin:0;padding:12px;background:#0f1115;color:#e6e6e6;font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"PingFang SC",sans-serif}
+h1{font-size:14px;margin:0 0 10px}h1 span{color:#7aa2f7}
+label{display:block;color:#8a93a6;font-size:12px;margin:8px 0 3px}
+input{width:100%;box-sizing:border-box;padding:6px 8px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:6px}
+.row{display:flex;gap:6px;margin-top:10px}
+button{flex:1;background:#232837;color:#e6e6e6;border:1px solid #2f3542;border-radius:6px;padding:6px 8px;cursor:pointer}
+button.primary{background:#7aa2f7;color:#0f1115;border-color:#7aa2f7;font-weight:600}
+#status{margin-top:8px;font-size:12px;color:#8a93a6;min-height:16px}
+#status.ok{color:#9ece6a}#status.err{color:#f7768e}
+.hint{color:#8a93a6;font-size:12px;margin-top:10px}
+kbd{background:#232837;border:1px solid #2f3542;border-radius:4px;padding:0 4px}
+</style></head><body>
+<h1><span>⚡</span> quick-agent</h1>
+<button class="primary" id="pick" style="width:100%">在当前页面框选评论</button>
+<div class="hint">快捷键 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>。点击元素即可评论，Shift+点击可多选，“框选区域”可以拖出一个矩形。</div>
+<label>Hub 地址（经 ssh -L 转发）</label><input id="hubUrl" placeholder="http://127.0.0.1:7788">
+<label>Token（服务器上运行 <code>qa token</code>）</label><input id="token" type="password">
+<div class="row"><button id="save">保存并测试</button><button id="dash">打开任务面板</button></div>
+<div id="status"></div>
+<script src="popup.js"></script>
+</body></html>

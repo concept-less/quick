@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "quick-agent comments",
+  "version": "0.1.0",
+  "description": "在网页上框选元素、写评论，直接交给 quick-agent 前台 agent 处理。",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "quick-agent", "default_popup": "popup.html" },
+  "commands": {
+    "toggle-picker": {
+      "suggested_key": { "default": "Alt+Shift+C", "mac": "Alt+Shift+C" },
+      "description": "开始/取消框选评论"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["console-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
+}
