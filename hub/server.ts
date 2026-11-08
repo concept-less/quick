@@ -827,7 +827,7 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 			await lifecycle.reopen(t);
 		} else if (t.lifecycle?.workspace && CRITICAL_RISK.test(text) && t.lifecycle.policy.review !== "human") {
 			if(t.lifecycle.policy.workspace === "direct") {
-				update(t,{status:"blocked",lifecycle:{...t.lifecycle,phase:"blocked",policy:{...t.lifecycle.policy,review:"human",template:"C",reason:"追加需求涉及关键风险"},error:"直改范围扩大，保留改动并先迁移隔离目录"}});
+				update(t,{status:"blocked",lifecycle:{...t.lifecycle,phase:"blocked",migrationRequired:true,policy:{...t.lifecycle.policy,review:"human",template:"C",reason:"追加需求涉及关键风险"},error:"直改范围扩大，保留改动并先迁移隔离目录"}});
 				broadcast({type:"task.cancel",taskId:t.id,ts:Date.now()},c=>c.taskId===t.id);
 				throw new HttpError(409,"追加需求扩大到关键风险：直改暂停，必须迁移隔离后继续");
 			}
@@ -1684,7 +1684,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 					const risk = body.scope.risk;
 					if (risk !== "critical" && risk !== "complex") throw new HttpError(400, "scope risk must be critical or complex");
 					if (t.lifecycle.policy.workspace === "direct") {
-						update(t, {status:"blocked",lifecycle:{...t.lifecycle,policy:{...t.lifecycle.policy,review:risk === "critical" || t.lifecycle.policy.review === "human" ? "human" : "agent",template:risk === "critical" || t.lifecycle.policy.review === "human" ? "C" : "B",reason:String(body.scope.reason ?? "范围扩大")},review:undefined,approval:undefined,phase:"blocked",error:"直改范围扩大，先保留改动；需要明确迁移到隔离 worktree 后继续"},summary:"工作范围扩大，直改已暂停；改动保留，禁止自动集成"});
+						update(t, {status:"blocked",lifecycle:{...t.lifecycle,policy:{...t.lifecycle.policy,review:risk === "critical" || t.lifecycle.policy.review === "human" ? "human" : "agent",template:risk === "critical" || t.lifecycle.policy.review === "human" ? "C" : "B",reason:String(body.scope.reason ?? "范围扩大")},review:undefined,approval:undefined,phase:"blocked",migrationRequired:true,error:"直改范围扩大，先保留改动；需要明确迁移到隔离 worktree 后继续"},summary:"工作范围扩大，直改已暂停；改动保留，禁止自动集成"});
 						broadcast({type:"task.cancel",taskId:t.id,ts:Date.now()},c=>c.taskId===t.id);
 						return send(res,200,{task:t});
 					}

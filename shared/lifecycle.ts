@@ -43,6 +43,8 @@ export interface TaskLifecycle {
  review?: { sha: string; verdict: "approve" | "changes_requested"; summary: string; at: number };
  approval?: { sha: string; by: string; at: number };
  error?: string;
+ /** Monotonic until an explicitly owned safe migration, independent of transient errors. */
+ migrationRequired?: boolean;
  retryPhase?: TaskLifecycle["phase"];
  workerSettled?: boolean;
  devUpdated?: boolean;

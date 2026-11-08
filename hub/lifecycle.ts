@@ -88,7 +88,7 @@ export function createLifecycle(d: LifecycleDeps) {
     const scope = `${paths}\n${diff}`;
     // Scope widening: paths may reveal critical work omitted from the front's initial judgement.
     if (CRITICAL_RISK.test(scope) && l.policy.workspace === "direct") {
-     persist(t,{policy:{workspace:"direct",review:"human",template:"C",reason:"提交暴露关键风险，直改暂停等待安全迁移"}});
+     persist(t,{migrationRequired:true,policy:{workspace:"direct",review:"human",template:"C",reason:"提交暴露关键风险，直改暂停等待安全迁移"}});
      throw new Error("直改范围扩大，提交涉及关键风险；保留全部改动，需要明确迁移隔离工作区后重新审查");
     }
     if (CRITICAL_RISK.test(scope) && l.policy.review !== "human") persist(t,{policy:{workspace:l.policy.workspace,review:"human",template:"C",reason:"提交路径涉及关键风险，升级人工批准"}});
@@ -199,7 +199,7 @@ export function createLifecycle(d: LifecycleDeps) {
  }
  async function requestChanges(t: Task, text: string) {
   if (!t.lifecycle?.workspace || busy.has(t.id) || cancelled(t) || !["human_approval","blocked","changes_requested","developing"].includes(t.lifecycle.phase)) throw new Error("任务未暂停或正在集成，不能请求修改");
-  if (t.lifecycle.error?.startsWith("直改范围扩大")) throw new Error("直改范围扩大尚未安全迁移，不可用要求修改绕过");
+  if (t.lifecycle.migrationRequired || t.lifecycle.error?.startsWith("直改范围扩大")) throw new Error("直改范围扩大尚未安全迁移，不可用要求修改绕过");
   if (t.lifecycle.phase === "blocked" && ["cleanup","integrating","ci"].includes(t.lifecycle.retryPhase ?? "")) throw new Error("任务可能已集成/发布，先重试核对远端并清理；不能重开开发绕过恢复");
   persist(t,{phase:"developing",review:undefined,approval:undefined},{status:"running",ask:undefined});
   await d.resume(t,`人工要求修改：${text}\n完成后提交并重新报告 done；旧批准失效。`); return t;
@@ -216,7 +216,7 @@ export function createLifecycle(d: LifecycleDeps) {
    } catch(e) { block(t,e); }
    return true;
   }
-  if (t.lifecycle.error?.startsWith("直改范围扩大")) throw new Error("直改范围扩大：保留改动，必须先迁移到隔离 worktree；不能用重试绕过升级");
+  if (t.lifecycle.migrationRequired || t.lifecycle.error?.startsWith("直改范围扩大")) throw new Error("直改范围扩大：保留改动，必须先迁移到隔离 worktree；不能用重试绕过升级");
   // Pushed changes need only cleanup; a persisted head with valid approval can resume integration.
   const l = t.lifecycle;
   const phase = l.retryPhase && l.retryPhase !== "blocked" ? l.retryPhase : "quiescing";
