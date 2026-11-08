@@ -209,7 +209,7 @@ describe("npm-global install", () => {
 		const bin = join(TMP, "fakebin");
 		mkdirSync(bin, { recursive: true });
 		// Fake npm: records its arguments and "installs" by rewriting package.json.
-		writeFileSync(join(bin, "npm"), `#!/bin/sh\necho "$@" > ${TMP}/npm-args\nsed -i 's/0.3.0/0.5.0/' ${root}/package.json\n`);
+		writeFileSync(join(bin, "npm"), `#!/bin/sh\necho "$@" > ${TMP}/npm-args\nsed -i.bak 's/0.3.0/0.5.0/' ${root}/package.json\n`);
 		chmodSync(join(bin, "npm"), 0o755);
 		const PATH = process.env.PATH;
 		process.env.PATH = `${bin}:${PATH}`;
