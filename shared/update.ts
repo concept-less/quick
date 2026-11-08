@@ -32,7 +32,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig, paths, REPO_ROOT, type UpdateConfig } from "./config.ts";
 
@@ -187,11 +187,14 @@ export function isSemver(v: string): boolean {
 
 // ---------------------------------------------------------------- install layout
 
-const real = (p: string) => {
+/** realpath that also works for paths that no longer exist (resolves the nearest existing parent),
+ *  so e.g. /var/… vs /private/var/… on macOS still compare equal after a version dir was pruned. */
+const real = (p: string): string => {
 	try {
 		return realpathSync(p);
 	} catch {
-		return p;
+		const d = dirname(p);
+		return d === p ? p : join(real(d), basename(p));
 	}
 };
 
