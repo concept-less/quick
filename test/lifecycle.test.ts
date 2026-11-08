@@ -61,6 +61,9 @@ test("C no merge before explicit SHA authorization, stale SHA rejected",async t=
  await assert.rejects(f.ctl.approve(task,base,"owner"));assert.equal(await git(f.repo,"rev-parse","origin/main"),base);
  await f.ctl.approve(task,sha,"owner");for(let i=0;i<1500&&task.status!=="done";i++) await new Promise(r=>setTimeout(r,30));assert.equal(task.status,"done");
 });
+test("A critical diff cannot integrate directly or bypass migration via retry",async t=>{
+ const f=await fixture(t),task=f.task();await f.ctl.prepare(task,{kind:"code",risk:"low",complexity:"small_frontend"});const base=await git(f.remote,"rev-parse","main");await f.commit(task,"payment validation\n");await f.ctl.developed(task,"done");await f.ctl.drive(task);assert.equal(task.status,"blocked");assert.equal(task.lifecycle!.policy.review,"human");assert.match(task.lifecycle!.error!,/^直改范围扩大/);await assert.rejects(f.ctl.retry(task));assert.equal(await git(f.remote,"rev-parse","main"),base);
+});
 test("scope: changed critical paths upgrade B to human gate",async t=>{
  const f=await fixture(t);const task=f.task();await f.ctl.prepare(task,{kind:"code"});await writeFile(join(task.cwd,"billing.txt"),"danger\n");await git(task.cwd,"add","billing.txt");await git(task.cwd,"commit","-m","billing");await f.ctl.developed(task,"扩展");await f.ctl.drive(task);assert.equal(task.lifecycle!.policy.template,"C");assert.equal(task.lifecycle!.phase,"human_approval");
 });

@@ -87,6 +87,10 @@ export function createLifecycle(d: LifecycleDeps) {
     const diff = await git(w.cwd,"diff","--no-ext-diff","--no-textconv",`${w.baseSha}..${head}`);
     const scope = `${paths}\n${diff}`;
     // Scope widening: paths may reveal critical work omitted from the front's initial judgement.
+    if (CRITICAL_RISK.test(scope) && l.policy.workspace === "direct") {
+     persist(t,{policy:{workspace:"direct",review:"human",template:"C",reason:"提交暴露关键风险，直改暂停等待安全迁移"}});
+     throw new Error("直改范围扩大，提交涉及关键风险；保留全部改动，需要明确迁移隔离工作区后重新审查");
+    }
     if (CRITICAL_RISK.test(scope) && l.policy.review !== "human") persist(t,{policy:{workspace:l.policy.workspace,review:"human",template:"C",reason:"提交路径涉及关键风险，升级人工批准"}});
     l = t.lifecycle!;
     persist(t,{head,review:undefined,approval:undefined,phase:l.policy.review === "none" ? "integrating" : "reviewing"},{activity:l.policy.review === "none" ? "验证并集成" : `独立审查 ${head.slice(0,12)}`});
