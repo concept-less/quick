@@ -24,6 +24,7 @@ const server=createServer(async(req,res)=>{
  if(path==='/'){res.writeHead(200,{'content-type':'text/html'});return res.end(html);}
  if(path.endsWith('.js')){res.writeHead(200,{'content-type':'application/javascript'});return res.end('');}
  if(path==='/api/tasks')return json({tasks:[older,task]});
+ if(path.endsWith('/transcript'))return json({available:false,entries:[],status:task.status});
  if(path.startsWith('/api/tasks/'))return json({task:path.includes('t0001')?older:task,events:[]});
  if(path==='/api/attention')return json({items:items(),counts:{need:2,skim:0,snoozed:0,inflight:0,archived:0},focus:{on:false}});
  if(path==='/api/machines')return json({self:'mock',machines:[]});
