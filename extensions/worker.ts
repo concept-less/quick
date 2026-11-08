@@ -191,9 +191,12 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 		if (cancelRequested || reportedThisRun) return;
 		// Stopped without an explicit report: surface the last answer so the human sees it.
 		const last = lastAssistantText(ctx);
+		const err = lastErrorMessage(ctx);
 		void report({
 			status: "idle",
-			summary: event.aborted ? `(已中断) ${last ?? ""}`.trim() : (last ?? "(worker 停下了，没有输出)"),
+			summary: event.aborted
+				? `(已中断) ${last ?? ""}`.trim()
+				: (last ?? (err ? `(worker 停下了，最后错误：${err})` : "(worker 停下了，没有输出)")),
 			kind: "report",
 		});
 	});
@@ -210,6 +213,19 @@ function describeTool(name: string, args: any): string {
 	// "cd /long/dir && real command": the hub turns this into plain words; keep the part that matters.
 	if (name === "bash") s = s.replace(/^(?:cd \S+ (?:&&|;) ?)+/, "");
 	return `${name}${s ? ` ${s.slice(0, 160)}` : ""}`;
+}
+
+/** Last model error on the current branch, so an empty stop (API 4xx/5xx) still tells the human why. */
+function lastErrorMessage(ctx: ExtensionContext): string | undefined {
+	const branch = ctx.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const e: any = branch[i];
+		if (e.type !== "message" || e.message?.role !== "assistant") continue;
+		const raw = e.message?.errorMessage ?? e.errorMessage;
+		const text = String(raw ?? "").trim();
+		if (text) return text.replace(/\s+/g, " ").slice(0, 300);
+	}
+	return undefined;
 }
 
 function lastAssistantText(ctx: ExtensionContext): string | undefined {

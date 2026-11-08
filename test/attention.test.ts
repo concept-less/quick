@@ -76,3 +76,15 @@ test("focus", () => {
 	assert.equal(focusActive({ on: true }, NOW), true);
 	assert.equal(focusActive({ on: true, until: NOW - 1 }, NOW), false);
 });
+
+test("interrupt policy: same reason in need never re-interrupts even when since moved", () => {
+	// A failing worker loops: each idle report refreshes statusSince, the reason stays the same.
+	const ask1 = attentionOf(T({ status: "blocked", unread: true, statusSince: NOW - 100 }), { now: NOW });
+	const ask2 = attentionOf(T({ status: "blocked", unread: true, statusSince: NOW }), { now: NOW });
+	assert.notEqual(ask1.since, ask2.since, "since moved between reports");
+	assert.equal(interruptFor(ask1, ask2, true), "none", "same reason, no repeat");
+	assert.equal(interruptFor(ask1, ask2, false), "none");
+	// A genuinely different reason still interrupts.
+	const other = attentionOf(T({ status: "needs_input", unread: true, ask: { question: "另一个问题", options: [], at: NOW } }), { now: NOW });
+	assert.equal(interruptFor(ask1, other, true), "now", "new reason interrupts");
+});
