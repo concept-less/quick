@@ -123,9 +123,12 @@ export const paths = {
 	pid: join(QA_HOME, "hub.pid"),
 	uiLog: join(QA_HOME, "ui.log"),
 	uiPid: join(QA_HOME, "ui.pid"),
+	/** Internal: pi session files that persist the one continuous Web UI front agent (never shown to the human). */
 	uiSessions: join(QA_HOME, "ui-sessions"),
 	/** Team roster (members, invites), replicated over the mesh. */
 	team: join(QA_HOME, "team.json"),
+	/** Hub-side attention state: focus mode, digest interval, pending digest. */
+	attention: join(QA_HOME, "attention.json"),
 };
 
 export function ensureDirs(): void {

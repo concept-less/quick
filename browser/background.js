@@ -51,7 +51,18 @@ async function setBadge(text, color, title) {
 		await chrome.action.setTitle({ title: title ? `quick-agent — ${title}` : "quick-agent" });
 	} catch {}
 }
-const markOk = () => setBadge("", null, "");
+// The badge shows the same "需要你" count as the Web UI / desktop tray (hub attention model), or "!" on errors.
+let needCount = 0;
+let attentionAt = 0;
+const markOk = () => setBadge(needCount ? String(needCount) : "", "#e61919", needCount ? `${needCount} 件事需要你` : "");
+async function refreshAttention() {
+	if (Date.now() - attentionAt < 15000) return;
+	attentionAt = Date.now();
+	try {
+		needCount = (await hub("GET", "/api/attention?archived=0")).counts?.need ?? 0;
+		markOk();
+	} catch {}
+}
 const markErr = (e) => setBadge("!", "#ff3b30", String(e?.message || e));
 
 // ---------------------------------------------------------------- screenshots
@@ -173,6 +184,7 @@ const handlers = {
 	},
 	async "qa-page-comments"(msg) {
 		const r = await hub("GET", `/api/pages?url=${encodeURIComponent(msg.url)}`);
+		void refreshAttention();
 		return { comments: r.comments };
 	},
 	async "qa-health"() {

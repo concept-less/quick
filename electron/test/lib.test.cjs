@@ -3,72 +3,44 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const lib = require("../src/lib.cjs");
 
-const T = (o) => ({ id: "t0001", title: "demo", status: "running", unread: false, updatedAt: 1, ...o });
+const I = (o) => ({ taskId: "t0001", title: "demo", status: "running", level: "inflight", mark: "[RUN]", reason: "进行中", since: 1, actions: [], ...o });
 
-test("attention buckets", () => {
-	assert.equal(lib.bucket(T({ status: "needs_input" })), "need");
-	assert.equal(lib.bucket(T({ status: "blocked" })), "need");
-	assert.equal(lib.bucket(T({ status: "failed" })), "need");
-	assert.equal(lib.bucket(T({ status: "idle" })), "need", "stopped without a report");
-	assert.equal(lib.bucket(T({ status: "exited", unread: false })), "need");
-	assert.equal(lib.bucket(T({ status: "blocked", closed: true })), null);
-	assert.equal(lib.bucket(T({ status: "running" })), "inflight");
-	assert.equal(lib.bucket(T({ status: "starting" })), "inflight");
-	assert.equal(lib.bucket(T({ status: "done", unread: true })), "skim");
-	assert.equal(lib.bucket(T({ status: "done", unread: false })), null, "already skimmed");
-	assert.equal(lib.bucket(T({ status: "cancelled", unread: true })), null);
+test("tray and badge only show what needs you (hub counts)", () => {
+	const c = { ...lib.emptyCounts(), need: 2, skim: 3, inflight: 5 };
+	assert.equal(lib.trayTitle(c), "■2");
+	assert.equal(lib.badge(c), "2");
+	assert.equal(lib.trayTitle(lib.emptyCounts()), "□");
+	assert.equal(lib.badge(lib.emptyCounts()), "");
 });
 
-test("tray and badge only show what needs you", () => {
-	const s = lib.summarize([T({}), T({ status: "starting" }), T({ status: "blocked" }), T({ status: "done", unread: true })]);
-	assert.deepEqual(s, { need: 1, inflight: 2, skim: 1 });
-	assert.equal(lib.trayTitle(s), "■1");
-	assert.equal(lib.badge(s), "1");
-	assert.equal(lib.trayTitle({ need: 0, inflight: 5, skim: 3 }), "□");
-	assert.equal(lib.badge({ need: 0, inflight: 5, skim: 3 }), "");
+test("byLevel: need oldest wait first, others newest first", () => {
+	const l = [I({ taskId: "a", level: "need", since: 5 }), I({ taskId: "b", level: "need", since: 1 }), I({ taskId: "c" }), I({ taskId: "d", level: "skim", since: 1 }), I({ taskId: "e", level: "skim", since: 9 })];
+	assert.deepEqual(lib.byLevel(l, "need").map((i) => i.taskId), ["b", "a"]);
+	assert.deepEqual(lib.byLevel(l, "skim").map((i) => i.taskId), ["e", "d"]);
 });
 
-test("byBucket sorts newest first", () => {
-	const l = lib.byBucket([T({ id: "a", status: "blocked", updatedAt: 1 }), T({ id: "b", status: "needs_input", updatedAt: 5 }), T({ id: "c", status: "running" })], "need");
-	assert.deepEqual(l.map((t) => t.id), ["b", "a"]);
+test("urgent notification uses the explicit question", () => {
+	const n = lib.urgentNotification(I({ level: "need", mark: "[ASK]", title: "迁移", question: "用哪个数据库？", options: ["pg", "sqlite"], machine: "mac" }));
+	assert.equal(n.title, "需要你 [ASK] · 迁移");
+	assert.equal(n.body, "用哪个数据库？");
+	assert.equal(n.subtitle, "t0001 @mac");
+	assert.doesNotMatch(n.title, /\p{Extended_Pictographic}/u, "no emoji");
 });
 
-test("notifications: urgent for need, digest for skim, nothing for progress", () => {
-	const prev = T({});
-	assert.equal(lib.notificationFor(prev, T({ activity: "x" }), { kind: "activity" }), undefined);
-	assert.equal(lib.notificationFor(prev, T({ summary: "50%" }), { kind: "report" }), undefined, "progress report");
-	const n = lib.notificationFor(prev, T({ status: "needs_input", summary: "which db?" }), { kind: "report" });
-	assert.equal(n.kind, "urgent");
-	assert.match(n.title, /需要你决定/);
-	assert.equal(n.body, "which db?");
-	assert.equal(lib.notificationFor(prev, T({ status: "failed" }), { kind: "status" }).kind, "urgent");
-	assert.equal(lib.notificationFor(prev, T({ status: "done", unread: true, summary: "ok" }), { kind: "report" }).kind, "digest");
-	assert.equal(lib.notificationFor(T({ status: "done", unread: true, summary: "ok" }), T({ status: "done", summary: "ok" }), { kind: "ack" }), undefined);
-	assert.equal(lib.notificationFor(T({ status: "blocked", summary: "a" }), T({ status: "blocked", summary: "b" }), { kind: "report" }).kind, "urgent", "new question while blocked");
-	assert.equal(lib.notificationFor(undefined, T({ status: "starting" }), { kind: "created" }), undefined);
+test("digest notification", () => {
+	assert.equal(lib.digestNotification([]), undefined);
+	const d = lib.digestNotification([I({ taskId: "a", title: "写文档" }), I({ taskId: "b", title: "修 bug" })], "timer");
+	assert.equal(d.title, "2 件事已完成待扫");
+	assert.equal(d.body, "写文档、修 bug");
+	assert.deepEqual(d.ids, ["a", "b"]);
+	assert.match(lib.digestNotification([I({ title: "单件" })], "focus_end").title, /^专注结束 · 待扫 · 单件/);
 });
 
-test("digest batches and prunes", () => {
-	const d = new lib.Digest();
-	assert.equal(d.flush(), undefined);
-	d.add(T({ id: "a", title: "写文档" }));
-	d.add(T({ id: "b", title: "修 bug" }));
-	d.add(T({ id: "c", title: "跑测试" }));
-	d.prune((id) => id !== "c");
-	const f = d.flush();
-	assert.equal(f.title, "2 件事已完成待扫");
-	assert.equal(f.body, "写文档、修 bug");
-	assert.deepEqual(f.ids, ["a", "b"]);
-	assert.equal(d.size, 0);
-	d.add(T({ id: "x", title: "单件" }));
-	assert.match(d.flush().title, /已完成待扫 · 单件/);
-});
-
-test("quiet modes", () => {
-	assert.equal(lib.quietMode({}), "off");
-	assert.equal(lib.quietMode({ quiet: { mode: "focus" } }), "focus");
-	assert.equal(lib.quietMode({ quiet: { mode: "dnd", until: 2000 } }, 1000), "focus");
-	assert.equal(lib.quietMode({ quiet: { mode: "dnd", until: 2000 } }, 3000), "off", "expired");
+test("focus state from the hub", () => {
+	assert.equal(lib.focusOn(undefined), false);
+	assert.equal(lib.focusOn({ on: true }), true);
+	assert.equal(lib.focusOn({ on: true, until: 2000 }, 1000), true);
+	assert.equal(lib.focusOn({ on: true, until: 2000 }, 3000), false, "expired");
 });
 
 test("notification gate dedupes", () => {

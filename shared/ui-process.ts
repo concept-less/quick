@@ -18,12 +18,12 @@ export async function uiHealth(cfg: QaConfig): Promise<{ ok: boolean; pid: numbe
 }
 
 /** Ensure the UI server is running. Returns "running" or "started". */
-export async function ensureUi(cfg: QaConfig, opts: { cwd: string; newSession?: boolean }): Promise<"running" | "started"> {
+export async function ensureUi(cfg: QaConfig, opts: { cwd: string; /** Debug only: start an empty front conversation. */ freshFront?: boolean }): Promise<"running" | "started"> {
 	if (await uiHealth(cfg)) return "running";
 	const out = openSync(paths.uiLog, "a");
 	const env = { ...process.env, NODE_NO_WARNINGS: "1" };
 	delete env.QA_TASK_ID; // never a worker, even when launched from a worker's shell
-	const child = spawn(process.execPath, [join(REPO_ROOT, "ui", "server.ts"), "--cwd", opts.cwd, ...(opts.newSession ? ["--new"] : [])], {
+	const child = spawn(process.execPath, [join(REPO_ROOT, "ui", "server.ts"), "--cwd", opts.cwd, ...(opts.freshFront ? ["--fresh-front"] : [])], {
 		detached: true,
 		stdio: ["ignore", out, out],
 		cwd: opts.cwd,

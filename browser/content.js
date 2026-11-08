@@ -48,6 +48,12 @@
 		return `${u.protocol}//${u.host.toLowerCase()}${path}${q}${route}`;
 	}
 
+	// Attention level of the comment's task (hub attention model), preferred over the raw status.
+	const LEVEL_CLASS = { need: "needs_input", skim: "done", snoozed: "pending", inflight: "running", archived: "cancelled" };
+	const pinClass = (p) => (p.attention && LEVEL_CLASS[p.attention.level]) || p.taskStatus || p.status;
+	const pinLabel = (p) => (p.attention ? `${LEVEL_TEXT[p.attention.level] || p.attention.level} ${p.attention.mark || ""}`.trim() : STATUS_TEXT[pinClass(p)] || pinClass(p));
+	const LEVEL_TEXT = { need: "需要你", skim: "待扫", snoozed: "稍后", inflight: "不用管", archived: "已归档" };
+
 	// ------------------------------------------------------------ shadow UI host
 	const host = document.createElement("qa-agent-root");
 	// 0x0 fixed box at the viewport origin; every child is position:fixed in viewport coordinates.
@@ -804,11 +810,11 @@
 	function renderPins() {
 		pinLayer.querySelectorAll(".pin").forEach((n) => n.remove());
 		pins.forEach((p, i) => {
-			const st = p.taskStatus || p.status;
+			const st = pinClass(p);
 			const d = el(`pin ${st}`, pinLayer);
 			d.dataset.id = p.id;
 			d.textContent = String(i + 1);
-			d.title = `${STATUS_TEXT[st] || st}: ${p.comment}`;
+			d.title = `${pinLabel(p)}: ${p.comment}`;
 			d.onclick = (e) => {
 				e.stopPropagation();
 				if (openPop?.id === p.id) return closePop();
@@ -825,9 +831,11 @@
 	}
 	function showPop(p) {
 		closePop();
-		const st = p.taskStatus || p.status;
+		const st = pinClass(p);
+		const a = p.attention;
+		const label = pinLabel(p);
 		const pop = el("pop", pinLayer);
-		pop.innerHTML = `<div class="h"><span class="st ${escapeHtml(st)}">${escapeHtml(STATUS_TEXT[st] || st)}</span>${p.taskId ? `<span>任务 ${escapeHtml(p.taskId)}</span>` : `<span>${escapeHtml(p.id)}</span>`}${p.taskTitle ? `<span>${escapeHtml(p.taskTitle)}</span>` : ""}</div><div class="c">${escapeHtml(p.comment)}</div>${p.summary ? `<div class="s">${escapeHtml(p.summary)}</div>` : ""}`;
+		pop.innerHTML = `<div class="h"><span class="st ${escapeHtml(st)}">${escapeHtml(label)}</span>${p.taskId ? `<span>任务 ${escapeHtml(p.taskId)}</span>` : `<span>${escapeHtml(p.id)}</span>`}${p.taskTitle ? `<span>${escapeHtml(p.taskTitle)}</span>` : ""}</div><div class="c">${escapeHtml(p.comment)}</div>${a?.reason ? `<div class="s">${escapeHtml(a.reason)}</div>` : ""}${p.summary ? `<div class="s">${escapeHtml(p.summary)}</div>` : ""}`;
 		pop.addEventListener("click", (e) => e.stopPropagation());
 		openPop = { id: p.id, node: pop };
 		p.node?.classList.add("open");
@@ -955,7 +963,7 @@
 				pins = res.comments.map((c) => {
 					const old = known.get(c.id) || {};
 					return {
-						id: c.id, comment: c.comment, status: c.status, taskId: c.taskId, taskStatus: c.taskStatus,
+						id: c.id, comment: c.comment, status: c.status, taskId: c.taskId, taskStatus: c.taskStatus, attention: c.attention,
 						taskTitle: c.taskTitle, summary: c.summary, el: old.el,
 						anchor: old.anchor || c.anchor || legacyAnchor(c),
 					};

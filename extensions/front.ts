@@ -1,6 +1,6 @@
 // Front role: your normal interactive pi *is* the quick-agent front agent.
 // It understands tasks, assembles context and delegates them to worker agents through the hub.
-// Toggle per session with /qa on|off, or start pi with --qa-off (or QA_ROLE=off) for a plain pi.
+// Toggle with /qa on|off, or start pi with --qa-off (or QA_ROLE=off) for a plain pi.
 import { hostname } from "node:os";
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -17,6 +17,7 @@ import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, typ
 import { createTeamFront, TEAM_TOOLS } from "./team-tools.ts";
 import { formatWall } from "../shared/cron.ts";
 import type { CronView } from "../hub/cron.ts";
+import { attentionOf, itemLine, LEVEL_LABEL, type AttentionCounts, type AttentionItem, type FocusState } from "../shared/attention.ts";
 
 const QA_TOOLS = ["qa_dispatch", "qa_cron", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
 const FRONT_TOOLS = ["read", "grep", "find", "ls", ...QA_TOOLS];
@@ -32,8 +33,10 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
 3. 派单：调用 qa_dispatch 把任务交给一个独立的负责人 worker。brief 必须自包含：目标、背景、相关文件/位置、约束、验收标准，以及你掌握的全部上下文（含截图路径、元素选择器、页面 URL）。worker 看不到你和人类的对话。
 4. 派完立刻用一两句话回复（任务 ID、标题、工作目录），结束本轮，不要等待 worker。
 5. 一次请求包含多个互相独立的任务时，分别派单。属于已有任务的追加需求，用 qa_task_send 发给对应 worker，不要新建任务。
-6. 人类问进度时用 qa_tasks / qa_task_read；要求中止时用 qa_task_cancel。
-7. 收到 [quick-agent 汇报] 消息时，不需要主动行动；人类问起时再基于它回答。
+6. 人类问进度或"有什么需要我的"时用 qa_tasks（按注意力排好：需要你 / 待扫 / 稍后 / 不用管）/ qa_task_read；要求中止时用 qa_task_cancel。
+7. 注意力是人类最稀缺的资源。收到 [quick-agent 汇报] 时按它标注的注意力处理：
+   - 「需要你」且消息要求你转告：用一两句话告诉人类哪个任务、需要他决定什么（问题和选项），然后结束本轮；人类回答后用 qa_task_send 转给 worker。不要替人类做决定，不要复述整份汇报。
+   - 「待扫」或其他：不要主动说话，它已经进了人类的待扫队列；人类问起时再基于它回答。
 8. 纯闲聊或一句话能回答的问题直接回答，不用派单。
 9. 收到 [浏览器评论] 时，它来自人类在网页上框选元素后写的评论：判断它属于哪个项目/工作目录（参考下方项目映射；不确定就问人类），必要时快速确认相关源码位置，然后派单；如果它明显是某个已有任务的追加，就用 qa_task_send。
 10. 你没有 bash/edit/write，这是刻意的：所有实际工作都交给 worker。
@@ -45,7 +48,7 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
    - cwd 必须是选中机器上的路径，不能把一台机器的路径用到另一台。拿不准就不传 cwd：hub 会用选中机器的项目映射或默认目录；需要特定项目时，用该机器 projects/默认目录下的路径（可先用 qa_remote_fs 确认）。只传 cwd 不传 machine 时，hub 会选择该路径存在的、优先级最高的机器。
    - 资源不满足或机器离线时 qa_dispatch 会报错：不要换到不满足条件的机器硬派；拿不准该用哪台机器、或资源声明不清楚时，先问人类。
 
-12. 人类要求把某个任务"挪到/交接到/换到"另一台机器继续时，用 qa_handoff（会话、任务元数据、未提交的代码改动都会带过去，任务 id 不变）。worker 正在运行时默认等它这一轮结束；人类说"马上/立刻"才设 abort=true。目标目录有冲突时 qa_handoff 会失败并给出选项，把选项转述给人类，不要自己替他选 stash/backup。
+12. 人类要求把某个任务"挪到/交接到/换到"另一台机器继续时，用 qa_handoff（worker 的完整上下文、任务元数据、未提交的代码改动都会带过去，任务 id 不变）。worker 正在运行时默认等它这一轮结束；人类说"马上/立刻"才设 abort=true。目标目录有冲突时 qa_handoff 会失败并给出选项，把选项转述给人类，不要自己替他选 stash/backup。
 
 13. 定时/周期性的事（"每天早上 9 点帮我…"、"每周一…"、"30 分钟后…"、"每 2 小时检查…"、"明天下午 3 点提醒/执行…"）用 qa_cron 建计划，不要用 qa_dispatch 立刻派单：
    - 触发规则四选一：cron（标准 5 段"分 时 日 月 周"，如每天 9 点 "0 9 * * *"、工作日 18:30 "30 18 * * 1-5"、每周一 10 点 "0 10 * * 1"）、every（固定间隔，如 "2h"、"30m"）、at（一次性时间点 "YYYY-MM-DD HH:MM"）、in（多久之后一次，如 "30m"）。时区默认 hub 所在机器的本地时区（${Intl.DateTimeFormat().resolvedOptions().timeZone}），不要自己猜时区；只有人类明确说了时区（或说的是别处的时间）才传 tz。
@@ -66,7 +69,13 @@ ${projects}`;
 export function setupFront(pi: ExtensionAPI) {
 	const cfg = loadConfig();
 	const hub = new HubClient(cfg);
-	const owner = `${hostname()}:${process.pid}`;
+	/** Stable id of this front agent (the Web UI sets QA_FRONT_ID so it survives restarts). */
+	const owner = process.env.QA_FRONT_ID || `${hostname()}:${process.pid}`;
+	let counts: AttentionCounts | undefined;
+	let focus: FocusState = { on: false };
+	/** Reports already in this conversation, keyed by task:level:since (rebuilt from the persisted conversation). */
+	const delivered = new Set<string>();
+	const reportKey = (i: AttentionItem) => `${i.taskId}:${i.level}:${i.since}`;
 	const tasks = new Map<string, Task>();
 	let machines: MachineView[] = [];
 	let machinesAt = 0;
@@ -143,17 +152,22 @@ export function setupFront(pi: ExtensionAPI) {
 				return `${mark}${th.fg(color as any, `${ICON[t.status] ?? "·"} ${tag(t)}`)} ${t.title}${detail ? th.fg("dim", ` — ${detail.slice(0, 70)}`) : ""}`;
 			});
 			if (list.length > 8) lines.push(th.fg("dim", `  … 还有 ${list.length - 8} 个任务（/tasks）`));
+			if (counts?.need) lines.unshift(th.fg("warning", `需要你 ${counts.need}${counts.skim ? ` · 待扫 ${counts.skim}` : ""}${focus.on ? " · 专注" : ""}`));
 			ctx.ui.setWidget("qa-tasks", lines);
 		}
 		const active = list.filter((t) => ACTIVE_STATUSES.includes(t.status)).length;
-		const unread = list.filter((t) => t.unread).length;
-		const mode = enabled ? "■ quick-agent" : "○ plain pi";
-		ctx.ui.setStatus("qa", `${mode}${connected ? "" : " · hub offline"} · ${active} running${unread ? ` · ${unread} 待处理` : ""}`);
+		const need = counts?.need ?? 0;
+		const skim = counts?.skim ?? 0;
+		const mode = enabled ? "quick-agent" : "plain pi";
+		ctx.ui.setStatus("qa", `${mode}${connected ? "" : " · hub offline"}${need ? ` · 需要你 ${need}` : ""}${skim ? ` · 待扫 ${skim}` : ""} · ${active} running${focus.on ? " · 专注" : ""}`);
 	};
 
 	const refresh = async () => {
 		try {
-			for (const t of await hub.listTasks()) tasks.set(t.id, t);
+			const [list, q] = await Promise.all([hub.listTasks(), hub.attention(0)]);
+			for (const t of list) tasks.set(t.id, t);
+			counts = q.counts;
+			focus = q.focus;
 			connected = true;
 		} catch {
 			connected = false;
@@ -217,6 +231,70 @@ export function setupFront(pi: ExtensionAPI) {
 		else pi.sendUserMessage(content, { deliverAs: "followUp" });
 	};
 
+	// ---------------------------------------------------------------- reports → front agent (attention-routed)
+	//
+	// Reports are routed by task and attention, not by which conversation dispatched the task:
+	//  - every connected front agent (Web UI, terminal pi) gets every 需要你 / 待扫 report as a card in its
+	//    conversation (deduplicated per conversation), so nothing depends on the dispatcher still running;
+	//  - only one front speaks up proactively for 需要你: the hub picks it (dispatcher if online, else the
+	//    persistent Web UI front, else any) and marks it in the attention event; 待扫 never triggers a turn;
+	//  - on (re)connect a front catches up on 需要你 / 待扫 items it has not shown yet, in one message.
+
+	const rememberDelivered = (ctx?: ExtensionContext) => {
+		try {
+			for (const en of (ctx?.sessionManager.getEntries() ?? []) as any[]) {
+				if (en?.type !== "custom_message" || en.customType !== "qa-report") continue;
+				for (const k of [en.details?.key, ...(en.details?.keys ?? [])]) if (k) delivered.add(k);
+			}
+		} catch {}
+	};
+
+	const reportText = (i: AttentionItem, t?: Task) =>
+		[
+			`[quick-agent 汇报] ${i.taskId} "${i.title}" → ${i.status} · 注意力: ${LEVEL_LABEL[i.level]} ${i.mark}`,
+			// The summary follows; repeat the reason only when it adds something (no explicit question, not a plain hand-back).
+			i.level === "need" && !i.question ? `原因: ${i.reason}` : "",
+			i.question ? `问题: ${i.question}` : "",
+			i.options?.length ? `选项: ${i.options.join(" / ")}` : "",
+			(t?.summary ?? "").slice(0, 3000),
+		]
+			.filter(Boolean)
+			.join("\n");
+
+	const onAttention = (i: AttentionItem, interrupt: "now" | "digest" | "none", speakUp: boolean) => {
+		if (!enabled || (i.level !== "need" && i.level !== "skim")) return;
+		if (interrupt === "now" && current?.hasUI) current.ui.notify(`需要你 ${i.mark} ${i.taskId} ${i.title}：${i.reason.slice(0, 80)}`, "warning");
+		const key = reportKey(i);
+		if (delivered.has(key) || interrupt === "none") return;
+		delivered.add(key);
+		const proactive = interrupt === "now" && speakUp;
+		const content = reportText(i, tasks.get(i.taskId)) + (proactive ? "\n（这件事需要人类决定：请用一两句话转告人类，等他回答。）" : "");
+		const msg = { customType: "qa-report", content, display: true, details: { taskId: i.taskId, status: i.status, level: i.level, key } };
+		if (proactive) pi.sendMessage(msg, current && !current.isIdle() ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: true });
+		else pi.sendMessage(msg, { triggerTurn: false });
+	};
+
+	const catchUp = async () => {
+		if (!enabled) return;
+		let q: Awaited<ReturnType<HubClient["attention"]>>;
+		try {
+			q = await hub.attention(0);
+		} catch {
+			return;
+		}
+		counts = q.counts;
+		focus = q.focus;
+		renderWidget();
+		const missed = q.items.filter((i) => (i.level === "need" || i.level === "skim") && !delivered.has(reportKey(i)));
+		if (!missed.length) return;
+		for (const i of missed) delivered.add(reportKey(i));
+		const text = [
+			`[quick-agent 汇报] 你不在时有 ${missed.length} 件事更新（需要你 ${missed.filter((i) => i.level === "need").length} · 待扫 ${missed.filter((i) => i.level === "skim").length}）`,
+			...missed.map((i) => `- ${LEVEL_LABEL[i.level]} ${itemLine(i)}`),
+		].join("\n");
+		pi.sendMessage({ customType: "qa-report", content: text, display: true, details: { catchUp: true, keys: missed.map(reportKey) } }, { triggerTurn: false });
+	};
+
 	// ---------------------------------------------------------------- tools
 
 	pi.registerTool({
@@ -224,7 +302,7 @@ export function setupFront(pi: ExtensionAPI) {
 		label: "Dispatch task",
 		defaultActive: false,
 		description:
-			"Delegate a task to a new, independent worker agent (a full pi session in its own tmux window) that owns the task until done. Returns immediately with the task id.",
+			"Delegate a task to a new, independent worker agent (a full pi agent in its own tmux window, which the human can take over) that owns the task until done. Returns immediately with the task id.",
 		promptSnippet: "Delegate a task to an independent worker agent (returns immediately)",
 		promptGuidelines: ["Use qa_dispatch for any real work (coding, debugging, research, edits); the qa_dispatch brief must be self-contained."],
 		parameters: Type.Object({
@@ -335,23 +413,31 @@ export function setupFront(pi: ExtensionAPI) {
 		name: "qa_tasks",
 		label: "List tasks",
 		defaultActive: false,
-		description: "List quick-agent tasks with status, current activity and latest summary.",
+		description: "List quick-agent tasks as the attention queue of the person you work for (需要你 / 待扫 / 稍后 / 不用管 / 已归档), most urgent first, with the reason and latest summary.",
 		parameters: Type.Object({
-			include_closed: Type.Optional(Type.Boolean({ description: "Include closed/old tasks" })),
-			scope: Type.Optional(StringEnum(["mine", "team"] as const, { description: "Team: mine (default) = tasks involving the person you work for; team = everyone's" })),
+			include_closed: Type.Optional(Type.Boolean({ description: "Include archived tasks" })),
+			scope: Type.Optional(StringEnum(["mine", "team"] as const, { description: "Team: mine (default) = that person's queue; team = everyone's open tasks and who holds the ball" })),
 		}),
 		async execute(_id, p) {
-			const list = await hub.listTasks();
+			const [list, q] = await Promise.all([hub.listTasks(), hub.attention(p.include_closed ? 40 : 0, p.scope)]);
 			for (const t of list) tasks.set(t.id, t);
+			counts = q.counts;
+			focus = q.focus;
 			renderWidget();
 			await team.load();
-			const shown = list.filter((t) => (p.include_closed || !t.closed || t.unread) && (p.scope === "team" || team.mine(t))).slice(0, 40);
+			const byId = new Map(list.map((t) => [t.id, t]));
+			const shown = q.items.slice(0, 40);
+			const c = q.counts;
+			const head = `${p.scope === "team" ? "团队视图 · " : ""}需要你 ${c.need} · 待扫 ${c.skim} · 稍后 ${c.snoozed} · 不用管 ${c.inflight}${focus.on ? " · 专注模式开启" : ""}`;
 			const text = shown.length
-				? shown
-						.map((t) => `${t.id} [${t.status}${t.unread ? ", unread" : ""}] ${t.title} — ${t.machine}:${t.cwd}${team.people(t)}\n    ${(ACTIVE_STATUSES.includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 160) ?? ""}`)
-						.join("\n")
+				? `${head}\n${shown
+						.map((i) => {
+							const t = byId.get(i.taskId);
+							return `${LEVEL_LABEL[i.level]} ${itemLine(i)}${t ? `\n    ${t.machine}:${t.cwd}${team.people(t)}` : ""}${i.options?.length ? `\n    选项: ${i.options.join(" / ")}` : ""}`;
+						})
+						.join("\n")}`
 				: "No tasks.";
-			return { content: [{ type: "text", text }], details: { count: shown.length } };
+			return { content: [{ type: "text", text }], details: { count: shown.length, counts: q.counts } };
 		},
 	});
 
@@ -359,17 +445,20 @@ export function setupFront(pi: ExtensionAPI) {
 		name: "qa_task_read",
 		label: "Read task",
 		defaultActive: false,
-		description: "Read one quick-agent task: brief, status, latest worker summary and recent events. Marks it as read.",
+		description: "Read one quick-agent task: brief, status, attention, latest worker summary and recent events. A finished (待扫) task is marked as seen.",
 		parameters: Type.Object({ id: Type.String(), events: Type.Optional(Type.Number({ description: "Recent events to include (default 15)" })) }),
 		async execute(_id, p) {
 			const { task, events, comments } = await hub.getTask(p.id, p.events ?? 15);
 			await team.load();
-			const acked = task.unread ? await hub.ack(task.id).catch(() => task) : task;
+			const att = attentionOf(task);
+			// Reading on the human's behalf settles 待扫, but never a question that still waits on the human.
+			const acked = att.level === "skim" ? await hub.ack(task.id).catch(() => task) : task;
 			tasks.set(task.id, acked);
 			renderWidget();
 			const text = [
 				`${task.id} "${task.title}" status=${task.status} machine=${task.machine} cwd=${task.cwd}`,
-				`tmux: ${task.tmuxTarget ?? "-"}  session: ${task.sessionFile ?? "-"}`,
+				`attention: ${LEVEL_LABEL[att.level]} ${att.mark} ${att.reason}${task.ask?.options?.length ? ` (options: ${task.ask.options.join(" / ")})` : ""}`,
+				`tmux: ${task.tmuxTarget ?? "-"}`,
 				task.activity ? `activity: ${task.activity}` : "",
 				team.people(task) ? `people:${team.people(task)}` : "",
 				`--- summary ---\n${task.summary ?? "(none yet)"}`,
@@ -387,7 +476,7 @@ export function setupFront(pi: ExtensionAPI) {
 		name: "qa_task_send",
 		label: "Send to task",
 		defaultActive: false,
-		description: "Send a follow-up instruction to the worker owning a quick-agent task. Resumes the worker session if its window was closed.",
+		description: "Send a follow-up instruction (or the human's answer) to the worker owning a quick-agent task. Restarts the worker with its full context if its window was closed.",
 		parameters: Type.Object({ id: Type.String(), message: Type.String({ description: "Self-contained follow-up instruction" }) }),
 		async execute(_id, p) {
 			const task = await hub.sendMessage(p.id, p.message);
@@ -417,7 +506,7 @@ export function setupFront(pi: ExtensionAPI) {
 		label: "Hand off task",
 		defaultActive: false,
 		description:
-			"Move a quick-agent task to another online machine of the mesh, losslessly: the worker's pi session (full history), task metadata/events and the workspace (git commit + staged/unstaged diff + untracked files, or a tar of a non-git dir) are transferred, verified by hash, and the worker resumes there under the same task id. Asynchronous: returns once the handoff has started (task status becomes 'handoff'); check progress with qa_task_read.",
+			"Move a quick-agent task to another online machine of the mesh, losslessly: the worker's full context (conversation history), task metadata/events and the workspace (git commit + staged/unstaged diff + untracked files, or a tar of a non-git dir) are transferred, verified by hash, and the worker resumes there under the same task id. Asynchronous: returns once the handoff has started (task status becomes 'handoff'); check progress with qa_task_read.",
 		parameters: Type.Object({
 			id: Type.String({ description: "Task id" }),
 			machine: Type.String({ description: "Target machine id (from qa_machines)" }),
@@ -638,37 +727,43 @@ export function setupFront(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tasks", {
-		description: "quick-agent 任务面板：查看、实时观看、接管、追加指令、中止、关闭",
+		description: "quick-agent 注意力队列：需要你 / 待扫 / 稍后 / 不用管；查看、回答、知道了、稍后提醒、接管、中止",
 		handler: async (_args, ctx) => {
 			await refresh();
-			const list = [...tasks.values()].filter((t) => !t.closed || t.unread).sort((a, b) => Number(b.unread) - Number(a.unread) || b.updatedAt - a.updatedAt);
-			if (!list.length) return ctx.ui.notify("没有进行中的任务", "info");
+			const order = { need: 0, skim: 1, snoozed: 2, inflight: 3, archived: 4 } as const;
+			const list = [...tasks.values()]
+				.map((t) => ({ t, a: attentionOf(t) }))
+				.filter(({ a }) => a.level !== "archived")
+				.sort((x, y) => order[x.a.level] - order[y.a.level] || y.t.updatedAt - x.t.updatedAt);
+			if (!list.length) return ctx.ui.notify("没有需要你的事，也没有进行中的任务", "info");
 			if (ctx.mode !== "tui") {
-				// RPC clients may not implement dialogs: show a list plus the dashboard link instead.
+				// RPC clients may not implement dialogs: show the queue as a message instead.
 				pi.sendMessage({
 					customType: "qa-tasks",
 					display: true,
-					content: `quick-agent 任务（面板 ${dashboardUrl()}）\n${list.map((t) => `${t.unread ? "•" : " "} ${ICON[t.status] ?? "·"} ${t.id} [${t.status}] ${t.title} — ${((ACTIVE_STATUSES.includes(t.status) ? t.activity : t.summary) ?? "").split("\n")[0]?.slice(0, 100)}`).join("\n")}`,
+					content: `quick-agent 注意力队列\n${list.map(({ t, a }) => `${LEVEL_LABEL[a.level]} ${a.mark} ${t.id} ${t.title} — ${a.reason.slice(0, 100)}`).join("\n")}`,
 				});
 				return;
 			}
-			const labels = list.map((t) => `${t.unread ? "• " : "  "}${ICON[t.status] ?? "·"} ${tag(t)} [${t.status}] ${t.title}`);
-			const picked = await ctx.ui.select("quick-agent 任务", labels);
+			const labels = list.map(({ t, a }) => `${LEVEL_LABEL[a.level]} ${a.mark} ${tag(t)} ${t.title}`);
+			const picked = await ctx.ui.select("quick-agent 注意力队列", labels);
 			if (picked === undefined) return;
-			const t = list[labels.indexOf(picked)];
+			const t = list[labels.indexOf(picked)]?.t;
 			if (!t) return;
-			const actions = ["查看汇报", "实时观看 worker", "接管（进入 tmux 窗口）", "追加指令", "标记已读", "中止当前运行", "关闭窗口"];
+			const actions = ["查看汇报", "回答 / 追加指令", "知道了", "稍后提醒（1 小时）", "实时观看 worker", "接管（进入 tmux 窗口）", "中止当前运行", "关闭窗口"];
 			const a = await ctx.ui.select(`${t.id} ${t.title}`, actions);
 			if (a === "查看汇报") {
 				const { task } = await hub.getTask(t.id, 0);
-				await ctx.ui.editor(`${task.id} [${task.status}] ${task.title}`, `${task.summary ?? "(暂无汇报)"}\n\n---\n活动: ${task.activity ?? "-"}\n目录: ${task.cwd}\n会话: ${task.sessionFile ?? "-"}`);
-				tasks.set(t.id, await hub.ack(t.id));
+				const att = attentionOf(task);
+				await ctx.ui.editor(`${task.id} [${LEVEL_LABEL[att.level]}] ${task.title}`, `${task.summary ?? "(暂无汇报)"}\n\n---\n注意力: ${LEVEL_LABEL[att.level]} ${att.mark} ${att.reason}\n活动: ${task.activity ?? "-"}\n目录: ${task.cwd}\n接管: /attach ${task.id}`);
+				if (att.level === "skim") tasks.set(t.id, await hub.ack(t.id));
 			} else if (a === "实时观看 worker") await peek(t.id, ctx);
 			else if (a?.startsWith("接管")) await attach(t.id, ctx);
-			else if (a === "追加指令") {
+			else if (a === "回答 / 追加指令") {
 				const msg = await ctx.ui.input(`发给 ${t.id} 的追加指令`, "");
 				if (msg?.trim()) tasks.set(t.id, await hub.sendMessage(t.id, msg.trim()));
-			} else if (a === "标记已读") tasks.set(t.id, await hub.ack(t.id));
+			} else if (a === "知道了") tasks.set(t.id, await hub.ack(t.id));
+			else if (a?.startsWith("稍后提醒")) tasks.set(t.id, await hub.snooze(t.id, 60));
 			else if (a === "中止当前运行") tasks.set(t.id, await hub.cancel(t.id));
 			else if (a === "关闭窗口" && (await ctx.ui.confirm("关闭窗口", `关闭 ${t.id} 的 worker 窗口？`))) tasks.set(t.id, await hub.close(t.id));
 			renderWidget();
@@ -695,6 +790,8 @@ export function setupFront(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_e, ctx) => {
 		current = ctx;
+		delivered.clear();
+		rememberDelivered(ctx);
 		// Interactive pi (terminal TUI, or RPC clients such as desktop apps) becomes the front agent.
 		// Scripted pi (-p / --mode json) stays untouched.
 		if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
@@ -719,29 +816,21 @@ export function setupFront(pi: ExtensionAPI) {
 		hub.subscribe(
 			(e) => {
 				if (e.type === "task") {
-					const prev = tasks.get(e.task.id);
 					tasks.set(e.task.id, e.task);
 					renderWidget();
-					const ev = e.event;
-					const t = e.task;
-					const newsworthy = ev && (ev.kind === "report" || ev.kind === "status") && ATTENTION_STATUSES.includes(t.status) && (prev?.status !== t.status || ev.kind === "report");
-					if (!newsworthy) return;
-					const mine = t.owner === owner;
-					// Scheduled runs that went fine do not interrupt (they wait in 待扫 / the digest, or are archived).
-					if (t.source?.kind === "cron" && (t.status === "done" || !t.unread)) return;
-					if (mine || !t.owner) current?.hasUI && current.ui.notify(`${ICON[t.status]} ${t.id} ${t.title}: ${t.status}`, t.status === "done" ? "info" : "warning");
-					// Reports enter the conversation only of the pi that dispatched the task.
-					if (mine) {
-						pi.sendMessage(
-							{
-								customType: "qa-report",
-								content: `[quick-agent 汇报] ${t.id} "${t.title}" → ${t.status}\n${(t.summary ?? "").slice(0, 3000)}`,
-								display: true,
-								details: { taskId: t.id, status: t.status },
-							},
-							{ triggerTurn: false },
-						);
-					}
+				} else if (e.type === "attention") {
+					counts = e.counts;
+					focus = e.focus;
+					renderWidget();
+					onAttention(e.item, e.interrupt, e.front === owner);
+				} else if (e.type === "attention.digest") {
+					counts = e.counts;
+					renderWidget();
+					if (enabled && current?.hasUI) current.ui.notify(`待扫 ${e.items.length} 件：${e.items.slice(0, 4).map((i) => i.title.slice(0, 24)).join("、")}`, "info");
+				} else if (e.type === "attention.state") {
+					counts = e.counts;
+					focus = e.focus;
+					renderWidget();
 				} else if (e.type === "update") {
 					notifyUpgraded(e.to);
 				} else if (e.type === "machines") {
@@ -756,8 +845,9 @@ export function setupFront(pi: ExtensionAPI) {
 				connected = ok;
 				renderWidget();
 				if (ok) void hub.pendingIntake().then((list) => list.forEach((i) => void deliverIntake(i))).catch(() => {});
+				if (ok) void catchUp();
 			},
-			{ role: "front" },
+			{ role: "front", front: owner },
 		);
 	});
 

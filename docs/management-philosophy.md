@@ -84,6 +84,8 @@ herdr 的口号是 "the runtime your coding agents live on"：一个 Rust 写的
 8. **恢复线索就在手边**（P10；multica 的执行日志）。点通知或托盘里的"需要你"条目，直接打开那个任务的详情（最新汇报、实时终端、简报、追加指令）。
 9. **关掉窗口不等于停工**（herdr 的 detach）。关窗口只是隐藏；退出客户端也不会停 hub、Web UI 服务和 worker。`--hidden` 可以只在菜单栏启动（适合开机启动）。
 
+> 更新：注意力模型已经集中到 hub（`shared/attention.ts` + `hub/attention.ts`，见根目录 README「注意力模型」）。分类、计数、打扰决策（需要你立即、待扫合批）、专注模式（现在专注时仍放行"需要你"）、稍后提醒都由 hub 计算和保存，客户端、Web UI、CLI、终端前台只负责渲染。下表是最初在客户端里的实现，现已迁到 hub；第 4 节的第 2、3 条已经完成。
+
 ---
 
 ## 3. 本次落地（`electron/`）

@@ -3,6 +3,7 @@ import { hubToken, hubUrl, loadConfig, type QaConfig } from "./config.ts";
 import type { UpgradeResult } from "./update.ts";
 import type { CronRun } from "./cron.ts";
 import type { CronView } from "../hub/cron.ts";
+import type { AttentionCounts, AttentionItem, FocusState } from "./attention.ts";
 import type { HubEvent, Intake, MachineInfo, MachineView, Task, TaskEvent } from "./types.ts";
 import type { PublicMember, Role, TaskComment, Viewer } from "./team.ts";
 
@@ -147,8 +148,23 @@ export class HubClient {
 	ack(id: string) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/ack`, {}).then((r) => r.task);
 	}
-	/** Worker → hub state report. */
-	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"] }) {
+	/** 稍后提醒: hide from need/skim for `minutes` (0 = bring back now). */
+	snooze(id: string, minutes: number) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/snooze`, { minutes }).then((r) => r.task);
+	}
+	retry(id: string) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/retry`, {}).then((r) => r.task);
+	}
+	/** The attention queue (shared/attention.ts), sorted by priority, with counts and focus state. */
+	attention(archived = 30, scope: "mine" | "team" = "mine") {
+		return this.request<{ items: AttentionItem[]; counts: AttentionCounts; focus: FocusState; digestMinutes: number; pendingDigest: number }>("GET", `/api/attention?archived=${archived}${scope === "team" ? "&scope=team" : ""}`);
+	}
+	/** Focus mode: only "需要你" interrupts; digests are held until it ends. minutes omitted = until turned off. */
+	setFocus(on: boolean, minutes?: number) {
+		return this.request<{ focus: FocusState }>("POST", "/api/attention/focus", { on, minutes }).then((r) => r.focus);
+	}
+	/** Worker → hub state report. needsHuman marks an explicit request for a human decision. */
+	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; needsHuman?: boolean; question?: string; options?: string[] }) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/report`, body).then((r) => r.task);
 	}
 	machines() {

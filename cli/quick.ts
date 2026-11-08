@@ -8,6 +8,7 @@ import { hubUrl, loadConfig, paths, REPO_ROOT, sanitizeId, saveConfigPatch, type
 import { ensureHub, hubAlive as alive } from "../shared/hub-process.ts";
 import { HubClient } from "../shared/hub-client.ts";
 import { ACTIVE_STATUSES, type MachineView, type Task } from "../shared/types.ts";
+import { attentionOf, LEVEL_LABEL, type AttentionCounts, type AttentionItem, type FocusState } from "../shared/attention.ts";
 import { applyResourceEdits, detectResources, mergeResources, normalizeRequires, priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
 import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
@@ -20,7 +21,6 @@ const cfg = loadConfig();
 const hub = new HubClient(cfg);
 let [cmd = "help", ...rest] = process.argv.slice(2);
 
-const ICON: Record<string, string> = { starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✕", cancelled: "⊘", exited: "○", handoff: "⇄" };
 
 function die(msg: string): never {
 	console.error(`quick: ${msg}`);
@@ -59,12 +59,16 @@ async function hubStop() {
 	} catch {}
 }
 
-function line(t: Task) {
-	const detail = (["starting", "running", "handoff"].includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 90) ?? "";
-	const ago = Math.round((Date.now() - t.updatedAt) / 60000);
-	const where = t.machine && t.machine !== cfg.machine.id ? `@${t.machine}` : "";
-	return `${t.unread ? "•" : " "} ${ICON[t.status] ?? "·"} ${(t.id + where).padEnd(5)}  ${t.status.padEnd(11)} ${t.title}  \x1b[2m${ago}m · ${detail}\x1b[0m`;
+function attnLine(i: AttentionItem, t?: Task) {
+	const ago = Math.round((Date.now() - i.since) / 60000);
+	const where = i.machine && i.machine !== cfg.machine.id ? `@${i.machine}` : "";
+	const when = i.snoozedUntil ? `至 ${new Date(i.snoozedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : `${ago}m`;
+	return `${i.mark.padEnd(10)} ${(i.taskId + where).padEnd(6)} ${i.title}  \x1b[2m${when} · ${i.reason.slice(0, 90)}${t && i.options?.length ? ` · 选项: ${i.options.join(" / ")}` : ""}\x1b[0m`;
 }
+function countsLine(c: AttentionCounts, f: FocusState) {
+	return `需要你 ${c.need} · 待扫 ${c.skim} · 稍后 ${c.snoozed} · 不用管 ${c.inflight}${f.on ? ` · 专注中${f.until ? ` 至 ${new Date(f.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}` : ""}`;
+}
+
 
 /** quick-agent lives inside pi now: `quick front` is just `pi`. */
 async function front(args: string[]) {
@@ -88,20 +92,24 @@ async function attach(id: string) {
 const HELP = `quick — quick-agent
 
   pi                        直接打开 pi 就是前台 agent（quick front 是它的别名）；pi --qa-off 为普通 pi
-  quick ui [--cwd DIR] [--new] [--no-open]   在浏览器里打开 Web UI（对话前台 agent + 任务面板）
+  quick ui [--cwd DIR] [--no-open]   在浏览器里打开 Web UI（首屏是注意力队列，旁边是前台 agent）
   quick ui stop|restart|status|url|logs
   quick hub start|stop|restart|status|logs
-  quick ls [-a]             列出任务（-a 包含已关闭）
-  quick show <id>           查看任务汇报、事件、简报
+  quick attention [-a]      注意力队列：需要你 / 待扫 / 稍后 / 不用管（别名 quick a；-a 含已归档）
+  quick ls [-a]             同上，按任务一行一个（-a 含已归档）
+  quick show <id>           查看任务的注意力、汇报、简报
   quick new [--machine M] [--requires a,b] [--cwd DIR] <title> <brief...>
                             不经前台直接派单（不指定机器时按资源+优先级自动选机器）
-  quick send <id> <message> 给 worker 追加指令（窗口已关会自动恢复会话）
+  quick send <id> <message> 回答 worker 的问题或追加指令（窗口已关会带着完整上下文重新拉起）
+  quick retry <id>          让停下/失败的 worker 从中断处重试
   quick attach <id>         进入 worker 的 tmux 窗口（远程任务经 ssh；C-b d 返回）
   quick handoff <id> <machine> [--cwd 路径] [--no-workspace] [--abort] [--wait 秒] [--on-conflict fail|stash|backup] [--no-follow]
-                            把任务（会话 + 元数据 + 工作区）无损交接到 mesh 里另一台在线机器继续
+                            把任务（worker 的完整上下文 + 元数据 + 工作区）无损交接到 mesh 里另一台在线机器继续
   quick cancel <id>         中止 worker 当前运行
   quick close <id>          关闭 worker 窗口
-  quick ack <id>            标记已读
+  quick ack <id>            知道了：确认这件事，移出「需要你 / 待扫」
+  quick snooze <id> [分钟]  稍后提醒（默认 60 分钟；0 = 现在就放回来）
+  quick focus [分钟|off]    专注模式：只有「需要你」会打扰，完成汇总留到结束（不带分钟 = 直到关闭）
   quick cron add (--cron "0 9 * * *" | --every 2h | --at "2026-11-09 09:00" | --in 30m) [--tz 时区]
                 [--machine M] [--requires a,b] [--cwd DIR] [--overlap skip|queue|parallel] [--catch-up latest|skip]
                 [--silent] [--paused] <标题> <简报...>
@@ -433,7 +441,7 @@ async function ui(args: string[]) {
 	if (sub === "restart") await stopUi();
 	else if (sub !== "open") die(`unknown: quick ui ${sub}`);
 	await hubStart(true);
-	const r = await ensureUi(cfg, { cwd, newSession: flag("--new") }).catch((e) => die((e as Error).message));
+	const r = await ensureUi(cfg, { cwd, freshFront: flag("--fresh-front") }).catch((e) => die((e as Error).message));
 	const h = await uiHealth(cfg);
 	console.log(`${r === "started" ? "web ui started" : "web ui already running"} (cwd ${h?.cwd ?? cwd}, log ${paths.uiLog})\n${uiLoginUrl(cfg)}`);
 	if (r === "running" && h && h.cwd !== cwd && ci >= 0) console.log(`注意：已有 Web UI 在 ${h.cwd} 运行；要换目录请 quick ui restart --cwd ${cwd}`);
@@ -459,21 +467,51 @@ async function main() {
 			}
 			return console.log("hub not running (quick hub start)");
 		}
+		case "attention":
+		case "a":
+		case "inbox":
 		case "ls":
 		case "tasks": {
 			const all = rest.includes("-a");
-			const list = (await hub.listTasks()).filter((t) => all || !t.closed || t.unread);
-			if (!list.length) return console.log("no tasks");
-			return console.log(list.map(line).join("\n"));
+			const q = await hub.attention(all ? 200 : 0);
+			const grouped = cmd === "attention" || cmd === "a" || cmd === "inbox";
+			console.log(countsLine(q.counts, q.focus));
+			const items = q.items.filter((i) => all || i.level !== "archived");
+			if (!items.length) return console.log("没有需要你的事，也没有进行中的任务");
+			let level = "";
+			for (const i of items) {
+				if (grouped && i.level !== level) console.log(`\n${LEVEL_LABEL[(level = i.level) as AttentionItem["level"]]}`);
+				console.log(`${grouped ? "  " : `${LEVEL_LABEL[i.level].padEnd(4, "　")} `}${attnLine(i)}`);
+				if (grouped && i.question) console.log(`             \x1b[2m问题: ${i.question}${i.options?.length ? `  选项: ${i.options.join(" / ")}` : ""}\x1b[0m`);
+			}
+			return;
+		}
+		case "snooze": {
+			const id = rest[0] ?? die("usage: quick snooze <id> [minutes]");
+			const t = await hub.snooze(id, rest[1] === undefined ? 60 : Number(rest[1]));
+			return console.log(attnLine(attentionOf(t)));
+		}
+		case "retry":
+			return console.log(attnLine(attentionOf(await hub.retry(rest[0] ?? die("usage: quick retry <id>")))));
+		case "focus": {
+			const arg = rest[0];
+			if (arg === "status") {
+				const q = await hub.attention(0);
+				return console.log(countsLine(q.counts, q.focus));
+			}
+			const f = await hub.setFocus(arg !== "off", arg && arg !== "off" ? Number(arg) : undefined);
+			return console.log(f.on ? `专注模式开启${f.until ? `，至 ${new Date(f.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "（quick focus off 关闭）"}：只有「需要你」会打扰` : "专注模式已关闭");
 		}
 		case "show": {
 			const id = rest[0] ?? die("usage: quick show <id>");
 			const { task: t, events } = await hub.getTask(id, 30);
-			console.log(`${ICON[t.status]} ${t.id} [${t.status}] ${t.title}\n  cwd: ${t.cwd}\n  tmux: ${t.tmuxTarget ?? "-"}\n  session: ${t.sessionFile ?? "-"}\n  activity: ${t.activity ?? "-"}`);
+			const a = attentionOf(t);
+			console.log(`${a.mark} ${t.id} [${LEVEL_LABEL[a.level]}] ${t.title}\n  注意力: ${a.reason}${a.options?.length ? `\n  选项: ${a.options.join(" / ")}` : ""}\n  可以: ${a.actions.map((x) => x.label).join(" / ") || "-"}\n  cwd: ${t.cwd}\n  接管: quick attach ${t.id}\n  activity: ${t.activity ?? "-"}${rest.includes("--debug") ? `\n  [debug] tmux ${t.tmuxTarget ?? "-"} · resume file ${t.sessionFile ?? "-"}` : ""}`);
 			console.log(`\n── 汇报 ──\n${t.summary ?? "(暂无)"}`);
 			console.log(`\n── 事件 ──\n${events.map((e) => `${new Date(e.ts).toLocaleTimeString()} ${e.kind}${e.status ? `→${e.status}` : ""} ${(e.text ?? "").split("\n")[0]?.slice(0, 120)}`).join("\n")}`);
 			console.log(`\n── 简报 ──\n${t.brief}`);
-			if (t.unread) await hub.ack(id);
+			// Reading a finished task settles 待扫; a question still waits for an answer.
+			if (a.level === "skim") await hub.ack(id);
 			return;
 		}
 		case "new": {
@@ -498,19 +536,19 @@ async function main() {
 			if (!title || !brief.length) die("usage: quick new [--machine M] [--requires a,b] [--cwd DIR] <title> <brief...>");
 			// cwd defaults to the current directory: the hub picks the best machine on which it exists.
 			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, source: { kind: "cli" } });
-			return console.log(line(t));
+			return console.log(attnLine(attentionOf(t)));
 		}
 		case "send": {
 			const [id, ...msg] = rest;
 			if (!id || !msg.length) die("usage: quick send <id> <message>");
-			return console.log(line(await hub.sendMessage(id, msg.join(" "))));
+			return console.log(attnLine(attentionOf(await hub.sendMessage(id, msg.join(" ")))));
 		}
 		case "cancel":
-			return console.log(line(await hub.cancel(rest[0] ?? die("usage: quick cancel <id>"))));
+			return console.log(attnLine(attentionOf(await hub.cancel(rest[0] ?? die("usage: quick cancel <id>")))));
 		case "close":
-			return console.log(line(await hub.close(rest[0] ?? die("usage: quick close <id>"))));
+			return console.log(attnLine(attentionOf(await hub.close(rest[0] ?? die("usage: quick close <id>")))));
 		case "ack":
-			return console.log(line(await hub.ack(rest[0] ?? die("usage: quick ack <id>"))));
+			return console.log(attnLine(attentionOf(await hub.ack(rest[0] ?? die("usage: quick ack <id>")))));
 		case "handoff":
 			return handoffCmd(rest);
 		case "attach":

@@ -39,7 +39,7 @@ if (trusted) {
 	contextBridge.exposeInMainWorld("quickDesktop", {
 		platform: process.platform,
 		onOpenTask: on("qa:open-task"),
-		/** v: "need" (需要你) | "inflight" (已托付/进行中) | "skim" (已完成待扫) */
+		/** v: "need" (需要你) | "skim" (待扫) | "snoozed" (稍后) | "inflight" (不用管) */
 		onView: on("qa:view"),
 		onAction: on("qa:action"),
 		fallback: (ch, cb) => register(fallbacks, ch, cb),

@@ -1,10 +1,14 @@
 # quick-agent
 
-一个 **pi 包**：装好以后，**你平时打开的 pi 就是 quick-agent 的前台 agent**，不需要额外的启动命令。
+**quick-agent 的核心是注意力管理：替你把事情做完，只在真正需要你时打扰你。**
 
-- **前台 agent**：打开 pi 时默认就是它，终端 TUI 和桌面端等 RPC 客户端都算。它要求 **快**，只负责理解任务、组装上下文、派单。前台模式下只有 `read/grep/find/ls` 和 `qa_*` 工具，其余工具一律拦截。
-- **worker agent**：每个任务都有一个独立的负责人，是一个完整的 pi 会话，跑在 tmux 窗口 `qa:<id>` 里，从头到尾把任务做完。它不是 subagent，你随时可以观看或接管。
-- **hub**：本地常驻服务，pi 启动时会自动拉起它。负责任务注册表、注意力收件箱、worker 生命周期、入口接入、SSE 事件流，还有一个网页面板（能看 worker 的实时终端）。
+你只关心两件事：交出去的事，和哪些事需要你。把一件事交给 quick-agent 之后就可以忘掉它；它在后台找一个 worker 从头做到尾，只有在 worker 需要你拍板、受阻或失败时才立即叫你；做完的事安静地进入「待扫」，有空扫一眼、点「知道了」即可。没有会话要管理，也没有时间线要翻，所有界面看到的都是同一个按优先级排好的注意力队列（见下文「注意力模型」）。
+
+它是一个 **pi 包**：装好以后，**你平时打开的 pi 就是 quick-agent 的前台 agent**，不需要额外的启动命令。
+
+- **前台 agent**：你交代事情的地方。终端 pi、Web UI、桌面客户端都是前台。它要求 **快**，只负责理解任务、组装上下文、派单。前台模式下只有 `read/grep/find/ls` 和 `qa_*` 工具，其余工具一律拦截。
+- **worker agent**：每个任务都有一个独立的负责人，是一个完整的 pi agent，跑在 tmux 窗口 `qa:<id>` 里，从头到尾把任务做完。它不是 subagent，你随时可以观看或接管。
+- **hub**：本地常驻服务，pi 启动时会自动拉起它。负责任务注册表、**注意力模型**（唯一的「什么需要你」来源）、worker 生命周期、入口接入和 SSE 事件流。
 - **入口**：pi 本身、浏览器插件（框选元素后写评论）、`quick` CLI，以及任何能发 HTTP 请求的程序。
 - **定时任务**：「每天 9 点…」「每周一…」「30 分钟后…」「每 2 小时…」这类计划由 hub 保存，到点自动派一个 worker 任务（见「定时任务（cron）」）。
 
@@ -14,10 +18,62 @@
  浏览器插件 ────┼──► hub ◄────► 你的 pi = 前台 ──qa_dispatch──► worker (pi @ tmux qa:<id>)
  quick CLI ────┘    (任务/收件箱/SSE/面板)                     ├─► worker …
                     ▲                                          │
-                    └──── qa_report / 活动 / 会话 ──────────────┘
+                    └──── qa_report / 活动 / 需要你 ────────────┘
 ```
 
-就像中断处理一样：前台是上半部，只做最少的事，马上返回；worker 是下半部，负责把工作完整做完。
+就像中断处理一样：前台是上半部，只做最少的事，马上返回；worker 是下半部，负责把工作完整做完；hub 的注意力模型决定什么时候值得打断你。
+
+## 注意力模型
+
+定义在 `shared/attention.ts`（纯函数），由 hub 计算并下发（`hub/attention.ts`）。Web UI、桌面客户端、终端 pi 前台、浏览器插件和 `quick` CLI 都直接渲染 hub 给出的结果，不再各自解读任务状态，所以各处显示的「需要你」数量永远一致。
+
+### 状态
+
+每个任务在任一时刻只处于一个注意力状态，带「原因」「进入时间」和「你能做的动作」：
+
+| 状态 | 标记 | 什么时候 | 你能做的 |
+|---|---|---|---|
+| **需要你** | `[ASK]` `[BLOCKED]` `[FAILED]` `[EXITED]` `[STOPPED]` | worker 提问（`qa_report needs_human`）、受阻、失败、意外退出、没汇报就停下了，正在等你决定 | 回答（可直接点 worker 给的选项）、重试、稍后提醒、知道了、接管 |
+| **待扫** | `[DONE]` | 已完成但你还没确认 | 知道了、继续追问、稍后提醒 |
+| **稍后** | `[LATER]` | 你对「需要你/待扫」点了「稍后提醒」（默认 60 分钟），到点自动回到原来的状态 | 现在处理、知道了、回答 |
+| **不用管** | `[RUN]` `[MOVE]` | 已交出去，正在做（含启动中、交接中） | 追加指令、中止、接管 |
+| **已归档** | `[ARCHIVED]` | 你点过「知道了」、任务已取消/窗口已关，或完成超过 7 天没确认 | 追加指令（重新激活） |
+
+排序：需要你（等得最久的在前）> 待扫 > 稍后（最先回来的在前）> 不用管 > 已归档。状态一变化（新的问题、重新运行、完成）就是新的注意力，旧的「稍后」随之失效。
+
+worker 需要人类决定时必须显式上报：`qa_report(status="needs_input", needs_human=true, question="一句话的问题", options=["A","B"])`。hub 把问题和选项存进任务（`task.ask`），各个界面直接展示，不靠解析汇报文字。
+
+团队模式下（`docs/team-collaboration.md`），hub 再按人计算（`shared/team.ts` 的 `personalAttention`）：同一个任务对不同的人处在不同层级（被 @、被指派、请你验收进「需要你」；球不在你手里时是「不用管 · 等某人处理」）。`/api/attention` 和 SSE 按请求的 token 返回「你的」队列，打扰也只打扰那个人；`?scope=team` 是不打扰的团队视图。单人使用时就是上表。
+
+### 打扰策略
+
+集中在一处（`interruptFor` + hub 的合批）：
+
+- 只有进入「需要你」（包括「稍后」到点回来、已经在等你时又来了新问题）才 **立即** 打扰：桌面通知、Web UI 提示、终端前台通知，并由一个前台 agent 主动用一两句话转告你。**专注模式下也放行。**
+- 进入「待扫」**从不立即打扰**：hub 把它们合批，攒够 `digestMinutes`（默认 30 分钟，从第一件开始计时）后推送一条「N 件事已完成待扫」摘要。专注模式下摘要留到专注结束再发。
+- 进度、活动、确认、归档从不通知。
+- 专注模式、摘要间隔、待发摘要都持久化在 hub（`~/.quick-agent/attention.json`），所有客户端共享。
+
+### 汇报怎么送到前台
+
+汇报按任务和注意力送达，不依赖是哪个前台派的单：
+
+- 每个在线的前台（Web UI、终端 pi）都会把「需要你」「待扫」的汇报作为 `[quick-agent 汇报]` 卡片放进自己的对话（按 `任务:状态:进入时间` 去重），所以派单的那个 pi 关掉了也不会丢。
+- 「需要你」只由 **一个** 前台主动开口：派单的前台在线就是它，否则是常驻的 Web UI 前台，再否则是任意在线前台（hub 在事件里用 `front` 字段指定）。其余前台只放卡片、不触发回复。「待扫」从不触发回复。
+- 前台（重新）连上 hub 时会补发离线期间漏掉的「需要你/待扫」，合成一条消息。
+
+### API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/attention?archived=N` | 按优先级排好的队列 `items[]`（`taskId,title,level,mark,reason,since,question,options,snoozedUntil,actions[]`）、`counts{need,skim,snoozed,inflight,archived}`、`focus`、`digestMinutes` |
+| POST | `/api/attention/focus` | `{on, minutes?}` 开关专注模式（不带 minutes 表示直到关闭） |
+| POST | `/api/attention/settings` | `{digestMinutes}` 待扫摘要间隔 |
+| POST | `/api/tasks/:id/ack` | 知道了：移出「需要你/待扫」，进入已归档 |
+| POST | `/api/tasks/:id/snooze` | `{minutes}` 稍后提醒（默认 60；0 表示现在就放回来） |
+| POST | `/api/tasks/:id/retry` | 让停下/失败的 worker 从中断处重试 |
+
+SSE（`/api/events`）：`attention`（`item, prevLevel, interrupt: now|digest|none, counts, focus, front`）、`attention.digest`（`items, reason: timer|focus_end`）、`attention.state`（专注模式或计数变化）。CLI：`quick attention`（`quick a`）、`quick snooze`、`quick focus`、`quick retry`、`quick ack`。
 
 ## 安装
 
@@ -95,15 +151,15 @@ quick machines                   # 也会列出每台机器的 hub 版本
 | `pi -p …` / `--mode json` | 不受影响，就是普通 pi |
 | `pi --qa-off` 或 `QA_ROLE=off pi` | 普通 pi（仍然显示任务状态） |
 
-在会话中可以随时切换：`/qa off` 切成普通 pi（恢复 bash/edit/write），`/qa on` 切回前台。
+在 pi 里可以随时切换：`/qa off` 切成普通 pi（恢复 bash/edit/write），`/qa on` 切回前台。
 
 ## 在 pi 里使用
 
-直接说要做什么，前台会派单并立即回复任务 ID。worker 完成、提问或受阻时：
+直接说要做什么，前台会派单并立即回复任务 ID，然后你就可以忘掉它。之后按注意力模型处理：
 
-- 编辑器上方的任务组件会更新，并弹出通知；
-- 汇报会以 `[quick-agent 汇报]` 消息进入 **派出这个任务的那个 pi** 的对话，但不会打断你，也不会触发新一轮回复；
-- `/tasks`：任务面板，可以查看汇报、实时观看、接管、追加指令、中止或关闭。在 RPC 客户端里，它会改为输出任务列表和面板链接；
+- 状态栏和编辑器上方的组件显示「需要你 N · 待扫 M」；
+- worker 需要你时立即弹出通知，汇报以 `[quick-agent 汇报]` 卡片进入前台对话，由一个前台用一两句话转告问题和选项；完成的汇报安静地进入对话和「待扫」，不触发回复（见「汇报怎么送到前台」）；
+- `/tasks`：注意力队列，可以查看汇报、回答/追加指令、知道了、稍后提醒、实时观看、接管、中止或关闭。在 RPC 客户端里，它会改为输出队列；
 - `/peek [id]`：在 pi 里用浮层实时观看 worker 的终端（只在 TUI 中可用），按 Enter 追加指令，按 a 接管；
 - `/attach <id>`：如果 pi 跑在 tmux 里，就切换到 worker 窗口；否则效果和 `/peek` 一样；
 - `/hub`：显示 hub 地址、面板链接和插件下载地址。在桌面端的内置浏览器里打开面板，就能看到每个 worker 的实时终端。
@@ -111,16 +167,20 @@ quick machines                   # 也会列出每台机器的 hub 版本
 CLI（任何终端都能用）：
 
 ```bash
-quick ls                       # 任务列表（• 表示有未读汇报）
-quick show <id>                # 查看汇报、事件、简报
-quick send <id> "追加指令"      # worker 窗口关了也会自动用原会话恢复
-quick attach <id>              # 切换到 worker 的 tmux 窗口
-quick handoff <id> <机器>       # 把任务（会话 + 元数据 + 工作区）无损交接到另一台机器继续
+quick attention                # 注意力队列：需要你 / 待扫 / 稍后 / 不用管（quick a；quick ls 是一行一个的版本）
+quick show <id>                # 查看注意力、汇报、简报
+quick send <id> "回答或追加指令"  # worker 窗口关了也会带着完整上下文重新拉起
+quick ack <id>                 # 知道了
+quick snooze <id> [分钟]        # 稍后提醒
+quick focus [分钟|off]          # 专注模式：只有「需要你」会打扰
+quick retry <id>               # 让停下/失败的 worker 重试
+quick attach <id>              # 接管：切换到 worker 的 tmux 窗口
+quick handoff <id> <机器>       # 把任务（worker 的完整上下文 + 元数据 + 工作区）无损交接到另一台机器继续
 quick cancel <id> / quick close <id>
 quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
 quick hub start|stop|restart|status|logs
 quick upgrade [--check] [--all]  # 升级（见「升级」）
-quick ui                       # 浏览器里的前台 agent + 任务面板（见下文 Web UI）
+quick ui                       # 浏览器里的注意力队列 + 前台 agent（见下文 Web UI）
 quick cron add --cron "0 9 * * *" "日报" "整理昨天的提交…"   # 定时计划（见「定时任务」）
 quick dashboard | quick tunnel | quick token
 ```
@@ -131,7 +191,7 @@ quick dashboard | quick tunnel | quick token
 
 - 正常完成的运行只进入「待扫」（桌面端会合批成摘要），前台 pi 不会弹通知，也不会打断你；
 - 失败、受阻或需要你决定的运行进入「需要你」。到点时派不出任务（比如指定的机器离线、没有满足 requires 的机器），hub 会留下一个 `failed` 任务，同样进入「需要你」；
-- `--silent`（静默）：成功的运行直接归档（标记已读、进入「回顾」），失败时照样找你。
+- `--silent`（静默）：成功的运行直接归档（确认并归档，不进「待扫」），失败时照样找你。
 
 在 pi 或 Web UI 里直接对前台说「每个工作日早上 9 点半帮我检查…，没问题就别打扰我」，前台会用 `qa_cron` 工具建计划，并复述计划 ID、规则和下次运行时间。也可以用 CLI：
 
@@ -165,37 +225,37 @@ quick cron pause|resume|run|rm <id>
 
 数据存放在 `~/.quick-agent/cron.json`（原子写入），hub 重启后自动恢复。测试：`npm test` 覆盖解析器、下次运行时间（含时区和 DST）、重叠与补跑决策；`test/cron-e2e.sh` 用隔离的 hub（`/tmp/qa-cron`、端口 17795、tmux 会话 `qa-cronT`，worker 是 PATH 里的假 `pi`，不花模型费用）验证 `--in 5s` 派单、`--every 10s` 重叠跳过、静默归档、暂停后不再触发、hub 重启后恢复和补跑。
 
-## Web UI（在浏览器里用前台 agent）
+## Web UI（注意力队列 + 前台 agent）
 
 ```bash
 quick ui                      # 启动（已在运行则直接复用）并在浏览器打开；前台工作目录 = 当前目录
-quick ui --cwd ~/proj --new   # 指定前台工作目录、开一个新会话；--no-open 只打印地址
+quick ui --cwd ~/proj         # 指定前台工作目录；--no-open 只打印地址
 quick ui status | url | logs | stop | restart
 ```
 
 `quick ui` 会先确保 hub 在运行，再拉起一个常驻的 Web UI 进程（`ui/server.ts`，日志 `~/.quick-agent/ui.log`），然后打开 `http://127.0.0.1:7790/?token=…`。
 
-- **对话**：右侧和前台 agent 对话，回复流式显示，思考过程可折叠。工具调用显示为卡片，派单卡片带任务 ID 和实时状态，点击任务 ID 会在右侧打开详情。回复过程中继续发消息会排到本轮之后（Alt+Enter 插入当前轮），可以随时「停止」。支持粘贴图片，`/tasks`、`/qa on|off` 等扩展命令照常可用，扩展弹出的选择框、确认框会显示成网页对话框。
-- **会话**：前台会话通过 pi SDK 托管在 Web UI 进程里，加载的是同一个 quick-agent 扩展和系统提示（等同于一个 RPC 模式的 pi）。会话持久化在 `~/.quick-agent/ui-sessions/`，启动时自动接着上次的会话。顶栏可以切换或新建会话、重命名，也可以切换模型和思考级别。会话文件是标准的 pi 会话，也能用 `pi --session <文件>` 在终端里接着用。
-- **任务面板**：左侧实时列出全网任务，包括状态、标题、机器和最新摘要，hub 的 SSE 事件会实时推送过来。点开任务可以查看汇报、实时终端、简报和事件，也可以追加指令、中止、关闭窗口或标记已读。
-- **汇报与评论**：由这个会话派出的任务，完成或提问时会以「quick-agent 汇报」卡片进入对话，同时弹出通知。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。「浏览器评论」标签页列出所有评论，以及它们对应的任务。
+- **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。点开任务可以看注意力详情、最新汇报、简报，回答或追加指令。
+- **前台 agent**：右侧是一个持续的前台，交代新的事、问"有什么需要我的"都在这里。回复流式显示，工具调用显示为卡片，派单卡片带任务 ID 和实时状态，点击任务 ID 打开详情。回复过程中继续发消息会排到本轮之后（Alt+Enter 插入当前轮），可以随时「停止」。支持粘贴图片，`/tasks`、`/qa on|off` 等扩展命令照常可用。顶栏可以切换模型和思考级别。
+- **只有一个前台**：没有会话列表，没有新建/切换/重命名；刷新页面或重启 `quick ui` 都接着同一段对话，上下文由自动压缩控制长度。（内部实现：前台通过 pi SDK 托管在 Web UI 进程里，加载同一个 quick-agent 扩展，对话持久化成 `~/.quick-agent/ui-sessions/` 下的 pi 会话文件；这是实现细节，不对人展示。调试时可用隐藏参数 `quick ui restart --fresh-front` 从空对话开始。）
+- **汇报与评论**：worker 的汇报按注意力进入前台对话（见「汇报怎么送到前台」）。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。「浏览器评论」标签页列出所有评论，以及它们对应的任务。
 - **安全**：只监听 `127.0.0.1`（端口用 config 的 `uiPort` 或环境变量 `QA_UI_PORT` 设置，默认 7790）。访问需要 hub token：`?token=` 只用一次，换成 HttpOnly、SameSite=Strict 的 cookie 后，就会从地址栏移除。服务端还会拒绝非 localhost 的 Host 头（防 DNS rebinding）和跨源写请求。浏览器对 hub 的调用都由 Web UI 进程代理，token 不会暴露给页面脚本。
-- 深色和浅色跟随系统，也可以用右上角 ◐ 手动切换；窄屏时顶栏有「任务 | 对话」切换，任务始终在前/左。界面样式来自 `shared/tokens.css`（Web UI、登录页和浏览器插件共用同一份设计 token）。
+- 深色和浅色跟随系统，也可以用右上角 ◐ 手动切换；窄屏时顶栏有「注意力 | 对话」切换，注意力队列始终在前/左。界面样式来自 `shared/tokens.css`（Web UI、登录页和浏览器插件共用同一份设计 token）。
 - **快捷键**（Mac 显示 ⌘，其他系统是 Ctrl；顶栏 `?` 按钮或按 `?` 查看）：
   | 操作 | 快捷键 |
   |---|---|
   | 聚焦输入框；在输入框里再按一次跳到任务搜索 | `⌘K` / `Ctrl+K` |
-  | 切到任务面板 / 浏览器评论 | `⌘1` / `⌘2`（`Ctrl+1` / `Ctrl+2`） |
+  | 切到注意力队列 / 浏览器评论 | `⌘1` / `⌘2`（`Ctrl+1` / `Ctrl+2`） |
   | 发送 / 换行（两种模式，输入框右下角按钮或快捷键面板里切换，存在 localStorage） | 默认 `Enter` 发送、`Shift+Enter` 换行；另一种是 `⌘/Ctrl+Enter` 发送、`Enter` 换行 |
   | 回复中插入当前轮（steer） | `Alt` + 发送键 |
   | 停止回复（输入框为空时）；关闭任务详情、大图、清空搜索 | `Esc` |
-  | 任务列表上下移动 / 打开 | `↑` `↓` / `Enter` |
+  | 队列上下移动 / 打开 | `↑` `↓` / `Enter` |
   | 聚焦输入框 / 显示快捷键 | `/` / `?` |
-- 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理，汇报只会进入派单的那个会话。
+- 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理；汇报会送到所有在线前台，只有一个主动开口。
 
 ## 桌面客户端（Electron，macOS）
 
-`electron/` 里是 quick-agent 的桌面客户端：把 Web UI 装进原生窗口，按"注意力"组织，没有会话。托盘和 Dock 角标只显示"需要你"的数量；只有 worker 提问、受阻、失败或停下时才立即发系统通知，点通知直达那个任务；完成的汇报合批成一条"已完成待扫"汇总；支持专注模式；全局快捷键 `⌘⇧Space` 随时"把一件事交出去"。客户端会复用或拉起 hub 和 Web UI 服务，关掉窗口或退出客户端，worker 都照常工作。
+`electron/` 里是 quick-agent 的桌面客户端：把 Web UI 装进原生窗口，按注意力组织。它不自己判断任务状态，直接使用 hub 的注意力模型：托盘和 Dock 角标就是 hub 的「需要你」数量；hub 判定要立即打扰（`interrupt: "now"`）时发系统通知，点通知直达那个任务；hub 推送的待扫摘要显示为一条汇总通知；专注模式和摘要间隔读写 hub 的设置；全局快捷键 `⌘⇧Space` 随时"把一件事交出去"。客户端会复用或拉起 hub 和 Web UI 服务，关掉窗口或退出客户端，worker 都照常工作。
 
 ```bash
 cd electron && npm install && npm run dev     # 本地运行
@@ -286,7 +346,9 @@ quick new --requires browser:chrome-gui "标题" "简报"   # 按资源派单
 
 ## 任务跨机器交接（handoff）
 
-已有任务可以随时迁移到 mesh 里另一台在线机器继续执行，也可以来回反复迁移。任务 id 不变，worker 在目标机器上用同一份会话继续。
+已有任务可以随时迁移到 mesh 里另一台在线机器继续执行，也可以来回反复迁移。任务 id 不变，worker 在目标机器上带着完整上下文继续，注意力状态（需要你/待扫/稍后）跟着任务走。
+
+> 下文讲交接的内部实现。这里的「会话」指 worker 的 pi 会话文件（`*.jsonl`，worker 的完整上下文），是内部细节，不出现在面向人的界面里。
 
 ```bash
 quick handoff <id> <机器> [--cwd 目标目录] [--no-workspace] [--abort] [--wait 秒] [--on-conflict fail|stash|backup] [--no-follow]
@@ -431,10 +493,12 @@ hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复�
 hub/handoff.ts               任务跨机器交接：编排、分块传输、目标端应用/回滚
 hub/cron.ts                  定时任务：持久化、触发定时器、mesh 复制、cron.* 方法（只由所属 hub 触发）
 hub/workspace.ts             交接用的工作区快照（git bundle/diff/untracked 或 tar）、manifest 校验、撤销
+hub/attention.ts             注意力：计算变化、决定打扰、合批待扫摘要、持久化专注模式
 hub/dashboard.ts             网页面板（任务视图）
-ui/server.ts                 Web UI：用 pi SDK 托管前台会话 + 代理 hub API + SSE（quick ui）
-ui/app.html                  Web UI 前端（对话、任务面板、浏览器评论、定时）
+ui/server.ts                 Web UI：用 pi SDK 托管唯一的前台 agent + 代理 hub API + SSE（quick ui）
+ui/app.html                  Web UI 前端（注意力队列、前台对话、浏览器评论、定时）
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
+shared/attention.ts          注意力模型：状态、原因、动作、排序、打扰策略（纯函数，所有前端共用）
 shared/update.ts             自动升级：版本来源、安装方式识别、安装、节流与锁
 shared/schedule.ts           机器资源探测与派单选机器（资源 + 优先级）
 shared/cron.ts               定时规则：5 段 cron 解析、下次运行时间（时区/DST）、间隔/一次性、重叠与补跑决策
@@ -447,7 +511,7 @@ docs/browser-extension/      插件隐私政策与上架材料
 scripts/pack-extension.sh    打包上架用 zip（dist/）
 ```
 
-运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`cron.json`（本机 hub 所属的定时计划）、`hub.log`。worker 的会话是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`，可以用 `pi --session <file>` 打开。
+运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`cron.json`（本机 hub 所属的定时计划）、`hub.log`、`attention.json`（专注模式、摘要间隔、待发摘要）。内部细节：worker 的上下文是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`（`quick show <id> --debug` 显示路径），Web UI 前台的对话保存在 `ui-sessions/`；正常使用不需要关心它们，接管 worker 用 `quick attach`。
 
 ## Hub API（Bearer token）
 
@@ -455,10 +519,12 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
 | POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, attachments?, source?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器 |
-| POST | `/api/tasks/:id/message` | `{text}` 追加指令（必要时恢复会话） |
-| POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 标记已读 |
+| POST | `/api/tasks/:id/message` | `{text}` 回答或追加指令（worker 窗口关了会带着完整上下文重新拉起） |
+| POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 知道了 |
+| POST | `/api/tasks/:id/snooze`、`/retry` | 稍后提醒 `{minutes}` / 重试 |
+| GET | `/api/attention` | 注意力队列与计数（见「注意力模型」）；`POST /api/attention/focus`、`/api/attention/settings` |
 | POST | `/api/tasks/:id/handoff` | `{to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}` 把任务交接到另一台机器（异步） |
-| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动 |
+| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定 |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
 | GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本、resources、priority） |
 | POST | `/api/machine` | `{machine?, priority?, resources?, addResources?, removeResources?, resourceNotes?, description?}` 修改某台机器的资源/优先级（null 清除），即时生效 |
@@ -469,9 +535,9 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/cron` | `{title, brief, cron? \| every? \| at? \| in?, tz?, machine?, requires?, cwd?, overlap?, catchUp?, silent?, enabled?, hub?}` 创建计划（四选一） |
 | POST | `/api/cron/:id` | 修改（同上字段，`null` 清除 machine/requires/cwd） |
 | POST | `/api/cron/:id/run`、`/pause`、`/resume`、`/delete`（或 `DELETE /api/cron/:id`） | 立即运行一次 / 暂停 / 恢复 / 删除；会路由到计划所属的 hub |
-| GET | `/api/events` | SSE 事件流（`?task=<id>` 用于 worker 接收指令） |
+| GET | `/api/events` | SSE 事件流（`?task=<id>` 用于 worker 接收指令；`?role=front&front=<id>` 用于前台；含 `attention*` 事件） |
 | POST/GET | `/api/intake` | 入口提交（浏览器评论等）/ 列表 |
-| GET | `/api/pages?url=` | 某个页面上的评论及其任务状态（插件角标用） |
+| GET | `/api/pages?url=` | 某个页面上的评论及其任务状态和注意力（插件角标用） |
 | GET | `/`、`/extension.zip`、`/health` | 面板 / 插件包 / 健康检查 |
 
 新入口只需要 `POST /api/intake`（交给前台组装上下文）或 `POST /api/tasks`（直接派单）。

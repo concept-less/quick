@@ -1,9 +1,14 @@
-// quick-agent Web UI: hosts a front-agent pi session in-process (pi SDK) and serves a browser GUI
-// with chat, task panel and browser comments. Listens on 127.0.0.1 only; protected by the hub token.
+// quick-agent Web UI: hosts the one continuous front agent in-process (pi SDK) and serves a browser GUI
+// whose first screen is the attention queue, next to the front agent and browser comments.
+// Listens on 127.0.0.1 only; protected by the hub token.
 //
-// Run: node ui/server.ts [--cwd DIR] [--new]   (normally via `quick ui`)
+// There are no "sessions" for the human: the front is a single, continuous conversation. Internally it is
+// persisted as a pi session file under ~/.quick-agent/ui-sessions/ (resumed on every start, kept short by
+// pi's automatic compaction); that file is an implementation detail and never shown.
+//
+// Run: node ui/server.ts [--cwd DIR]   (normally via `quick ui`; --fresh-front starts an empty front, debug only)
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,6 +32,8 @@ const argVal = (name: string) => {
 const CWD = argVal("--cwd") ?? process.env.QA_UI_CWD ?? process.cwd();
 const SESSION_DIR = paths.uiSessions;
 mkdirSync(SESSION_DIR, { recursive: true });
+// Stable front id: tasks dispatched from the Web UI stay "its" tasks across restarts (proactive delivery).
+process.env.QA_FRONT_ID = `webui@${cfg.machine.id}`;
 
 function log(msg: string) {
 	console.log(`${new Date().toISOString()} ${msg}`);
@@ -129,7 +136,7 @@ const uiImpl: Record<string, any> = {
 // Everything else (footer, header, editor, working indicator, …) is a no-op in the browser.
 const uiContext = new Proxy(uiImpl, { get: (o, k: string) => (k in o ? o[k] : () => undefined) });
 
-// ---------------------------------------------------------------- agent session runtime
+// ---------------------------------------------------------------- front agent runtime
 
 const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent }: any) => {
 	const services = await sdk.createAgentSessionServices({ cwd, agentDir });
@@ -141,7 +148,20 @@ const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent 
 	return { ...(await sdk.createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model })), services, diagnostics: services.diagnostics };
 };
 
-const initialManager = argv.includes("--new") ? sdk.SessionManager.create(CWD, SESSION_DIR) : sdk.SessionManager.continueRecent(CWD, SESSION_DIR);
+// Always continue the one front conversation; --fresh-front (hidden, debugging only) starts an empty one.
+// The conversation is the same whatever --cwd is (cwd only sets the front's working directory).
+function latestFrontFile(): string | undefined {
+	try {
+		return readdirSync(SESSION_DIR)
+			.filter((f) => f.endsWith(".jsonl"))
+			.map((f) => join(SESSION_DIR, f))
+			.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+	} catch {
+		return undefined;
+	}
+}
+const resumeFile = argv.includes("--fresh-front") ? undefined : latestFrontFile();
+const initialManager = resumeFile ? sdk.SessionManager.open(resumeFile, SESSION_DIR, CWD) : sdk.SessionManager.create(CWD, SESSION_DIR);
 const runtime: any = await sdk.createAgentSessionRuntime(createRuntime, { cwd: CWD, agentDir: sdk.getAgentDir(), sessionManager: initialManager });
 let unsubscribe: (() => void) | undefined;
 let lastError: string | undefined;
@@ -201,7 +221,7 @@ async function bind(session: any) {
 		const w = wireEvent(e);
 		if (w) broadcast({ type: "agent", event: w });
 	});
-	broadcast({ type: "session", state: state() });
+	broadcast({ type: "front", state: state() });
 }
 runtime.setRebindSession(bind);
 await bind(runtime.session);
@@ -210,9 +230,6 @@ function state() {
 	const s = runtime.session;
 	return {
 		cwd: runtime.cwd,
-		sessionFile: s.sessionFile,
-		sessionId: s.sessionId,
-		sessionName: s.sessionName,
 		model: s.model ? { provider: s.model.provider, id: s.model.id, name: s.model.name } : undefined,
 		thinkingLevel: s.thinkingLevel,
 		isStreaming: s.isStreaming,
@@ -236,12 +253,9 @@ async function prompt(body: any) {
 		: [];
 	if (!text && !images.length) throw new HttpError(400, "text is required");
 	const s = runtime.session;
-	// A few TUI built-ins the browser offers as buttons, accepted as text too.
-	if (text === "/new") return void (await runtime.newSession());
-	if (text.startsWith("/name ")) {
-		s.setSessionName(text.slice(6).trim());
-		broadcast({ type: "session", state: state() });
-		return;
+	// The front is one continuous conversation: there is nothing to create, switch or name.
+	if (/^\/(new|resume|name|fork|tree|session)\b/.test(text)) {
+		throw new HttpError(400, "前台是一段持续的对话，不需要新建或切换；上下文会自动压缩。要交出一件新的事，直接说就行。");
 	}
 	lastError = undefined;
 	const opts: any = { images: images.length ? images : undefined, source: "rpc" };
@@ -378,7 +392,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	if (p === "/api/stream" && m === "GET") {
 		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
 		clients.add(res);
-		res.write(`data: ${JSON.stringify({ type: "session", state: state() })}\n\n`);
+		res.write(`data: ${JSON.stringify({ type: "front", state: state() })}\n\n`);
 		const ping = setInterval(() => res.write(": ping\n\n"), 15000);
 		req.on("close", () => {
 			clearInterval(ping);
@@ -389,16 +403,6 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	if (p === "/api/state" && m === "GET") return send(res, 200, state());
 	if (p.startsWith("/api/hub/")) return proxyHub(req, res, `/api/${p.slice("/api/hub/".length)}${url.search}`);
 
-	if (m === "GET" && p === "/api/sessions") {
-		const list = await sdk.SessionManager.list(runtime.cwd, SESSION_DIR);
-		return send(res, 200, {
-			current: runtime.session.sessionFile,
-			sessions: list
-				.sort((a: any, b: any) => +new Date(b.modified) - +new Date(a.modified))
-				.slice(0, 100)
-				.map((s: any) => ({ path: s.path, id: s.id, name: s.name, modified: s.modified, messageCount: s.messageCount, firstMessage: String(s.firstMessage ?? "").slice(0, 120) })),
-		});
-	}
 	if (m === "GET" && p === "/api/models") {
 		const list = await runtime.session.modelRuntime.getAvailable();
 		return send(res, 200, { models: list.map((x: any) => ({ provider: x.provider, id: x.id, name: x.name })), levels: runtime.session.getAvailableThinkingLevels() });
@@ -412,19 +416,6 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		case "/api/abort":
 			await runtime.session.abort();
 			return send(res, 200, { ok: true });
-		case "/api/sessions/new":
-			await runtime.newSession();
-			return send(res, 200, { ok: true });
-		case "/api/sessions/switch": {
-			const file = String(body.path ?? "");
-			if (!file || !existsSync(file)) throw new HttpError(400, "no such session file");
-			await runtime.switchSession(file);
-			return send(res, 200, { ok: true });
-		}
-		case "/api/sessions/name":
-			runtime.session.setSessionName(String(body.name ?? "").trim());
-			broadcast({ type: "session", state: state() });
-			return send(res, 200, { ok: true });
 		case "/api/model": {
 			const s = runtime.session;
 			if (body.provider && body.id) {
@@ -433,7 +424,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 				await s.setModel(model);
 			}
 			if (body.thinkingLevel) s.setThinkingLevel(body.thinkingLevel);
-			broadcast({ type: "session", state: state() });
+			broadcast({ type: "front", state: state() });
 			return send(res, 200, { ok: true });
 		}
 		case "/api/dialog": {
@@ -474,7 +465,7 @@ server.on("error", (e) => {
 });
 server.listen(PORT, HOST, () => {
 	writeFileSync(paths.uiPid, String(process.pid));
-	log(`[quick-agent ui] http://${HOST}:${PORT}/?token=${cfg.token}  (cwd ${runtime.cwd}, session ${runtime.session.sessionFile ?? "-"}, pi ${PI_ROOT})`);
+	log(`[quick-agent ui] http://${HOST}:${PORT}/?token=${cfg.token}  (cwd ${runtime.cwd}, pi ${PI_ROOT})`);
 });
 
 async function shutdown() {

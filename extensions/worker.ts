@@ -1,4 +1,4 @@
-// Worker role: turns a pi session into the owner ("负责人") of one quick-agent task.
+// Worker role: turns a pi agent into the owner ("负责人") of one quick-agent task.
 // Selected by extensions/quick-agent.ts when QA_TASK_ID is set (the hub sets it when spawning a worker).
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -7,7 +7,7 @@ import { HubClient } from "../shared/hub-client.ts";
 
 const WORKER_RULES = `你是 quick-agent 工作流中的 **负责人 worker**。前台 agent 把一个任务完整地交给了你，由你独立负责到底：
 - 任务简报在第一条消息里。按简报的目标和验收标准把事情完整做完，不要只做一半就回头请示。
-- 只有真正需要人类决策时（需求含糊到无法合理假设、破坏性或不可逆操作、缺少权限或凭证），才调用 qa_report(status="needs_input")，在 summary 里写清问题和建议选项，然后结束本轮等待回复。能合理假设的就自己决定，并在最终汇报里说明。
+- 人类的注意力是最稀缺的资源。只有真正需要人类决策时（需求含糊到无法合理假设、破坏性或不可逆操作、缺少权限或凭证），才调用 qa_report(status="needs_input", needs_human=true, question="一句话的问题", options=["建议选项A","选项B"])，summary 里写清背景，然后结束本轮等待回复。这会立即通知人类；能合理假设的就自己决定，并在最终汇报里说明。
 - 遇到无法继续的阻塞，调用 qa_report(status="blocked")。
 - 完成后必须调用 qa_report(status="done")。summary 用简洁的中文写：做了什么、改了哪些文件、如何验证的、遗留问题。这是人类在收件箱里看到的内容，必须能独立看懂。
 - 较长任务中途可以用 status="progress" 汇报关键进展（不要频繁）。
@@ -28,15 +28,18 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 		name: "qa_report",
 		label: "Report to quick-agent",
 		description:
-			"Report the state of your quick-agent task to the human's inbox. status: done (task complete), needs_input (a human decision is required; ask in summary), blocked (cannot continue), progress (milestone update; task continues).",
+			"Report the state of your quick-agent task to the human's attention queue. status: done (task complete; lands in 待扫, never interrupts), needs_input (a human decision is required: set needs_human=true with a one-line question and options; interrupts the human immediately), blocked (cannot continue; also interrupts), progress (milestone update; task continues, no notification).",
 		promptSnippet: "Report task status (done / needs_input / blocked / progress) to the human's quick-agent inbox",
 		promptGuidelines: [
 			"Call qa_report with status=done and a self-contained Chinese summary when the quick-agent task is complete.",
-			"Call qa_report with status=needs_input, then end your turn, only when a human decision is truly required.",
+			"Call qa_report with status=needs_input, needs_human=true, a one-line question and options, then end your turn, only when a human decision is truly required.",
 		],
 		parameters: Type.Object({
 			status: StringEnum(["done", "needs_input", "blocked", "progress"] as const),
 			summary: Type.String({ description: "Self-contained summary or question for the human (Chinese, markdown ok)" }),
+			needs_human: Type.Optional(Type.Boolean({ description: "true when you need a human decision before you can continue (explicit attention request)" })),
+			question: Type.Optional(Type.String({ description: "With needs_human: the decision you need, one line" })),
+			options: Type.Optional(Type.Array(Type.String(), { description: "With needs_human: suggested answers the human can pick" })),
 		}),
 		async execute(_id, params) {
 			if (params.status !== "progress") reportedThisRun = true;
@@ -44,12 +47,18 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 			let error: string | undefined;
 			try {
 				if (!hub) throw new Error("hub client not initialised");
-				await hub.report(taskId, { status, summary: params.summary, kind: "report" });
+				const needsHuman = params.needs_human === true || (params.status === "needs_input" && !!params.question);
+				await hub.report(taskId, {
+					status,
+					summary: params.summary,
+					kind: "report",
+					...(needsHuman ? { needsHuman: true, question: params.question ?? params.summary.split("\n")[0], options: params.options } : {}),
+				});
 			} catch (e) {
 				error = (e as Error).message;
 			}
 			return {
-				content: [{ type: "text", text: error ? `Report NOT delivered: ${error}` : `Reported ${params.status} to the human's inbox.` }],
+				content: [{ type: "text", text: error ? `Report NOT delivered: ${error}` : `Reported ${params.status} to the human's attention queue.` }],
 				details: { status: params.status, error },
 			};
 		},

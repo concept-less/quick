@@ -1,119 +1,57 @@
 // Pure helpers for the desktop main process (no Electron imports, unit-tested with node --test).
 //
-// quick-agent has no "sessions" — only attention. Every task is in exactly one attention bucket:
-//   need     需要你        the worker asked, is blocked, failed or stopped — it waits on a human (interrupt-worthy)
-//   inflight 已托付/进行中  handed off and being worked on (no attention needed)
-//   skim     已完成待扫    handed back, worth a glance when convenient (never interrupts)
-// (Mapping kept in sync with docs/attention.md / the Web UI.)
+// quick-agent has no "sessions" — only attention. The attention model is defined once, in the hub
+// (shared/attention.ts, served as GET /api/attention and SSE "attention" events). The desktop client does
+// not classify tasks itself: it renders the hub's items and obeys the hub's interrupt decision
+// ("now" = notify immediately, digests arrive as "attention.digest"). Levels:
+//   need      需要你   the worker asked, is blocked, failed or stopped — it waits on a human (the only interrupt)
+//   skim      待扫     handed back, worth a glance when convenient (batched by the hub, never interrupts)
+//   snoozed   稍后     postponed by the human, comes back by itself
+//   inflight  不用管   handed off and being worked on
+//   archived  已归档   acknowledged / cancelled / old
 "use strict";
 
-const NEED = ["needs_input", "blocked", "failed", "exited", "idle"];
-const INFLIGHT = ["starting", "running"];
-const SKIM = ["done"];
+const LEVELS = ["need", "skim", "snoozed", "inflight", "archived"];
+const LEVEL_LABEL = { need: "需要你", skim: "待扫", snoozed: "稍后", inflight: "不用管", archived: "已归档" };
 
-const STATUS_LABEL = {
-	starting: "启动中",
-	running: "进行中",
-	idle: "停下了",
-	needs_input: "需要你回答",
-	blocked: "受阻",
-	done: "完成",
-	failed: "失败",
-	cancelled: "已取消",
-	exited: "已退出",
-};
-const BUCKET_LABEL = { need: "需要你", inflight: "已托付/进行中", skim: "已完成待扫" };
-
-/** Attention bucket of a task, or null when it needs nothing (cancelled, closed, already skimmed). */
-function bucket(t) {
-	if (!t || t.status === "cancelled") return null;
-	if (NEED.includes(t.status)) return t.closed ? null : "need";
-	if (INFLIGHT.includes(t.status)) return "inflight";
-	if (SKIM.includes(t.status)) return t.unread ? "skim" : null;
-	return null;
+function emptyCounts() {
+	return { need: 0, skim: 0, snoozed: 0, inflight: 0, archived: 0 };
 }
 
-function summarize(tasks) {
-	const s = { need: 0, inflight: 0, skim: 0 };
-	for (const t of tasks) {
-		const b = bucket(t);
-		if (b) s[b]++;
-	}
-	return s;
+/** Menu-bar title / Dock badge only ever show what needs you (the hub's counts.need, same number as the Web UI). */
+function trayTitle(c) {
+	return c && c.need ? `■${c.need}` : "□";
+}
+function badge(c) {
+	return c && c.need ? String(c.need) : "";
 }
 
-/** Menu-bar title / Dock badge only ever show what needs you. */
-function trayTitle(s) {
-	return s.need ? `■${s.need}` : "□";
-}
-function badge(s) {
-	return s.need ? String(s.need) : "";
-}
-
-function byBucket(tasks, b, limit = 8) {
-	return tasks
-		.filter((t) => bucket(t) === b)
-		.sort((x, y) => (y.updatedAt || 0) - (x.updatedAt || 0))
-		.slice(0, limit);
+/** Items of one level in the hub's priority order (need: oldest wait first; others: newest first). */
+function byLevel(items, level, limit = 8) {
+	const list = items.filter((i) => i.level === level);
+	list.sort((a, b) => (level === "need" ? a.since - b.since : level === "snoozed" ? (a.snoozedUntil || 0) - (b.snoozedUntil || 0) : b.since - a.since));
+	return list.slice(0, limit);
 }
 
-/**
- * Classify a hub task update for notifications:
- *  - "urgent": moved into `need` (or a new question while still there) → notify immediately
- *  - "digest": handed back into `skim` → batched into a periodic digest
- *  - undefined: nothing to tell (progress, activity, acks, starting/running)
- */
-function notificationFor(prev, task, event) {
-	if (!task) return undefined;
-	const b = bucket(task);
-	if (b !== "need" && b !== "skim") return undefined;
-	const transitioned = !prev || prev.status !== task.status;
-	const newReport = !!event && event.kind === "report" && (!prev || prev.summary !== task.summary);
-	if (!transitioned && !newReport) return undefined;
-	if (!prev && b === "skim" && !(event && event.kind === "report")) return undefined;
-	const body = String(task.summary || task.activity || "").replace(/\s+/g, " ").trim().slice(0, 240);
-	if (b === "need") {
-		const head = { needs_input: "需要你决定", blocked: "受阻，需要你", failed: "失败了，需要你看看" }[task.status] || "停下了，需要你看看";
-		return { kind: "urgent", title: `${head} · ${task.title}`, subtitle: `${task.id}${task.machine ? ` @${task.machine}` : ""}`, body: body || STATUS_LABEL[task.status] };
-	}
-	return { kind: "digest", title: task.title, body };
+/** Native notification for an item the hub decided to interrupt with ("now"). */
+function urgentNotification(item) {
+	const body = String(item.question || item.reason || "").replace(/\s+/g, " ").trim().slice(0, 240);
+	return { title: `需要你 ${item.mark} · ${item.title}`, subtitle: `${item.taskId}${item.machine ? ` @${item.machine}` : ""}`, body, options: item.options || [] };
 }
 
-/** Collects "skim" hand-backs and turns them into one calm notification. */
-class Digest {
-	constructor() {
-		this.items = new Map();
-	}
-	add(task) {
-		this.items.set(task.id, { id: task.id, title: task.title, status: task.status });
-	}
-	/** Drop items that are no longer waiting to be skimmed (acknowledged elsewhere, re-run, …). */
-	prune(isStillSkim) {
-		for (const id of [...this.items.keys()]) if (!isStillSkim(id)) this.items.delete(id);
-	}
-	get size() {
-		return this.items.size;
-	}
-	flush() {
-		if (!this.items.size) return undefined;
-		const list = [...this.items.values()];
-		this.items.clear();
-		const names = list.map((x) => x.title.slice(0, 24));
-		const title = list.length === 1 ? `已完成待扫 · ${list[0].title}` : `${list.length} 件事已完成待扫`;
-		const body = list.length === 1 ? "有空时扫一眼" : `${names.slice(0, 4).join("、")}${list.length > 4 ? ` 等 ${list.length} 件` : ""}`;
-		return { title, body, ids: list.map((x) => x.id) };
-	}
+/** One calm notification for a hub digest of "skim" hand-backs. */
+function digestNotification(items, reason) {
+	if (!items || !items.length) return undefined;
+	const names = items.map((x) => String(x.title).slice(0, 24));
+	const prefix = reason === "focus_end" ? "专注结束 · " : "";
+	const title = items.length === 1 ? `${prefix}待扫 · ${items[0].title}` : `${prefix}${items.length} 件事已完成待扫`;
+	const body = items.length === 1 ? "有空时扫一眼" : `${names.slice(0, 4).join("、")}${items.length > 4 ? ` 等 ${items.length} 件` : ""}`;
+	return { title, body, ids: items.map((x) => x.taskId) };
 }
 
-/**
- * 专注模式 (focus / do-not-disturb): no banners at all — "需要你" still lands in the tray count, hand-backs keep
- * collecting — and a single summary when it ends (docs/attention.md: P5/P6). Returns "focus" or "off".
- */
-function quietMode(settings, now = Date.now()) {
-	const q = settings && settings.quiet;
-	if (!q || !q.mode || q.mode === "off") return "off";
-	if (q.until && now >= q.until) return "off";
-	return "focus";
+/** Focus mode as reported by the hub ({on, until}). */
+function focusOn(focus, now = Date.now()) {
+	return !!(focus && focus.on && (!focus.until || focus.until > now));
 }
 
 /** Remembers which (task, status, updatedAt) were already notified so reconnects don't repeat them. */
@@ -149,4 +87,4 @@ function titleFromText(text) {
 	return first.length > 60 ? `${first.slice(0, 57)}…` : first;
 }
 
-module.exports = { NEED, INFLIGHT, SKIM, STATUS_LABEL, BUCKET_LABEL, bucket, summarize, trayTitle, badge, byBucket, notificationFor, Digest, quietMode, NotificationGate, validBounds, titleFromText };
+module.exports = { LEVELS, LEVEL_LABEL, emptyCounts, trayTitle, badge, byLevel, urgentNotification, digestNotification, focusOn, NotificationGate, validBounds, titleFromText };

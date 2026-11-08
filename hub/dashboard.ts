@@ -49,7 +49,7 @@ function renderList(){
 async function select(id){sel=id;renderList();const {task:t,events}=await api('GET','/api/tasks/'+id+'?events=80');if(!t)return;
   $('#detail').innerHTML='<div class="row"><h2 style="margin:0;flex:1">'+esc(t.title)+'</h2><span class="st '+t.status+'">'+t.status+'</span></div>'+
   '<p class="sub">'+t.id+' · 机器 '+esc(t.machine||selfId)+' · '+esc(t.cwd)+' · 来源 '+t.source.kind+(t.source.url?' · <a style="color:var(--acc)" href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</p>'+
-  ((t.machine&&t.machine!==selfId)?'<p class="sub">接管: 在 '+esc(t.machine)+' 上运行 <code>quick attach '+t.id+'</code></p>':'<p class="sub">接管: <code>tmux attach -t '+esc((t.tmuxTarget||'').split(':')[0])+' \\\\; select-window -t '+esc(t.tmuxTarget||'')+'</code>'+(t.sessionFile?' · 会话 <code>'+esc(t.sessionFile)+'</code>':'')+'</p>')+
+  ((t.machine&&t.machine!==selfId)?'<p class="sub">接管: 在 '+esc(t.machine)+' 上运行 <code>quick attach '+t.id+'</code></p>':'<p class="sub">接管: <code>tmux attach -t '+esc((t.tmuxTarget||'').split(':')[0])+' \\\\; select-window -t '+esc(t.tmuxTarget||'')+'</code>'+'</p>')+
   '<div class="row"><button onclick="act(\\'ack\\')">标记已读</button><button onclick="act(\\'cancel\\')">中止</button><button onclick="act(\\'close\\')">关闭窗口</button><button onclick="handoff()">交接到其他机器…</button></div>'+(t.status==='handoff'?'<p class="sub">⇄ '+esc(t.activity||'交接中')+'</p>':'')+
   (t.summary?'<h3>最新汇报</h3><pre>'+esc(t.summary)+'</pre>':'')+
   '<h3>实时终端</h3><pre id="screen" style="max-height:420px;overflow:auto;font:12px/1.35 ui-monospace,monospace">…</pre>'+
@@ -58,7 +58,7 @@ async function select(id){sel=id;renderList();const {task:t,events}=await api('G
   '<h3>事件</h3>'+events.slice().reverse().map(e=>'<div class="ev"><span class="sub">'+new Date(e.ts).toLocaleTimeString()+'</span> <span class="k">'+e.kind+(e.status?' → '+e.status:'')+'</span> '+esc((e.text||'').slice(0,400))+'</div>').join('');
   $('#msg').onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey))sendMsg()};
   history.replaceState(null,'','#'+id);pollScreen();
-  if(t.unread)api('POST','/api/tasks/'+id+'/ack');
+  if(t.unread&&t.status==='done')api('POST','/api/tasks/'+id+'/ack');
 }
 let screenTimer=null;
 async function pollScreen(){clearTimeout(screenTimer);const id=sel;const r=await api('GET','/api/tasks/'+id+'/screen');if(id!==sel)return;const el=$('#screen');if(!el)return;

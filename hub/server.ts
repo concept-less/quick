@@ -26,8 +26,10 @@ import { pageKey } from "./page-url.ts";
 import { autoUpdate, readState, readVersion, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { createHandoff } from "./handoff.ts";
 import { createTeam } from "./team.ts";
-import { AGENT, can, type Viewer } from "../shared/team.ts";
+import { AGENT, can, personalAttention, teamRow, type Viewer } from "../shared/team.ts";
 import { createCron } from "./cron.ts";
+import { createAttention, keyOf } from "./attention.ts";
+import { attentionOf } from "../shared/attention.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -124,12 +126,29 @@ interface SseClient {
 	role: string;
 	/** Who is connected (team member / root). */
 	viewer?: Viewer;
+	/** Stable id of a front agent connection (role=front). */
+	front?: string;
 }
 const clients = new Set<SseClient>();
+/** Attention model (hub/attention.ts); created once the persisted tasks are loaded. */
+let attention: ReturnType<typeof createAttention>;
 
 function broadcast(e: HubEvent, filter?: (c: SseClient) => boolean) {
 	const frame = `data: ${JSON.stringify(e)}\n\n`;
 	for (const c of clients) if (!filter || filter(c)) c.res.write(frame);
+	// Every task change is re-evaluated by the attention model (which may emit an "attention" event).
+	if (e.type === "task" && !filter) attention?.onTask(e.task, e.event);
+}
+
+/**
+ * Front agent that should proactively tell a person about a task that needs them: among that person's
+ * connected fronts, the one that dispatched it, else the persistent Web UI front, else any. Every connected
+ * front of the person still receives the report in its conversation; this only picks who speaks up.
+ */
+function pickFront(t: Task, key: string): string | undefined {
+	const fronts = [...clients].filter((c) => keyOf(c.viewer) === key).map((c) => c.front).filter((f): f is string => !!f);
+	if (t.owner && fronts.includes(t.owner)) return t.owner;
+	return fronts.find((f) => f.startsWith("webui@")) ?? fronts[0];
 }
 function workerConnected(taskId: string) {
 	for (const c of clients) if (c.taskId === taskId) return true;
@@ -237,8 +256,17 @@ function recordEvent(t: Task, ev: Omit<TaskEvent, "ts" | "taskId">) {
 function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "taskId">) {
 	const prev = t.status;
 	Object.assign(t, patch, { updatedAt: Date.now(), rev: (t.rev ?? 0) + 1 });
+	if (patch.status && patch.status !== prev) {
+		t.statusSince = t.updatedAt;
+		// A new status is new attention: an old snooze no longer applies.
+		t.snoozedUntil = t.snoozedAt = undefined;
+		if (!patch.ask) t.ask = undefined;
+	}
 	if (patch.status && patch.status !== prev && ATTENTION_STATUSES.includes(patch.status)) t.unread = true;
-	if (patch.status && ACTIVE_STATUSES.includes(patch.status)) t.unread = false;
+	if (patch.status && ACTIVE_STATUSES.includes(patch.status)) {
+		t.unread = false;
+		t.ask = undefined;
+	}
 	// Silent scheduled jobs: a successful run is archived right away instead of waiting in 待扫.
 	if (patch.status === "done" && t.source?.kind === "cron" && t.source.silent) t.unread = false;
 	saveTask(t);
@@ -325,7 +353,7 @@ async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: stri
 	await tmux("new-window", "-d", "-t", `${cfg.tmuxSession}:`, "-n", t.id, "-c", t.cwd, `bash ${sh(scriptPath)}`);
 	await tmux("set-window-option", "-t", target, "automatic-rename", "off").catch(() => {});
 	const status = opts.status ?? "starting";
-	update(t, { status, tmuxTarget: target, closed: false, activity: opts.idle ? "已恢复会话，等待指令" : "启动中" }, { kind: "status", status, text: opts.resumeMessage || opts.idle ? "resumed" : "spawned" });
+	update(t, { status, tmuxTarget: target, closed: false, activity: opts.idle ? "已恢复，等待指令" : "启动中" }, { kind: "status", status, text: opts.resumeMessage || opts.idle ? "resumed" : "spawned" });
 }
 
 // ---------------------------------------------------------------- methods (local implementations, callable over the mesh)
@@ -555,10 +583,25 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		return update(t, { closed: true, unread: false, ...(ACTIVE_STATUSES.includes(t.status) ? { status: "cancelled" as TaskStatus } : {}) }, { kind: "close", text: "closed by user" });
 	},
 	"task.ack": async (p) => {
-		// Per person (shared/team.ts): clears the person's pings; only the holder's ack marks the task read.
+		// Per person (shared/team.ts): clears the person's pings; only the holder's ack marks the task read
+		// (and settles it in the attention model: archived, snooze cleared).
 		const t = ownTask(p.id);
 		const r = team.ack(t, p.viewer);
-		return update(t, { ...r.patch, ...(r.holder ? { unread: false } : {}) }, p.viewer?.user ? { kind: "ack", by: p.viewer.user } : undefined);
+		const settle = r.holder ? { unread: false, ackedAt: Date.now(), snoozedUntil: undefined, snoozedAt: undefined } : {};
+		return update(t, { ...r.patch, ...settle }, { kind: "ack", ...(p.viewer?.user ? { by: p.viewer.user } : {}) });
+	},
+	// 稍后提醒: minutes > 0 hides the task from need/skim until then; 0 / null brings it back now.
+	"task.snooze": async (p) => {
+		const t = ownTask(p.id);
+		const minutes = p.minutes === null || p.minutes === undefined ? 60 : Number(p.minutes);
+		if (!Number.isFinite(minutes) || minutes < 0) throw new HttpError(400, `invalid minutes: ${p.minutes}`);
+		const until = minutes > 0 ? Date.now() + minutes * 60_000 : undefined;
+		return update(t, { snoozedUntil: until, snoozedAt: until ? Date.now() : undefined }, { kind: "snooze", text: until ? `snoozed ${minutes} min` : "unsnoozed", ...(p.viewer?.user ? { by: p.viewer.user } : {}) });
+	},
+	"task.retry": async (p) => {
+		const t = ownTask(p.id);
+		await deliverMessage(t, String(p.text ?? "").trim() || "上一轮没有成功结束。请检查当时的状态和报错，从中断处继续，把任务做完；如果仍然无法继续，用 qa_report 说明原因。");
+		return t;
 	},
 	"task.screen": async (p) => {
 		const t = ownTask(p.id);
@@ -1018,8 +1061,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 	if (p === "/api/events" && m === "GET") {
 		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...cors() });
-		const client: SseClient = { res, taskId: url.searchParams.get("task") ?? undefined, role: url.searchParams.get("role") ?? "client", viewer };
+		const client: SseClient = { res, taskId: url.searchParams.get("task") ?? undefined, role: url.searchParams.get("role") ?? "client", viewer, front: url.searchParams.get("front") ?? undefined };
 		clients.add(client);
+		if (!client.taskId) attention.watch(viewer);
 		res.write(`data: ${JSON.stringify({ type: "hello", ts: Date.now() })}\n\n`);
 		const ping = setInterval(() => res.write(": ping\n\n"), 15000);
 		req.on("close", () => {
@@ -1069,6 +1113,27 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return send(res, 200, { task: await apiCreateTask(body) });
 	}
 
+	// ---- attention (see shared/attention.ts): the one queue every front end renders, per person (shared/team.ts)
+	if (p === "/api/attention" && m === "GET") {
+		let who = viewer;
+		const as = url.searchParams.get("user");
+		if (as && as !== viewer.user) {
+			need(viewer, "attention.other");
+			if (!team.member(as)) throw new HttpError(400, `no such team member: ${as}`);
+			who = { user: as, role: team.member(as)!.role };
+		}
+		return send(res, 200, attention.view(who, { archived: Number(url.searchParams.get("archived") ?? 30), scope: url.searchParams.get("scope") === "team" ? "team" : "mine" }));
+	}
+	if (p === "/api/attention/focus" && m === "POST") {
+		const body = await readJson(req);
+		return send(res, 200, { focus: attention.setFocus({ on: body.on !== false, minutes: body.minutes }) });
+	}
+	if (p === "/api/attention/settings" && m === "POST") {
+		const body = await readJson(req);
+		if (body.digestMinutes !== undefined) attention.setDigestMinutes(Number(body.digestMinutes));
+		return send(res, 200, attention.view(viewer, { archived: 0 }));
+	}
+
 	let mt = /^\/api\/tasks\/([\w-]+)(?:\/(\w+))?$/.exec(p);
 	if (mt) {
 		const id = mt[1]!;
@@ -1088,6 +1153,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			if (typeof body.summary === "string") patch.summary = body.summary;
 			if (typeof body.activity === "string") patch.activity = body.activity;
 			if (typeof body.sessionFile === "string") patch.sessionFile = body.sessionFile;
+			// Explicit attention request from the worker: a human decision is required.
+			if (body.needsHuman) {
+				const question = String(body.question ?? body.summary ?? "").trim();
+				const options = Array.isArray(body.options) ? body.options.map(String).filter(Boolean).slice(0, 8) : undefined;
+				patch.ask = { question, options: options?.length ? options : undefined, at: Date.now() };
+				if (!patch.status || ACTIVE_STATUSES.includes(patch.status)) patch.status = "needs_input";
+			}
 			const kind = body.kind ?? (body.status ? "status" : body.summary ? "report" : "activity");
 			const text = body.summary ?? body.activity ?? body.sessionFile;
 			// Activity pings are frequent: replicate them but keep the event log lean.
@@ -1104,7 +1176,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			if (r.task.machine !== SELF) mirrorTasks.set(r.task.id, r.task);
 			return send(res, 200, r);
 		}
-		if (!["message", "cancel", "close", "ack", "handoff", "assign"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign"].includes(action ?? "")) throw new HttpError(404, "unknown action");
 		// Mesh RPC params are trusted: the owning hub learns who acts from here, never from the client body.
 		const task = await call<Task>(owner, `task.${action}`, { ...body, id, viewer, by: viewer.user });
 		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
@@ -1172,7 +1244,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			.sort((a, b) => a.createdAt - b.createdAt)
 			.map((i) => {
 				const t = i.taskId ? (tasks.get(i.taskId) ?? mirrorTasks.get(i.taskId)) : undefined;
-				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, mode: i.mode, anchor: i.anchor, viewport: i.viewport, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine };
+				const a = t ? attentionOf(t) : undefined;
+				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, mode: i.mode, anchor: i.anchor, viewport: i.viewport, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine, attention: a && { level: a.level, mark: a.mark, reason: a.reason } };
 			});
 		return send(res, 200, { comments: list });
 	}
@@ -1184,6 +1257,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 loadAll();
 cron.load();
+// Created after loading so the persisted tasks form its baseline (no interrupts for old news at startup).
+attention = createAttention({
+	file: paths.attention,
+	allTasks: () => allTasks(),
+	personalize: (t, base, v) => personalAttention(t, base, v, team.roster()),
+	teamRow: (t, base) => teamRow(t, base),
+	viewers: () => [...clients].filter((c) => !c.taskId && c.viewer).map((c) => c.viewer!),
+	broadcastTo: (key, e) => broadcast(e, (c) => !c.taskId && keyOf(c.viewer) === key),
+	pickFront,
+	log,
+});
 const server = createServer((req, res) => {
 	handle(req, res).catch((err) => {
 		const status = err instanceof HttpError ? err.status : 500;
@@ -1203,6 +1287,7 @@ server.listen(cfg.port, cfg.host, () => {
 });
 setInterval(backgroundUpdate, 3600_000).unref();
 setInterval(maybeRestart, 60_000).unref();
+setInterval(() => attention.tick(), 30_000).unref();
 setInterval(() => void reconcile().catch(() => {}), 5000);
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
 	process.on(sig, () => {

@@ -2,7 +2,7 @@
 
 把 quick-agent 的 Web UI 装进一个原生窗口，并按**注意力**来组织：托盘和 Dock 只显示"需要你"的数量；只有需要你的事才会立即通知，完成的汇报合批成汇总；支持专注模式；全局快捷键随时"把一件事交出去"。设计依据见 [`docs/management-philosophy.md`](../docs/management-philosophy.md) 和 [`docs/attention.md`](../docs/attention.md)。
 
-客户端里**没有会话**，也没有任何会话相关的菜单。
+客户端里**没有会话**，也没有任何会话相关的菜单。注意力的分类、计数和打扰决策都来自 hub 的注意力模型（`shared/attention.ts`，`GET /api/attention` + SSE `attention*` 事件，见根目录 README「注意力模型」），客户端只负责渲染和弹通知，所以托盘数字和 Web UI、`quick attention` 永远一致。
 
 ## 运行（开发）
 
@@ -22,16 +22,16 @@ npm run check        # 语法检查 + 单元测试
 
 | | |
 |---|---|
-| **菜单栏托盘** | 标题 `■2` = 2 件事需要你；没有需要你的事时只显示 `□`；专注中显示 `☾`。菜单列出"需要你"的任务（点击直达），以及"已托付/进行中 · N""已完成待扫 · N" |
+| **菜单栏托盘** | 标题 `■2` = 2 件事需要你（hub 的 `counts.need`）；没有需要你的事时只显示 `□`；专注中显示 `☾`。菜单列出"需要你"的任务（点击直达），以及"待扫 · N""稍后 · N""不用管（进行中） · N" |
 | **Dock 角标** | 只显示"需要你"的数量 |
-| **系统通知** | 只有 worker 提问、受阻、失败、停下时才立即通知，点通知打开对应任务；完成的汇报合批为一条"N 件事已完成待扫"（默认 30 分钟一次，托盘 → 通知设置可改）；进度不通知；窗口在前台时不弹；不出声 |
-| **专注模式** | 托盘 → 专注模式（30 分钟 / 1 小时 / 2 小时 / 直到关闭），或 `⌘⇧F` 专注 1 小时。专注时不弹任何通知，结束后汇总一次 |
+| **系统通知** | hub 判定 `interrupt: "now"`（worker 提问、受阻、失败、停下，或"稍后"到点）时立即通知，点通知打开对应任务；hub 推送的待扫摘要（`attention.digest`，默认 30 分钟合批一次，托盘 → 通知设置可改，设置存在 hub）显示为一条"N 件事已完成待扫"；进度不通知；窗口在前台时不弹；不出声 |
+| **专注模式** | 托盘 → 专注模式（30 分钟 / 1 小时 / 2 小时 / 直到关闭），或 `⌘⇧F` 专注 1 小时。状态存在 hub，Web UI 和 `quick focus` 看到的是同一个。专注时只有"需要你"会弹通知，待扫摘要留到结束后一次发出 |
 | **把一件事交出去** | 全局 `⌘⇧Space`：Enter 交给前台 agent，`⌘Enter` 交出去并打开窗口，`Tab` 切换为"直接交给 worker"（第一行作标题），Esc 关闭。交出后焦点回到原来的应用 |
-| **注意力导航** | 菜单"注意力"：需要你 `⌘1`、已托付/进行中 `⌘2`、已完成待扫 `⌘3` |
-| **深链** | `quick-agent://task/<id>`、`quick-agent://view/need\|inflight\|skim`、`quick-agent://quick`；也可以用 `open -a quick-agent --args --quick` 绑定到 Raycast 或 Alfred |
+| **注意力导航** | 菜单"注意力"：需要你 `⌘1`、待扫 `⌘2`、稍后 `⌘3`、不用管 `⌘4` |
+| **深链** | `quick-agent://task/<id>`、`quick-agent://view/need\|skim\|snoozed\|inflight`、`quick-agent://quick`；也可以用 `open -a quick-agent --args --quick` 绑定到 Raycast 或 Alfred |
 | **窗口** | 记住位置、大小和最大化状态；关窗口只是隐藏（worker 照常工作）；背景色跟随系统深浅色 |
 
-设置保存在 `~/Library/Application Support/quick-agent/settings.json`（帮助 → 打开客户端设置文件）：`shortcut`、`notifications`、`digestMinutes`、`quiet`、`quickMode`，以及高级选项 `repo`（quick-agent 仓库路径）、`node`（Node 路径）、`cwd`（前台进程的工作目录）。也可以用环境变量 `QA_REPO`、`QA_NODE` 指定。
+设置保存在 `~/Library/Application Support/quick-agent/settings.json`（帮助 → 打开客户端设置文件）：`shortcut`、`notifications`、`quickMode`（专注模式和摘要间隔在 hub 里），以及高级选项 `repo`（quick-agent 仓库路径）、`node`（Node 路径）、`cwd`（前台进程的工作目录）。也可以用环境变量 `QA_REPO`、`QA_NODE` 指定。
 
 ## 安全
 
@@ -45,16 +45,15 @@ npm run check        # 语法检查 + 单元测试
 
 ```js
 window.quickDesktop.onOpenTask((id) => …)    // 点通知、托盘条目或深链时：打开任务详情
-window.quickDesktop.onView((v) => …)         // v = "need" | "inflight" | "skim"：切到对应的注意力分区
+window.quickDesktop.onView((v) => …)         // v = "need" | "skim" | "snoozed" | "inflight"：切到对应的注意力分区
 window.quickDesktop.onAction((a) => …)       // a = "focus-input"：聚焦"交出去"输入框
 ```
 
-页面注册之前，客户端会注入兜底处理：调用全局的 `openTask(id)`（Web UI 已有），没有的话改写 `location.hash`（`#task=<id>`、`#view=need|inflight|skim`）；切换分区时优先调用全局的 `qaShowView(v)`。希望 Web UI 做到：
+页面注册之前，客户端会注入兜底处理：调用全局的 `openTask(id)`（Web UI 已有），没有的话改写 `location.hash`（`#task=<id>`、`#view=...`）；切换分区时优先调用全局的 `qaShowView(v)`。Web UI 已经做到：
 
-1. 支持 `#task=<id>` 和 `#view=need|inflight|skim`，或者直接调用 `quickDesktop.onView` 和 `onOpenTask` 注册处理函数；
-2. 提供全局的 `qaShowView(v)`，或在三个分区上加上可定位的锚点；
-3. 三个分区的分类和客户端一致（`electron/src/lib.cjs` 的 `bucket()`）。需要你：`needs_input` / `blocked` / `failed` / `exited` / `idle`；进行中：`starting` / `running`；待扫：`done` 且未读。
-4. 可选：把专注模式和"稍后"状态存到 hub，让客户端托盘和 Web UI 保持一致。
+1. 提供全局的 `openTask(id)` 和 `qaShowView(v)`（`v` 为 `need|skim|snoozed|inflight|archived`，滚动到对应分区）；
+2. 分区直接用 hub 的注意力状态渲染，和客户端用的是同一份数据；
+3. 专注模式和"稍后"存在 hub，托盘、Web UI、CLI、终端前台一致。
 
 ## 打包
 

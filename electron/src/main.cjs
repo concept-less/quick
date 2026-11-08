@@ -27,8 +27,7 @@ const SETTINGS_FILE = () => path.join(app.getPath("userData"), "settings.json");
 const DEFAULTS = {
 	shortcut: "CommandOrControl+Shift+Space",
 	notifications: true,
-	digestMinutes: 30, // "已完成待扫" hand-backs are batched into one notification this often
-	quiet: { mode: "off" }, // 专注模式: { mode: "focus", minutes?, until? }
+	// focus mode and the digest interval are hub state (GET /api/attention), shared by all clients
 	quickMode: "front", // "front" = hand to the front agent, "direct" = hand straight to a worker
 	cwd: undefined, // advanced: working directory of the front agent process (default: config defaultCwd)
 	repo: undefined, // quick-agent repository (default: auto-detect)
@@ -318,7 +317,7 @@ function openTask(id) {
 	showWindow();
 	toRenderer("qa:open-task", id);
 }
-/** Attention views: "need" (需要你) · "inflight" (已托付/进行中) · "skim" (已完成待扫). */
+/** Attention views: "need" (需要你) · "skim" (待扫) · "snoozed" (稍后) · "inflight" (不用管). */
 function showView(v) {
 	showWindow();
 	toRenderer("qa:view", v);
@@ -327,7 +326,7 @@ function showView(v) {
 /**
  * Default handlers for the desktop bridge, used until the Web UI registers its own via window.quickDesktop.
  * They only rely on stable Web UI entry points: a global openTask(id) when present, otherwise URL hashes
- * (#task=<id>, #view=need|inflight|skim) that the Web UI can honour. Nothing here touches credentials.
+ * (#task=<id>, #view=need|skim|snoozed|inflight) that the Web UI can honour. Nothing here touches credentials.
  */
 function injectGlue() {
 	if (!win || !conn || !win.webContents.getURL().startsWith(conn.uiUrl)) return;
@@ -342,9 +341,16 @@ function injectGlue() {
 		.catch(() => {});
 }
 
-// ---------------------------------------------------------------- hub stream → tray / dock / notifications
+// ---------------------------------------------------------------- hub attention → tray / dock / notifications
+//
+// The hub owns the attention model and the interrupt policy (shared/attention.ts, hub/attention.ts):
+// this client renders GET /api/attention and obeys the "attention" SSE events. Focus mode and the digest
+// interval live in the hub too, so the Web UI, the CLI and this client always agree.
 
-const tasks = new Map();
+const items = new Map(); // taskId → attention item from the hub
+let counts = lib.emptyCounts();
+let focus = { on: false };
+let hubDigestMinutes = 30;
 const gate = new lib.NotificationGate();
 const liveNotifications = new Set(); // keep references so click handlers survive GC
 let hubAbort;
@@ -362,26 +368,35 @@ async function hubFetch(p, init = {}) {
 }
 
 async function loadSnapshot() {
-	const { tasks: list } = await hubFetch("/api/tasks");
-	tasks.clear();
-	for (const t of list) {
-		tasks.set(t.id, t);
-		gate.shouldShow(`${t.id}:${t.status}:${t.updatedAt}`); // never notify for the snapshot itself
+	const q = await hubFetch("/api/attention?archived=0");
+	items.clear();
+	for (const i of q.items || []) {
+		items.set(i.taskId, i);
+		gate.shouldShow(`${i.taskId}:${i.level}:${i.since}`); // never notify for the snapshot itself
 	}
+	counts = q.counts || lib.emptyCounts();
+	focus = q.focus || { on: false };
+	hubDigestMinutes = q.digestMinutes || hubDigestMinutes;
 	updateIndicators();
 }
 
 function onHubEvent(e) {
 	if (e.type === "hello") return void loadSnapshot().catch(() => {});
-	if (e.type !== "task" || !e.task) return;
-	const prev = tasks.get(e.task.id);
-	tasks.set(e.task.id, e.task);
-	const n = lib.notificationFor(prev, e.task, e.event);
-	if (n && gate.shouldShow(`${e.task.id}:${e.task.status}:${e.task.updatedAt}`)) {
-		if (n.kind === "urgent") notifyUrgent(e.task, n);
-		else digest.add(e.task);
+	if (e.type === "attention" && e.item) {
+		items.set(e.item.taskId, e.item);
+		counts = e.counts || counts;
+		focus = e.focus || focus;
+		if (e.interrupt === "now" && gate.shouldShow(`${e.item.taskId}:${e.item.level}:${e.item.since}`)) notifyUrgent(e.item);
+		updateIndicators();
+	} else if (e.type === "attention.digest") {
+		counts = e.counts || counts;
+		notifyDigest(e.items, e.reason);
+		updateIndicators();
+	} else if (e.type === "attention.state") {
+		counts = e.counts || counts;
+		focus = e.focus || focus;
+		updateIndicators();
 	}
-	updateIndicators();
 }
 
 function startHubStream() {
@@ -429,14 +444,10 @@ function startHubStream() {
 	})();
 }
 
-// Notifications are deliberately restrained (attention is the scarce resource, see docs/attention.md):
-//  - "需要你" (asked / blocked / failed / stopped) notifies immediately — the only thing allowed to interrupt;
-//  - "已完成待扫" never interrupts on its own: hand-backs are batched into one quiet digest (default every 30 min);
-//  - 专注模式 holds everything (no banners, tray count still updates) and summarises once when it ends;
-//  - progress and activity never notify; nothing notifies while the window is in front (it already shows it);
-//  - no sounds.
-const digest = new lib.Digest();
-let heldUrgent = []; // "需要你" items that arrived during 专注, summarised afterwards
+// Notifications follow the hub's decision (attention is the scarce resource):
+//  - "需要你" (interrupt "now") notifies immediately — the only thing allowed to interrupt, also in 专注模式;
+//  - "待扫" never interrupts on its own: the hub batches hand-backs into one digest (held during 专注);
+//  - progress and activity never notify; nothing notifies while the window is in front; no sounds.
 
 function windowInFront() {
 	return !!win && !win.isDestroyed() && win.isVisible() && win.isFocused();
@@ -457,57 +468,40 @@ function showNotification({ title, subtitle, body, onClick }) {
 	setTimeout(drop, 30 * 60 * 1000);
 }
 
-function notifyUrgent(task, n) {
-	if (lib.quietMode(settings) !== "off") {
-		heldUrgent.push(task.id);
-		return void log(`held (专注): ${n.title}`);
-	}
+function notifyUrgent(item) {
+	const n = lib.urgentNotification(item);
 	if (windowInFront()) return void log(`not notified (window in front): ${n.title}`);
-	showNotification({ title: n.title, subtitle: n.subtitle, body: n.body, onClick: () => openTask(task.id) });
+	showNotification({ title: n.title, subtitle: n.subtitle, body: n.body, onClick: () => openTask(item.taskId) });
 }
 
-function flushDigest(force = false) {
-	digest.prune((id) => lib.bucket(tasks.get(id)) === "skim");
-	if (!digest.size) return;
-	if (!force && lib.quietMode(settings) !== "off") return; // held until 专注 ends
-	if (windowInFront()) {
-		digest.flush(); // the user is looking at the app already
-		return;
-	}
-	const d = digest.flush();
+function notifyDigest(list, reason) {
+	const d = lib.digestNotification(list, reason);
+	if (!d) return;
+	if (windowInFront()) return void log(`digest not shown (window in front): ${d.title}`);
 	showNotification({ title: d.title, body: d.body, onClick: () => (d.ids.length === 1 ? openTask(d.ids[0]) : showView("skim")) });
 }
 
-let quietTimer;
-let lastQuietMode = "off";
-function setQuiet(mode, minutes) {
-	settings.quiet = mode === "off" ? { mode: "off" } : { mode, minutes, until: minutes ? Date.now() + minutes * 60000 : undefined };
-	saveSettings();
-	checkQuiet();
+async function setFocus(on, minutes) {
+	try {
+		const r = await hubFetch("/api/attention/focus", { method: "POST", body: JSON.stringify({ on, minutes }) });
+		focus = r.focus || focus;
+	} catch (e) {
+		log(`focus: ${e.message}`);
+	}
 	updateIndicators();
 }
-/** Runs every 30 s: ends expired quiet periods and summarises what was held. */
-function checkQuiet() {
-	const mode = lib.quietMode(settings);
-	if (lastQuietMode !== "off" && mode === "off") {
-		if (settings.quiet?.mode !== "off") {
-			settings.quiet = { mode: "off" };
-			saveSettings();
-		}
-		const need = lib.byBucket([...tasks.values()], "need", 50);
-		const held = heldUrgent.filter((id) => need.some((t) => t.id === id));
-		heldUrgent = [];
-		if (held.length && need.length && !windowInFront())
-			showNotification({ title: `专注结束 · ${need.length} 件事需要你`, body: need.slice(0, 4).map((t) => t.title.slice(0, 24)).join("、"), onClick: () => showView("need") });
-		flushDigest(true);
-		updateIndicators();
+async function setDigestMinutes(m) {
+	try {
+		const r = await hubFetch("/api/attention/settings", { method: "POST", body: JSON.stringify({ digestMinutes: m }) });
+		hubDigestMinutes = r.digestMinutes || m;
+	} catch (e) {
+		log(`digest interval: ${e.message}`);
 	}
-	lastQuietMode = mode;
+	updateIndicators();
 }
-function quietLabel() {
-	const mode = lib.quietMode(settings);
-	if (mode === "off") return "";
-	const until = settings.quiet?.until ? `至 ${new Date(settings.quiet.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+function focusLabel() {
+	if (!lib.focusOn(focus)) return "";
+	const until = focus.until ? `至 ${new Date(focus.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
 	return `专注${until ? ` ${until}` : ""}`;
 }
 
@@ -520,43 +514,44 @@ function updateIndicators() {
 	trayTimer = setTimeout(renderIndicators, 120);
 }
 function renderIndicators() {
-	const list = [...tasks.values()];
-	const s = lib.summarize(list);
-	if (IS_MAC && app.dock) app.dock.setBadge(lib.badge(s));
-	else app.setBadgeCount?.(s.need);
+	const list = [...items.values()];
+	const c = counts;
+	if (IS_MAC && app.dock) app.dock.setBadge(lib.badge(c));
+	else app.setBadgeCount?.(c.need);
 	if (!tray) return;
-	const quiet = lib.quietMode(settings);
-	if (IS_MAC) tray.setTitle(hubConnected ? `${lib.trayTitle(s)}${quiet !== "off" ? " ☾" : ""}` : "□–", { fontType: "monospacedDigit" });
-	tray.setToolTip(s.need ? `quick-agent · ${s.need} 件事需要你` : "quick-agent · 没有需要你的事");
-	const item = (t) => ({ label: `${t.title.slice(0, 42)}  · ${lib.STATUS_LABEL[t.status] || t.status}`, click: () => openTask(t.id) });
-	const need = lib.byBucket(list, "need", 8).map(item);
-	const quietItem = (label, mode, minutes) => ({
+	const fon = lib.focusOn(focus);
+	if (IS_MAC) tray.setTitle(hubConnected ? `${lib.trayTitle(c)}${fon ? " ☾" : ""}` : "□–", { fontType: "monospacedDigit" });
+	tray.setToolTip(c.need ? `quick-agent · ${c.need} 件事需要你` : "quick-agent · 没有需要你的事");
+	const item = (i) => ({ label: `${i.mark} ${i.title.slice(0, 42)}`, click: () => openTask(i.taskId) });
+	const need = lib.byLevel(list, "need", 8).map(item);
+	const focusItem = (label, on, minutes) => ({
 		label,
 		type: "radio",
-		checked: quiet === mode && (mode === "off" || (settings.quiet?.minutes ?? 0) === (minutes ?? 0)),
-		click: () => setQuiet(mode, minutes),
+		checked: on ? fon && (minutes ? !!focus.until && Math.abs(focus.until - (focus.since || 0) - minutes * 60000) < 60000 : !focus.until) : !fon,
+		click: () => setFocus(on, minutes),
 	});
 	tray.setContextMenu(
 		Menu.buildFromTemplate([
-			{ label: hubConnected ? (s.need ? `需要你 · ${s.need}` : "没有需要你的事") : "hub 未连接", enabled: false },
+			{ label: hubConnected ? (c.need ? `需要你 · ${c.need}` : "没有需要你的事") : "hub 未连接", enabled: false },
 			...need,
 			{ type: "separator" },
-			{ label: `已托付/进行中 · ${s.inflight}`, click: () => showView("inflight") },
-			{ label: `已完成待扫 · ${s.skim}`, click: () => showView("skim") },
+			{ label: `待扫 · ${c.skim}`, click: () => showView("skim") },
+			{ label: `稍后 · ${c.snoozed}`, click: () => showView("snoozed") },
+			{ label: `不用管（进行中） · ${c.inflight}`, click: () => showView("inflight") },
 			{ type: "separator" },
 			{ label: "把一件事交出去…", accelerator: settings.shortcut, click: showQuick },
 			{ label: "打开 quick-agent", click: showWindow },
 			{ type: "separator" },
 			{
-				label: quiet === "off" ? "专注模式" : `专注模式（${quietLabel()}）`,
+				label: fon ? `专注模式（${focusLabel()}）` : "专注模式",
 				submenu: [
-					{ label: "专注时不弹任何通知，结束后汇总", enabled: false },
-					quietItem("关闭", "off"),
+					{ label: "专注时只有「需要你」会打扰，完成汇总留到结束", enabled: false },
+					focusItem("关闭", false),
 					{ type: "separator" },
-					quietItem("专注 30 分钟", "focus", 30),
-					quietItem("专注 1 小时", "focus", 60),
-					quietItem("专注 2 小时", "focus", 120),
-					quietItem("专注，直到我关闭", "focus"),
+					focusItem("专注 30 分钟", true, 30),
+					focusItem("专注 1 小时", true, 60),
+					focusItem("专注 2 小时", true, 120),
+					focusItem("专注，直到我关闭", true),
 				],
 			},
 			{
@@ -564,28 +559,14 @@ function renderIndicators() {
 				submenu: [
 					{ label: "系统通知", type: "checkbox", checked: settings.notifications, click: (i) => ((settings.notifications = i.checked), saveSettings()) },
 					{ type: "separator" },
-					{ label: "待扫汇总间隔", enabled: false },
-					...[5, 10, 30, 60].map((m) => ({
-						label: `${m} 分钟`,
-						type: "radio",
-						checked: settings.digestMinutes === m,
-						click: () => {
-							settings.digestMinutes = m;
-							saveSettings();
-							scheduleDigest();
-						},
-					})),
+					{ label: "待扫汇总间隔（hub 设置，所有客户端共用）", enabled: false },
+					...[5, 10, 30, 60].map((m) => ({ label: `${m} 分钟`, type: "radio", checked: hubDigestMinutes === m, click: () => setDigestMinutes(m) })),
 				],
 			},
 			{ type: "separator" },
 			{ label: "退出（worker 继续在后台运行）", click: () => app.quit() },
 		]),
 	);
-}
-let digestTimer;
-function scheduleDigest() {
-	clearInterval(digestTimer);
-	digestTimer = setInterval(() => flushDigest(false), Math.max(1, settings.digestMinutes || 30) * 60000);
 }
 
 function createTray() {
@@ -680,7 +661,6 @@ ipcMain.handle("quick:submit", async (e, payload) => {
 			method: "POST",
 			body: JSON.stringify({ title: lib.titleFromText(text), brief: text, cwd: conn.cwd || conn.defaultCwd, source: { kind: "api" } }),
 		});
-		tasks.set(task.id, task);
 		updateIndicators();
 		if (payload?.open) {
 			quickReturnFocus = false;
@@ -737,11 +717,12 @@ function buildMenu() {
 			label: "注意力",
 			submenu: [
 				{ label: "需要你", accelerator: "CmdOrCtrl+1", click: () => showView("need") },
-				{ label: "已托付 / 进行中", accelerator: "CmdOrCtrl+2", click: () => showView("inflight") },
-				{ label: "已完成待扫", accelerator: "CmdOrCtrl+3", click: () => showView("skim") },
+				{ label: "待扫", accelerator: "CmdOrCtrl+2", click: () => showView("skim") },
+				{ label: "稍后", accelerator: "CmdOrCtrl+3", click: () => showView("snoozed") },
+				{ label: "不用管（进行中）", accelerator: "CmdOrCtrl+4", click: () => showView("inflight") },
 				{ type: "separator" },
-				{ label: "专注 1 小时", accelerator: "CmdOrCtrl+Shift+F", click: () => setQuiet("focus", 60) },
-				{ label: "结束专注", click: () => setQuiet("off") },
+				{ label: "专注 1 小时", accelerator: "CmdOrCtrl+Shift+F", click: () => setFocus(true, 60) },
+				{ label: "结束专注", click: () => setFocus(false) },
 			],
 		},
 		{
@@ -779,7 +760,7 @@ function handleDeepLink(url) {
 	const m = /^quick-agent:\/\/(?:task\/)?(t[0-9a-z]+)/i.exec(String(url || ""));
 	if (m) openTask(m[1]);
 	else if (/^quick-agent:\/\/(quick|new)\b/i.test(String(url || ""))) showQuick();
-	else if (/^quick-agent:\/\/view\/(need|inflight|skim)\b/i.test(String(url || ""))) showView(/view\/(\w+)/.exec(url)[1]);
+	else if (/^quick-agent:\/\/view\/(need|skim|snoozed|inflight)\b/i.test(String(url || ""))) showView(/view\/(\w+)/.exec(url)[1]);
 	else if (/^quick-agent:/.test(String(url || ""))) showWindow();
 }
 
@@ -810,9 +791,7 @@ if (!app.requestSingleInstanceLock()) {
 		buildMenu();
 		createTray();
 		registerShortcut();
-		scheduleDigest();
-		lastQuietMode = lib.quietMode(settings);
-		setInterval(checkQuiet, 30000);
+		setInterval(updateIndicators, 30000); // focus expiry label
 		createWindow();
 		if (startHidden && IS_MAC) app.hide(); // hand focus back to whatever the user was doing
 		await loadUi();

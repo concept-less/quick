@@ -1,6 +1,7 @@
 // Data model shared by hub, CLI and extensions.
 import type { TaskPeople } from "./team.ts";
 import type { CronJob } from "./cron.ts";
+import type { AttentionCounts, AttentionItem, AttentionLevel, FocusState, Interrupt } from "./attention.ts";
 
 export type TaskStatus =
 	| "starting" // tmux window spawned, worker not yet connected
@@ -14,7 +15,7 @@ export type TaskStatus =
 	| "exited" // pi process in the window exited
 	| "handoff"; // being moved to another machine (see hub/handoff.ts)
 
-/** Statuses that need the human's attention. */
+/** Statuses that may need the human's attention (the full attention model lives in shared/attention.ts). */
 export const ATTENTION_STATUSES: TaskStatus[] = ["idle", "needs_input", "blocked", "done", "failed", "exited"];
 export const ACTIVE_STATUSES: TaskStatus[] = ["starting", "running"];
 export const CLOSED_STATUSES: TaskStatus[] = ["cancelled"];
@@ -50,13 +51,23 @@ export interface Task extends TaskPeople {
 	summary?: string;
 	/** Short description of what the worker is doing right now. */
 	activity?: string;
-	/** True when there is news the human has not acknowledged yet. */
+	/** True when there is news the human has not acknowledged yet (cleared by task.ack, "知道了"). */
 	unread: boolean;
+	/** When the status last changed (attention "since"). */
+	statusSince?: number;
+	/** When the human last acknowledged the task. */
+	ackedAt?: number;
+	/** "稍后提醒": hidden from need/skim until then (set by task.snooze). */
+	snoozedUntil?: number;
+	snoozedAt?: number;
+	/** Explicit question from the worker (qa_report needs_human); cleared when the worker runs again. */
+	ask?: { question: string; options?: string[]; at: number };
+	/** Internal: pi session file of the worker (used to resume it; never shown to the human). */
 	sessionFile?: string;
 	tmuxTarget?: string;
 	/** Number of follow-up messages sent to the worker. */
 	messages: number;
-	/** pi session id of the front agent that dispatched the task (receives its reports). */
+	/** Id of the front agent that dispatched the task (preferred for proactive delivery of its reports). */
 	owner?: string;
 	/** Arbitrary flag set when the worker has closed its window. */
 	closed?: boolean;
@@ -73,7 +84,7 @@ export interface Task extends TaskPeople {
 export interface TaskEvent {
 	ts: number;
 	taskId: string;
-	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "session" | "handoff" | "assign" | "comment";
+	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment";
 	text?: string;
 	/** Team member (or "agent") who caused the event, when known. */
 	by?: string;
@@ -157,4 +168,10 @@ export type HubEvent =
 	| { type: "update"; machine: string; from: string; to: string; ts: number }
 	/** Team roster changed (members are listed without token hashes). */
 	| { type: "team"; members: import("./team.ts").PublicMember[]; ts: number }
-	| { type: "cron"; job: CronJob };
+	| { type: "cron"; job: CronJob }
+	/** Attention of a task changed. interrupt says whether to tell the human now / in the digest / not at all; front names the front agent that should proactively tell the human. */
+	| { type: "attention"; item: AttentionItem; prevLevel?: AttentionLevel; interrupt: Interrupt; counts: AttentionCounts; focus: FocusState; front?: string; ts: number }
+	/** Batched "skim" hand-backs (timer, or focus mode ended). */
+	| { type: "attention.digest"; items: AttentionItem[]; counts: AttentionCounts; reason: "timer" | "focus_end"; ts: number }
+	/** Focus mode / counts changed without a specific task. */
+	| { type: "attention.state"; counts: AttentionCounts; focus: FocusState; ts: number };
