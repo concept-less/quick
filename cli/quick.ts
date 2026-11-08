@@ -1,4 +1,6 @@
 // quick — quick-agent command line.
+import { progressLine, progressText } from "../shared/progress.ts";
+import { entryText } from "../shared/transcript.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -99,7 +101,8 @@ const HELP = `quick — quick-agent
                             reload = 用当前安装的版本平滑重启 hub 和 Web UI 服务（worker 不受影响）
   quick attention [-a] [--project P]   注意力队列：需要你 / 待扫 / 稍后 / 不用管，每级内按项目分组（别名 quick a；-a 含已归档）
   quick ls [-a] [--project P] [--by-project]   同上，按任务一行一个并标出项目；--project 只看一个项目（none = 未归类），--by-project 先按项目分组
-  quick show <id>           查看任务的注意力、汇报、简报
+  quick show <id>           查看任务的注意力、进度、汇报、简报
+  quick log <id> [-f] [-n N] 工作记录：worker 的输出、命令和结果、追加指令（-f 持续跟随）
   quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] [--project P] <title> <brief...>
                             不经前台直接派单（不指定机器时按资源+优先级自动选机器）
   quick send <id> <message> 回答 worker 的问题或追加指令（窗口已关会带着完整上下文重新拉起）
@@ -552,11 +555,33 @@ async function main() {
 			const f = await hub.setFocus(arg !== "off", arg && arg !== "off" ? Number(arg) : undefined);
 			return console.log(f.on ? `专注模式开启${f.until ? `，至 ${new Date(f.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "（quick focus off 关闭）"}：只有「需要你」会打扰` : "专注模式已关闭");
 		}
+		case "log": {
+			const id = rest.find((x) => !x.startsWith("-") && !/^\d+$/.test(x)) ?? die("usage: quick log <id> [-f] [-n N]");
+			const n = Number(flag(rest, "-n") ?? 40);
+			let page = await hub.transcript(id, { limit: n });
+			if (!page.available) console.log("(还没有工作记录：worker 尚未开始)");
+			for (const e of page.entries) console.log(entryText(e));
+			if (!rest.includes("-f")) return;
+			let last = page.total - 1;
+			const shown = new Set(page.entries.filter((e) => !(e.kind === "tool" && e.running)).map((e) => e.i));
+			for (;;) {
+				await new Promise((r) => setTimeout(r, 2000));
+				const from = Math.min(last, page.pendingFrom !== undefined ? page.pendingFrom - 1 : last);
+				page = await hub.transcript(id, { after: from, limit: 200 }).catch(() => page);
+				for (const e of page.entries) {
+					if (shown.has(e.i) || (e.kind === "tool" && e.running)) continue;
+					shown.add(e.i);
+					console.log(entryText(e));
+				}
+				last = Math.max(last, page.total - 1);
+			}
+		}
 		case "show": {
 			const id = rest[0] ?? die("usage: quick show <id>");
 			const { task: t, events } = await hub.getTask(id, 30);
 			const a = attentionOf(t);
-			console.log(`${a.mark} ${t.id} [${LEVEL_LABEL[a.level]}] ${t.title}\n  注意力: ${a.reason}${a.options?.length ? `\n  选项: ${a.options.join(" / ")}` : ""}\n  可以: ${a.actions.map((x) => x.label).join(" / ") || "-"}\n  cwd: ${t.cwd}\n  接管: quick attach ${t.id}\n  activity: ${t.activity ?? "-"}${rest.includes("--debug") ? `\n  [debug] tmux ${t.tmuxTarget ?? "-"} · resume file ${t.sessionFile ?? "-"}` : ""}`);
+			console.log(`${a.mark} ${t.id} [${LEVEL_LABEL[a.level]}] ${t.title}\n  注意力: ${a.reason}${a.options?.length ? `\n  选项: ${a.options.join(" / ")}` : ""}\n  可以: ${a.actions.map((x) => x.label).join(" / ") || "-"}\n  cwd: ${t.cwd}\n  接管: quick attach ${t.id}${ACTIVE_STATUSES.includes(t.status) ? `\n  当前: ${progressLine(t) || "-"}` : ""}${rest.includes("--debug") ? `\n  [debug] activity ${t.activity ?? "-"}` : ""}${rest.includes("--debug") ? `\n  [debug] tmux ${t.tmuxTarget ?? "-"} · resume file ${t.sessionFile ?? "-"}` : ""}`);
+			if (ACTIVE_STATUSES.includes(t.status) || t.progress?.steps?.length) console.log(`\n── 进度 ──\n${progressText(t)}`);
 			console.log(`\n── 汇报 ──\n${t.summary ?? "(暂无)"}`);
 			console.log(`\n── 事件 ──\n${events.map((e) => `${new Date(e.ts).toLocaleTimeString()} ${e.kind}${e.status ? `→${e.status}` : ""} ${(e.text ?? "").split("\n")[0]?.slice(0, 120)}`).join("\n")}`);
 			console.log(`\n── 简报 ──\n${t.brief}`);

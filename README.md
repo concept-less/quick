@@ -54,6 +54,15 @@ worker 需要人类决定时必须显式上报：`qa_report(status="needs_input"
 - 进度、活动、确认、归档从不通知。
 - 专注模式、摘要间隔、待发摘要都持久化在 hub（`~/.quick-agent/attention.json`），所有客户端共享。
 
+### 进度与工作记录（只在你看的时候出现）
+
+「不用管」的任务也能看出做到哪了，但这些信息从不打扰你：不进「需要你」，不发通知，只在你打开任务或看卡片时显示。
+
+- **进度**（`shared/progress.ts`，`task.progress`）：worker 开工时用 `qa_progress` 上报计划（3–8 个步骤，可带每步预计分钟数），每完成一步或切换阶段时更新「正在做第几步」和一句人话说明（例如「正在发布 v0.4.1：已打 tag，等 CI 构建 dmg」），可选百分比 / 预计剩余时间。任务卡片显示「3/6 发布 Release」和一条细进度条；任务详情顶部是步骤清单（`■` 已完成、`▶` 进行中、`□` 未开始）、当前说明、已用时间、最后更新时间和最近几个里程碑，原始命令折在「细节」里。`quick ls` / `quick show` / 前台的 `qa_tasks` / `qa_task_read` 显示同样的内容。
+- **兜底**：没有上报计划的 worker（老版本、几分钟就做完的小任务）由 hub 把工具活动翻译成人话（`git push` → 推送代码，`npm test` → 跑测试，编辑文件 → 修改 X，`scripts/release.sh` → 执行发布脚本……），重要动作记为里程碑。注意力原因里的「进行中：…」也是这句人话，不再是原始命令。
+- 字段：`progress.steps[]{title, state: done|active|todo, expectedMinutes?}`、`note`、`percent`、`eta`、`now`（活动的人话）、`recent[]`（里程碑）、`startedAt`、`updatedAt`（只在计划/步骤/说明有实质变化时更新，活动不刷新它，可用来判断多久没有进展）、`nowAt`（最近一次活动）。任务完成时步骤全部标为完成；完成后再追加指令开始新一轮时进度重置。
+- **工作记录**（`shared/transcript.ts`）：任务详情里「工作记录」区完整展示 worker 做了什么：每轮的输出和思考、每个工具调用（命令、读写了哪个文件）和结果（默认截断，可看全文；edit 显示 diff）、收到的追加指令、汇报和进度上报。连续的同类动作（几次 read、同一条命令反复执行）折叠成一行。只有展开这个区时才拉取（`GET /api/tasks/:id/transcript`，跨机器经 mesh 读取所属机器上的记录）；运行中自动追加新条目、停在底部跟随，往上翻时不会被拉回去，「更早的记录」分页加载。已完成的任务同样能回看。追加指令输入框常驻在详情底部（Enter 发送），发出的指令立即出现在记录里，worker 的回应随后出现；窗口关了也能发，hub 会带着完整上下文恢复 worker。CLI：`quick log <id> [-f] [-n N]`。
+
 ### 汇报怎么送到前台
 
 汇报按任务和注意力送达，不依赖是哪个前台派的单：
@@ -187,7 +196,7 @@ npm 发布是可选的：`scripts/release.sh minor --npm`（默认不发布）�
 
 | 情况 | 角色 |
 |---|---|
-| 环境变量里有 `QA_TASK_ID`（由 hub 拉起的进程） | **worker**：完整工具集，外加 `qa_report` |
+| 环境变量里有 `QA_TASK_ID`（由 hub 拉起的进程） | **worker**：完整工具集，外加 `qa_report`、`qa_progress`（进度）、`qa_comment` |
 | 交互式 pi（终端 TUI，或 RPC 客户端如桌面端） | **前台**（默认开启） |
 | `pi -p …` / `--mode json` | 不受影响，就是普通 pi |
 | `pi --qa-off` 或 `QA_ROLE=off pi` | 普通 pi（仍然显示任务状态） |
@@ -211,7 +220,8 @@ CLI（任何终端都能用）：
 quick attention                # 注意力队列：需要你 / 待扫 / 稍后 / 不用管，每级内按项目分组（quick a；quick ls 是一行一个的版本）
 quick ls --project quick-agent  # 只看一个项目；--by-project 先按项目分组
 quick projects                 # 项目列表与识别规则（见「项目」）
-quick show <id>                # 查看注意力、汇报、简报
+quick show <id>                # 查看注意力、进度、汇报、简报
+quick log <id> [-f]            # 工作记录：worker 的输出、命令和结果、追加指令（-f 持续跟随）
 quick send <id> "回答或追加指令"  # worker 窗口关了也会带着完整上下文重新拉起
 quick ack <id>                 # 知道了
 quick snooze <id> [分钟]        # 稍后提醒
@@ -311,7 +321,7 @@ quick ui status | url | logs | stop | restart
 
 `quick ui` 会先确保 hub 在运行，再拉起一个常驻的 Web UI 进程（`ui/server.ts`，日志 `~/.quick-agent/ui.log`），然后打开 `http://127.0.0.1:7790/?token=…`。
 
-- **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，每一级里按项目分组（见「项目」），按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。点开任务可以看注意力详情、最新汇报、简报，回答或追加指令。
+- **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，每一级里按项目分组（见「项目」），按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。任务卡片上显示进度（「3/6 发布 Release」+ 细进度条）。点开任务可以看进度（步骤清单 + 人话状态）、最新汇报、工作记录、简报，在底部常驻的输入框里回答或追加指令（见「进度与工作记录」）。
 - **前台 agent**：右侧是一个持续的前台，交代新的事、问"有什么需要我的"都在这里。回复流式显示，工具调用显示为卡片，派单卡片带任务 ID 和实时状态，点击任务 ID 打开详情。回复过程中继续发消息会排到本轮之后（Alt+Enter 插入当前轮），可以随时「停止」。支持粘贴图片，`/tasks`、`/qa on|off` 等扩展命令照常可用。顶栏可以切换模型和思考级别。
 - **只有一个前台**：没有会话列表，没有新建/切换/重命名；刷新页面或重启 `quick ui` 都接着同一段对话，上下文由自动压缩控制长度。（内部实现：前台通过 pi SDK 托管在 Web UI 进程里，加载同一个 quick-agent 扩展，对话持久化成 `~/.quick-agent/ui-sessions/` 下的 pi 会话文件；这是实现细节，不对人展示。调试时可用隐藏参数 `quick ui restart --fresh-front` 从空对话开始。）
 - **汇报与评论**：worker 的汇报按注意力进入前台对话（见「汇报怎么送到前台」）。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。「浏览器评论」标签页列出所有评论，以及它们对应的任务。
@@ -670,7 +680,8 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/projects/:id/rename`、`/merge`、`/rules` | `{name}` 改名 / `{into}` 合并 / `{add?, remove?, notes?, members?}` 改识别规则 |
 | POST | `/api/projects/backfill` | `{all?}` 给本机任务归类（all：重新归类所有非手动设置的） |
 | POST | `/api/tasks/:id/handoff` | `{to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}` 把任务交接到另一台机器（异步） |
-| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定 |
+| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定；`{kind:"progress", progress:{plan?, current?, done?, note?, percent?, eta?}}` 更新进度 |
+| GET | `/api/tasks/:id/transcript` | 工作记录：`?after=N` 增量（N 之后的条目），`?before=N&limit=M` 往前翻页，都不带 = 最新一页，`?full=N` 某条不截断的全文；返回 `{entries[], total, pendingFrom?, available}` |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
 | GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本、resources、priority） |
 | POST | `/api/machine` | `{machine?, priority?, resources?, addResources?, removeResources?, resourceNotes?, description?}` 修改某台机器的资源/优先级（null 清除），即时生效 |

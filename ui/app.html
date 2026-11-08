@@ -332,6 +332,58 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .sitem .s1{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sitem .s2{font:11px/1.6 var(--mono);color:var(--fg-3)}
 #zoom{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:60;cursor:zoom-out}
 #zoom img{max-width:94vw;max-height:94vh;border:var(--bw) solid #fff}
+/* ---------- progress (steps + plain words) ---------- */
+.prog{margin-top:8px;font-size:13px}
+.prog .steps{list-style:none;margin:0 0 8px;padding:0;font:12.5px/1.75 var(--mono)}
+.prog .steps li{display:flex;gap:8px;min-width:0}
+.prog .steps li i{font-style:normal;flex:0 0 auto;width:12px}
+.prog .steps li.todo{color:var(--fg-3)}
+.prog .steps li.active{font-weight:700}
+.prog .steps li .em{margin-left:auto;color:var(--fg-3);font-weight:400;flex:0 0 auto}
+.prog .pnow{white-space:pre-wrap;word-break:break-word}
+.prog .pnow2,.prog .pmeta,.prog .precent{font:11.5px/1.6 var(--mono);color:var(--fg-3);margin-top:4px;word-break:break-word}
+.prog .praw summary{cursor:pointer;list-style:none;font:500 10.5px/1.8 var(--mono);letter-spacing:.1em;color:var(--fg-3);margin-top:4px}
+.prog .praw summary::-webkit-details-marker{display:none}
+.prog .praw summary::before{content:"+ "}.prog .praw[open] summary::before{content:"- "}
+.prog .praw pre{font-size:11.5px;padding:6px 8px;margin-top:4px}
+.pbar{height:3px;background:var(--bg-3);margin:0 0 8px}.pbar i{display:block;height:100%;background:var(--fg)}
+.titem .pbar{margin:7px 0 0;height:2px}
+/* ---------- 工作记录 ---------- */
+#tlogSec>summary .grow{flex:1}
+#tlogSec>summary .tlc{font-weight:500;letter-spacing:0;text-transform:none}
+#tlog{max-height:max(320px,calc(100vh - 260px));overflow-y:auto;border:var(--bw) solid var(--line);background:var(--surface);font:12px/1.5 var(--mono)}
+#tlog .tlmore{display:block;width:100%;border:0;border-bottom:var(--bw) solid var(--line);background:var(--bg-2);color:var(--fg-2);font:11px/26px var(--mono);cursor:pointer}
+#tlog .tlmore:hover{color:var(--fg)}
+.le{padding:5px 8px;border-bottom:var(--bw) solid var(--line);min-width:0}
+.le:last-child{border-bottom:0}
+.le>.lh,.le>details>summary{display:flex;gap:8px;align-items:baseline;min-width:0;list-style:none}
+.le>details>summary{cursor:pointer}.le>details>summary::-webkit-details-marker{display:none}
+.le .k{flex:0 0 auto;font:600 10px/1.6 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3);min-width:44px}
+.le .a{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-2)}
+.le .w{flex:0 0 auto;color:var(--fg-3);font-size:10.5px}
+.le .x{white-space:pre-wrap;word-break:break-word;margin:4px 0 2px;color:var(--fg)}
+.le .x.md{font:13px/1.6 var(--sans,inherit)}
+.le pre{white-space:pre-wrap;word-break:break-word;margin:4px 0 2px;padding:6px 8px;background:var(--bg);border:var(--bw) solid var(--line);font-size:11.5px;max-height:360px;overflow:auto}
+.le pre .dp{color:var(--fg);background:var(--bg-3)}.le pre .dm{color:var(--fg-3);text-decoration:line-through}
+.le .full{border:0;background:none;color:var(--fg-2);font:11px var(--mono);cursor:pointer;padding:2px 0;text-decoration:underline}
+.le.text .x{color:var(--fg)}
+.le.thinking .a,.le.thinking .x{color:var(--fg-3);font-style:italic}
+.le.instruction{border-left:3px solid var(--fg);background:var(--bg-2)}
+.le.instruction .k{color:var(--fg)}
+.le.local{opacity:.6}
+.le.report{border-left:3px solid var(--fg)}
+.le.report.needs_input,.le.report.blocked{border-left-color:var(--acc)}
+.le.err .k,.le.err .a{color:var(--acc)}
+.le.run .k::after{content:" ..."}
+.le.note{text-align:center;color:var(--fg-3);font-size:11px}
+.tlempty{padding:16px;color:var(--fg-3);text-align:center}
+/* pinned composer under the detail */
+.dfoot{border-top:var(--bw) solid var(--line-2);padding:8px var(--s4) 10px;background:var(--bg)}
+.dfoot .dfl{display:flex;align-items:center;gap:8px;font:500 10.5px/1 var(--mono);letter-spacing:.1em;color:var(--fg-3);margin-bottom:6px}
+.dfoot textarea{width:100%;min-height:44px;max-height:180px;border:var(--bw) solid var(--line);padding:8px 10px;background:var(--surface);resize:none;outline:0;display:block;font:inherit;font-size:13px}
+.dfoot textarea:focus{border-color:var(--line-2);box-shadow:var(--hard)}
+.dfoot .acts{margin-top:6px;align-items:center}
+.dfoot .acts .hintk{font:11px var(--mono);color:var(--fg-3);flex:1}
 </style>
 </head>
 <body>
@@ -706,6 +758,7 @@ function itemHtml(i){const t=tasks.get(i.taskId)||{id:i.taskId,title:i.title,mac
   return '<div class="titem '+i.level+(i.taskId===selTask?' sel':'')+'" data-id="'+esc(i.taskId)+'" tabindex="0" role="listitem" aria-label="'+esc(LVL[i.level]+' '+i.title+' '+i.reason)+'">'+
     '<div class="trow"><span class="mark">'+esc(i.mark)+'</span><span class="ttitle">'+esc(i.title)+'</span>'+(i.level==='skim'?'<button class="ackb" data-act="ack" title="知道了：确认并归档">知道了</button>':'')+'</div>'+
     '<div class="trow"><span class="tidm">'+esc(i.taskId)+'</span>'+mtag(t)+'<span class="tsub'+(i.level==='need'||i.level==='skim'?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+esc(when)+'</span></div>'+
+    (i.level==='inflight'&&t.progress?.steps?.length?cardBar(t):'')+
     (i.level==='need'&&i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+
     (i.level==='need'&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'" title="把这个回答发给 worker">'+esc(o)+'</button>').join('')+'</div>':'')+
     (i.level==='need'||i.level==='snoozed'?'<div class="tacts">'+acts.map((a,k)=>'<button class="btn'+(k===0?' primary':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+
@@ -795,15 +848,23 @@ async function openTask(id){
   if(seq!==detailSeq)return;
   const t=r.task;tasks.set(t.id,t);const i=attn.get(t.id);
   const keep=d.querySelector('#tmsg')?.value||'';const briefOpen=d.querySelector('#briefSec')?.open;
+  const keepLog=d.dataset.id===id?d.querySelector('#tlog'):null,keepTop=keepLog?.scrollTop,rawOpen=d.querySelector('#dprog .praw')?.open;
+  const showProg=i&&(ACTIVE.includes(t.status)&&t.status!=='starting'||t.progress?.steps?.length);
   const acts=(i?.actions||[]).filter(a=>a.id!=='reply');
   d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(t.title)+'</h3>'+(i?'<span class="mark">'+esc(i.mark)+'</span>':'')+'</div><div class="dbody">'+
-    (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div><div class="ar">'+esc(i.reason)+'</div>'+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
+    (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div>'+(showProg?(ACTIVE.includes(t.status)?'':'<div class="ar">'+esc(i.reason)+'</div>')+'<div id="dprog">'+progHtml(t,i)+'</div>':'<div class="ar">'+esc(i.reason)+'</div>')+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
       (acts.length?'<div class="tacts">'+acts.map(a=>'<button class="btn'+(a.id==='cancel'?' danger':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+'</div>':'')+
-    '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+(t.activity&&ACTIVE.includes(t.status)?'<dt>当前</dt><dd class="mono">'+esc(t.activity)+'</dd>':'')+'</dl>'+
+
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
-    '<div class="dsec send"><h4>'+(i?.level==='need'?'回答 worker':'追加指令')+'</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>'+
+    '<details class="dsec" id="tlogSec"'+(tlIsOpen()?' open':'')+'><summary>工作记录<span class="grow"></span><span class="tlc"></span></summary><div id="tlog" data-id="'+esc(t.id)+'"></div></details>'+
+    '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+'</dl>'+
     '<details class="dsec" id="briefSec"><summary>任务简报</summary><pre class="pre">'+esc(t.brief)+'</pre></details>'+
-    '<div class="acts"><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>关闭 worker 窗口</button></div></div>';
+    '<div class="acts"><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>关闭 worker 窗口</button></div></div>'+
+    '<div class="dfoot"><div class="dfl"><span>'+(i?.level==='need'?'回答 WORKER':'追加指令')+'</span><span class="grow"></span><span>'+(t.closed||!ACTIVE.includes(t.status)?'窗口已关也能发，会自动恢复':'worker 在做，会插入它的当前工作')+'</span></div><textarea id="tmsg" rows="2" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>';
+  if(keepLog){d.querySelector('#tlog').replaceWith(keepLog);keepLog.scrollTop=TL?.stuck!==false?keepLog.scrollHeight:keepTop}
+  if(rawOpen){const r=d.querySelector('#dprog .praw');if(r)r.open=true}
+  const logSec=d.querySelector('#tlogSec');logSec.ontoggle=()=>{localStorage.qaLogOpen=logSec.open?'1':'0';if(logSec.open)tlActivate(t.id);else tlPause()};
+  if(logSec.open)tlActivate(t.id);
   const ta=d.querySelector('#tmsg');ta.value=keep;if(briefOpen)d.querySelector('#briefSec').open=true;
   ta.onkeydown=e=>{if(isSendKey(e)){e.preventDefault();d.querySelector('[data-a=send]').click()}};applySendKey();
   d.querySelector('[data-back]').onclick=closeTask;
@@ -813,14 +874,108 @@ async function openTask(id){
     try{const r=await api('POST','/api/hub/tasks/'+encodeURIComponent(t.id)+'/project',{project:v});tasks.set(r.task.id,r.task);await loadProjects();toast(t.id+' 已移到「'+projName(projOf(r.task))+'」');openTask(t.id)}catch(e){toast(e.message,'error');ps.value=projOf(t)}};
   d.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{const a=b.dataset.a;
     if(a==='close'&&!confirm('关闭 '+t.id+' 的 worker 窗口？'))return;
-    try{if(a==='send'){const text=ta.value.trim();if(!text)return;await api('POST','/api/hub/tasks/'+t.id+'/message',{text});ta.value='';toast('已发送给 '+t.id)}
+    try{if(a==='send'){const text=ta.value.trim();if(!text)return;b.disabled=true;try{await api('POST','/api/hub/tasks/'+t.id+'/message',{text})}finally{b.disabled=false}ta.value='';tlEcho(t.id,text);if(!document.querySelector('#tlogSec')?.open)toast('已发送给 '+t.id)}
       else await api('POST','/api/hub/tasks/'+t.id+'/'+a,{});openTask(t.id)}catch(e){toast(e.message,'error')}});
   window.qaTeamDetail?.(d,t,r); // team: people + comments (ui/team.js)
   // Viewing a finished task settles 待扫; a question keeps waiting until it is answered or put aside.
   if(i?.level==='skim')hubPost('tasks/'+t.id+'/ack').catch(()=>{});
 }
-function closeTask(){const was=selTask;selTask=null;detailSeq++;const d=$('#detail');const hadFocus=d.contains(document.activeElement);d.classList.remove('on');d.dataset.id='';_renderTasks();if(hadFocus&&was)document.querySelector('.titem[data-id="'+CSS.escape(was)+'"]')?.focus()}
+function closeTask(){tlStop();const was=selTask;selTask=null;detailSeq++;const d=$('#detail');const hadFocus=d.contains(document.activeElement);d.classList.remove('on');d.dataset.id='';_renderTasks();if(hadFocus&&was)document.querySelector('.titem[data-id="'+CSS.escape(was)+'"]')?.focus()}
 let detailTimer=0;function refreshDetailSoon(){clearTimeout(detailTimer);detailTimer=setTimeout(()=>{if(selTask&&!document.activeElement?.closest?.('#detail'))openTask(selTask)},400)}
+
+/* ---------- progress: step list + plain words (shared/progress.ts on the hub) ---------- */
+const STEPM={done:'■',active:'▶',todo:'□'};
+function dur(ms){const s=Math.max(0,Math.round(ms/1000));if(s<60)return s+' 秒';if(s<3600)return Math.round(s/60)+' 分钟';if(s<86400){const h=Math.floor(s/3600),m=Math.round(s%3600/60);return h+' 小时'+(m?' '+m+' 分':'')}return Math.round(s/86400)+' 天'}
+function stepPct(p){const st=p?.steps||[];if(p?.percent!=null)return p.percent;return st.length?Math.round(st.filter(s=>s.state==='done').length*100/st.length):0}
+function cardBar(t){const p=t.progress,pct=stepPct(p);return '<div class="pbar" title="'+pct+'%"><i style="width:'+pct+'%"></i></div>'}
+function progHtml(t,i){const p=t.progress||{},steps=p.steps||[],act=ACTIVE.includes(t.status);let h='';
+  if(steps.length){const pct=stepPct(p);h+='<div class="pbar" title="'+pct+'%"><i style="width:'+pct+'%"></i></div><ol class="steps" aria-label="步骤">'+steps.map(s=>'<li class="'+s.state+'"><i>'+STEPM[s.state]+'</i><span>'+esc(s.title)+'</span>'+(s.expectedMinutes&&s.state!=='done'?'<span class="em">约 '+esc(s.expectedMinutes)+' 分</span>':'')+'</li>').join('')+'</ol>'}
+  if(act){const fromReason=(i?.reason||'').replace(/^进行中：/,''),now=p.now||(steps.length?'':fromReason),main=p.note||now||'worker 在做';
+    h+='<div class="pnow">'+esc(main)+'</div>'+(p.note&&now&&now!==p.note?'<div class="pnow2">此刻：'+esc(now)+'</div>':'')}
+  const start=p.startedAt||t.statusSince||t.createdAt,end=act?Date.now():(t.statusSince||t.updatedAt);
+  const meta=[(act?'已用 ':'用时 ')+dur(end-start)];
+  if(act){if(p.percent!=null)meta.push(p.percent+'%');if(p.eta)meta.push('预计还要 '+p.eta);meta.push('更新于 '+ago(Math.max(p.updatedAt||0,p.nowAt||0)||t.updatedAt))}
+  h+='<div class="pmeta">'+esc(meta.join(' · '))+'</div>';
+  if(act&&p.recent?.length)h+='<div class="precent">最近：'+esc(p.recent.slice(-4).map(m=>m.text).join(' / '))+'</div>';
+  if(act&&t.activity)h+='<details class="praw"><summary>细节</summary><pre class="pre">'+esc(t.activity)+'</pre></details>';
+  return '<div class="prog">'+h+'</div>'}
+function updateProg(){const el=document.getElementById('dprog');if(!el||!selTask)return;const t=tasks.get(selTask);if(!t)return;const open=el.querySelector('.praw')?.open;el.innerHTML=progHtml(t,attn.get(selTask));if(open){const r=el.querySelector('.praw');if(r)r.open=true}}
+setInterval(()=>{if(selTask&&!document.hidden)updateProg()},30000);
+
+/* ---------- 工作记录: the worker's full work log, read from the hub only while the section is open ---------- */
+let TL=null;const TL_GROUP={read:1,grep:1,find:1,ls:1,glob:1};const REPORT_NAME={done:'完成',progress:'进展',needs_input:'提问',blocked:'受阻'};
+function tlIsOpen(){return localStorage.qaLogOpen!=='0'}
+function tlFor(id){if(TL?.id!==id){tlStop();TL={id,stuck:true,list:[],first:0,total:0,pending:undefined,local:[],open:new Set(),busy:false,again:false,loaded:false,err:'',timer:0,kick:0}}return TL}
+function tlStop(){if(TL){clearInterval(TL.timer);clearTimeout(TL.kick)}TL=null}
+function tlPause(){if(TL){clearInterval(TL.timer);TL.timer=0}}
+function tlActivate(id){const t=tlFor(id),box=document.getElementById('tlog');if(!box)return;
+  if(box.dataset.wired!=='1'){box.dataset.wired='1';
+    box.addEventListener('click',e=>{const o=e.target.closest('[data-older]');if(o){tlOlder();return}const f=e.target.closest('[data-full]');if(f)tlFull(+f.dataset.full)});
+    // Follow the tail only while the reader is at the bottom; scrolling up stops following until they come back.
+    box.addEventListener('scroll',()=>{if(TL&&box.dataset.init==='1'&&!box.dataset.prog)TL.stuck=box.scrollTop+box.clientHeight>=box.scrollHeight-40},{passive:true});
+    box.addEventListener('toggle',e=>{const k=e.target?.dataset?.key;if(k&&TL){if(e.target.open)TL.open.add(k);else TL.open.delete(k);TL.stuck=box.scrollTop+box.clientHeight>=box.scrollHeight-40}},true)}
+  if(!t.loaded)tlRender();tlKick(0);
+  if(!t.timer)t.timer=setInterval(()=>{const x=tasks.get(id);if(TL===t&&!document.hidden&&(ACTIVE.includes(x?.status)||t.pending!=null||t.local.length))tlLoad()},3000)}
+function tlKick(ms){if(!TL||!document.querySelector('#tlogSec')?.open)return;clearTimeout(TL.kick);TL.kick=setTimeout(tlLoad,ms??400)}
+async function tlGet(t,q){const qs=new URLSearchParams(q).toString();const r=await api('GET','/api/hub/tasks/'+encodeURIComponent(t.id)+'/transcript'+(qs?'?'+qs:''));return TL===t?r:null}
+async function tlLoad(){const t=TL;if(!t)return;if(t.busy){t.again=true;return}t.busy=true;
+  try{let r;if(!t.loaded){r=await tlGet(t,{limit:60});if(!r)return;t.first=r.entries.length?r.entries[0].i:r.total;t.loaded=true}
+    else{const tail=t.total-1,after=t.pending!=null?Math.min(tail,t.pending-1):tail;r=await tlGet(t,{after,limit:200});if(!r)return;if(r.entries.length>=200)t.again=true}
+    t.err='';t.available=r.available;t.total=r.total;t.pending=r.pendingFrom;for(const e of r.entries){const old=t.list[e.i];t.list[e.i]=old?.full&&!e.truncated?old:e}
+    t.local=t.local.filter(l=>!t.list.some(e=>e&&e.kind==='instruction'&&e.ts>=l.ts-120000&&(e.text||'').includes(l.text.slice(0,40))));
+    tlRender()}
+  catch(e){if(TL===t){t.err='工作记录读取失败：'+e.message;t.loaded=t.loaded||false;tlRender()}}
+  finally{t.busy=false;if(t.again&&TL===t){t.again=false;tlKick(50)}}}
+async function tlOlder(){const t=TL;if(!t||t.first<=0||t.busy)return;t.busy=true;try{const r=await tlGet(t,{before:t.first,limit:80});if(!r)return;for(const e of r.entries)t.list[e.i]=t.list[e.i]||e;t.first=r.entries.length?r.entries[0].i:0;
+  const box=document.getElementById('tlog'),h=box.scrollHeight,top=box.scrollTop;tlRender(true);box.scrollTop=top+box.scrollHeight-h}catch(e){toast(e.message,'error')}finally{t.busy=false}}
+async function tlFull(i){const t=TL;if(!t)return;try{const r=await tlGet(t,{full:i});const e=r?.entries?.[0];if(!e)return;e.full=true;t.list[i]=e;t.open.add('t'+i);t.open.add('h'+i);t.open.add('b'+i);tlRender(true)}catch(e){toast(e.message,'error')}}
+function tlEcho(id,text){if(TL?.id!==id)return;TL.local.push({text,ts:Date.now()});const box=document.getElementById('tlog');if(box)box.dataset.stick='1';tlRender();tlKick(800)}
+function oneLine(s,n){s=String(s??'').replace(/\s+/g,' ').trim();return s.length>(n||140)?s.slice(0,n||140)+'...':s}
+function tlTs(e){return '<span class="w">'+hm(e.ts)+'</span>'}
+function fullBtn(e){return e.truncated&&!e.full?'<button class="full" data-full="'+e.i+'">显示全文</button>':''}
+function tlDet(key,cls,k,a,body,ts){return '<div class="le '+cls+'"><details data-key="'+key+'"'+(TL.open.has(key)?' open':'')+'><summary><span class="k">'+k+'</span><span class="a">'+a+'</span><span class="w">'+hm(ts)+'</span></summary>'+body+'</details></div>'}
+function tlBlock(cls,k,a,body,e){return '<div class="le '+cls+'"><div class="lh"><span class="k">'+k+'</span><span class="a">'+a+'</span>'+tlTs(e)+'</div>'+body+'</div>'}
+function diffHtml(d){return String(d).split('\n').map(l=>/^\s*\+/.test(l)&&!/^\s*\+\+\+/.test(l)?'<span class="dp">'+esc(l)+'</span>':/^\s*-/.test(l)&&!/^\s*---/.test(l)?'<span class="dm">'+esc(l)+'</span>':esc(l)).join('\n')}
+function editDiff(a){const eds=Array.isArray(a.edits)?a.edits:a.oldText!=null?[a]:[];return eds.map(x=>String(x.oldText??'').split('\n').map(l=>'-'+l).join('\n')+'\n'+String(x.newText??'').split('\n').map(l=>'+'+l).join('\n')).join('\n...\n')}
+function toolArg(e){const a=e.args||{};return String(a.command??a.path??a.pattern??a.query??(Object.keys(a).length?JSON.stringify(a):''))}
+function toolBody(e){const a=e.args||{};let h='';
+  if(e.tool==='bash'&&a.command&&(a.command.length>70||a.command.includes('\n')))h+='<pre>$ '+esc(a.command)+'</pre>';
+  if(e.diff)h+='<pre>'+diffHtml(e.diff)+'</pre>';
+  else if(e.tool==='edit')h+='<pre>'+diffHtml(editDiff(a))+'</pre>';
+  else if(e.tool==='write'&&a.content!=null)h+='<pre>'+esc(a.content)+'</pre>';
+  else if(!['bash','read','grep','find','ls'].includes(e.tool)&&Object.keys(a).length)h+='<pre>'+esc(JSON.stringify(a,null,1))+'</pre>';
+  if(e.running)h+='<div class="x">运行中</div>';
+  else if(e.result&&(e.isError||!['edit','write'].includes(e.tool)))h+='<pre>'+esc(e.result)+'</pre>';
+  return h+fullBtn(e)}
+function toolHtmlLog(e){const arg=toolArg(e);return '<div class="le tool'+(e.isError?' err':'')+(e.running?' run':'')+'"><details data-key="t'+e.i+'"'+(TL.open.has('t'+e.i)?' open':'')+'><summary><span class="k">'+esc(e.tool)+'</span><span class="a" title="'+esc(arg)+'">'+esc(oneLine(arg,300))+'</span>'+tlTs(e)+'</summary>'+toolBody(e)+'</details></div>'}
+function entryHtmlLog(e){
+  switch(e.kind){
+    case 'brief':return tlDet('b'+e.i,'brief','简报',esc(oneLine((e.text||'').replace(/<[^>]+>/g,''))),'<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e.ts);
+    case 'instruction':return tlBlock('instruction','追加指令','','<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e);
+    case 'user':return tlBlock('user','消息','','<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e);
+    case 'text':return tlBlock('text','输出','','<div class="x md">'+md(e.text||'')+'</div>'+fullBtn(e),e);
+    case 'thinking':return tlDet('h'+e.i,'thinking','思考',esc(oneLine(e.text)),'<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e.ts);
+    case 'report':return tlBlock('report '+esc(e.status||''),'汇报',esc(REPORT_NAME[e.status]||e.status||''),'<div class="x md">'+md(e.text||'')+'</div>'+fullBtn(e),e);
+    case 'progress':{const a=e.args||{};const txt=[a.plan?.length?'计划：'+a.plan.join(' / '):'',a.current?'第 '+a.current+' 步':'',a.note||''].filter(Boolean).join(' · ');return tlBlock('progress','进度',esc(txt),'',e)}
+    case 'note':return '<div class="le note">'+esc(e.text||'')+'</div>';
+    case 'tool':return toolHtmlLog(e);
+  }return ''}
+function tlRender(keepPos){const box=document.getElementById('tlog'),t=TL;if(!box||!t||box.dataset.id!==t.id)return;
+  if(box.dataset.stick==='1')t.stuck=true;box.dataset.stick='';const stick=!keepPos&&(box.dataset.init!=='1'||t.stuck);
+  const items=t.list.filter(Boolean);let h='';
+  if(t.loaded&&t.first>0)h+='<button class="tlmore" data-older>更早的记录（还有 '+t.first+' 条）</button>';
+  if(!items.length&&!t.local.length)h+='<div class="tlempty">'+esc(t.err||(!t.loaded?'加载中':t.available===false?'还没有工作记录：worker 尚未开始':'暂无记录'))+'</div>';
+  for(let k=0;k<items.length;){const e=items[k];
+    if(e.kind==='tool'){const same=TL_GROUP[e.tool]?x=>x.tool===e.tool:x=>x.tool===e.tool&&toolArg(x)===toolArg(e);let j=k,end=k;while(j<items.length&&(items[j].kind==='thinking'||items[j].kind==='tool'&&same(items[j]))){if(items[j].kind==='tool')end=j+1;j++}
+      const g=items.slice(k,end),nt=g.filter(x=>x.kind==='tool');j=end;
+      if(nt.length>=3){h+=tlDet('g'+e.i,'group',esc(e.tool)+' x'+nt.length,TL_GROUP[e.tool]?esc(nt.map(x=>{const a=toolArg(x);return a.split('/').pop()||a}).join(' · ')):esc(oneLine(toolArg(e),200)),g.map(entryHtmlLog).join(''),g[g.length-1].ts);k=j;continue}}
+    h+=entryHtmlLog(e);k++}
+  for(const l of t.local)h+='<div class="le instruction local"><div class="lh"><span class="k">追加指令</span><span class="a">已发送，等 worker 接收</span><span class="w">'+hm(l.ts)+'</span></div><div class="x">'+esc(l.text)+'</div></div>';
+  if(t.err&&items.length)h+='<div class="le note">'+esc(t.err)+'</div>';
+  box.innerHTML=h;
+  if(t.loaded)box.dataset.init='1';
+  const c=document.querySelector('#tlogSec .tlc');if(c)c.textContent=t.total?t.total+' 条':'';
+  if(stick){box.dataset.prog='1';box.scrollTop=box.scrollHeight;requestAnimationFrame(()=>{if(TL===t&&t.stuck)box.scrollTop=box.scrollHeight;delete box.dataset.prog})}}
 
 /* ---------- browser comments ---------- */
 function renderIntakes(){
@@ -876,9 +1031,11 @@ async function loadHub(){
 }
 function onHub(e){
   window.qaTeamOnHub?.(e);
-  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask&&(e.event||prev?.status!==e.task.status))refreshDetailSoon();
+  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask){updateProg();tlKick();if(prev?.status!==e.task.status||(e.event&&e.event.kind!=='progress'))refreshDetailSoon()}
     if(prev&&prev.status!==e.task.status){for(const [id,i] of toolOwner){const r=toolRes.get(id);if(r?.result?.details?.task?.id===e.task.id)schedule(i)}}}
-  else if(e.type==='attention'){const i=e.item;attn.set(i.taskId,i);counts=e.counts;focus=e.focus||focus;renderTasks();if(i.taskId===selTask)refreshDetailSoon();
+  else if(e.type==='attention'){const i=e.item,was=attn.get(i.taskId);attn.set(i.taskId,i);counts=e.counts;focus=e.focus||focus;renderTasks();
+    // In-flight reason changes are just progress: update the block in place instead of re-rendering the detail.
+    if(i.taskId===selTask){if(was&&was.level===i.level&&i.level==='inflight')updateProg();else refreshDetailSoon()}
     if(e.interrupt==='now')toast('需要你 '+i.mark+' '+i.title+'\n'+i.reason,'warning',9000)}
   else if(e.type==='attention.digest'){counts=e.counts;setCounts();toast('待扫 '+e.items.length+' 件：'+e.items.slice(0,4).map(i=>i.title.slice(0,24)).join('、'),'info',6000)}
   else if(e.type==='attention.state'){counts=e.counts;focus=e.focus;setCounts();api('GET','/api/hub/attention?archived=200').then(r=>{attn.clear();for(const i of r.items||[])attn.set(i.taskId,i);renderTasks()}).catch(()=>{})}

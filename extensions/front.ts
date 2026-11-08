@@ -1,6 +1,7 @@
 // Front role: your normal interactive pi *is* the quick-agent front agent.
 // It understands tasks, assembles context and delegates them to worker agents through the hub.
 // Toggle with /qa on|off, or start pi with --qa-off (or QA_ROLE=off) for a plain pi.
+import { progressLine, progressText } from "../shared/progress.ts";
 import { hostname } from "node:os";
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -180,7 +181,7 @@ export function setupFront(pi: ExtensionAPI) {
 			const lines = list.slice(0, 8).map((t) => {
 				const color = t.status === "done" ? "success" : ACTIVE_STATUSES.includes(t.status) ? "accent" : ATTENTION_STATUSES.includes(t.status) ? "warning" : "dim";
 				const mark = t.unread ? th.fg("warning", "• ") : "  ";
-				const detail = ACTIVE_STATUSES.includes(t.status) || t.status === "handoff" ? (t.activity ?? "") : (t.summary ?? "").split("\n")[0];
+				const detail = ACTIVE_STATUSES.includes(t.status) || t.status === "handoff" ? (t.status === "handoff" ? (t.activity ?? "") : progressLine(t)) : (t.summary ?? "").split("\n")[0];
 				return `${mark}${th.fg(color as any, `${ICON[t.status] ?? "·"} ${tag(t)}`)} ${t.title}${detail ? th.fg("dim", ` — ${detail.slice(0, 70)}`) : ""}`;
 			});
 			if (list.length > 8) lines.push(th.fg("dim", `  … 还有 ${list.length - 8} 个任务（/tasks）`));
@@ -526,7 +527,8 @@ export function setupFront(pi: ExtensionAPI) {
 				`${task.id} "${task.title}" status=${task.status} project=${projectName(task.project)} machine=${task.machine} cwd=${task.cwd}`,
 				`attention: ${LEVEL_LABEL[att.level]} ${att.mark} ${att.reason}${task.ask?.options?.length ? ` (options: ${task.ask.options.join(" / ")})` : ""}`,
 				`tmux: ${task.tmuxTarget ?? "-"}`,
-				task.activity ? `activity: ${task.activity}` : "",
+				ACTIVE_STATUSES.includes(task.status) || task.progress?.steps?.length ? `--- progress ---\n${progressText(task)}` : "",
+				task.activity ? `raw activity: ${task.activity}` : "",
 				team.people(task) ? `people:${team.people(task)}` : "",
 				`--- summary ---\n${task.summary ?? "(none yet)"}`,
 				comments?.length ? `--- comments ---\n${comments.slice(-10).map((c) => `${new Date(c.ts).toLocaleTimeString()} ${c.author}: ${c.text.slice(0, 400)}`).join("\n")}` : "",

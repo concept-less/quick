@@ -32,6 +32,8 @@ import { createCron } from "./cron.ts";
 import { createAttention, keyOf } from "./attention.ts";
 import { attentionOf } from "../shared/attention.ts";
 import { createProjects } from "./projects.ts";
+import { applyActivity, applyProgress, finishProgress, restartProgress } from "../shared/progress.ts";
+import { readTranscript } from "../shared/transcript.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -296,6 +298,11 @@ function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "task
 		// A new status is new attention: an old snooze no longer applies.
 		t.snoozedUntil = t.snoozedAt = undefined;
 		if (!patch.ask) t.ask = undefined;
+	}
+	if (patch.status && patch.status !== prev && !("progress" in patch)) {
+		// Progress follows the run: a finished plan is complete; a new run after done/cancel starts a fresh one.
+		if (patch.status === "done") t.progress = finishProgress(t.progress, t.updatedAt);
+		else if (ACTIVE_STATUSES.includes(patch.status) && (prev === "done" || prev === "cancelled") && t.progress) t.progress = restartProgress(t.updatedAt);
 	}
 	if (patch.status && patch.status !== prev && ATTENTION_STATUSES.includes(patch.status)) t.unread = true;
 	if (patch.status && ACTIVE_STATUSES.includes(patch.status)) {
@@ -652,6 +659,11 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		const t = ownTask(p.id);
 		await deliverMessage(t, String(p.text ?? "").trim() || "上一轮没有成功结束。请检查当时的状态和报错，从中断处继续，把任务做完；如果仍然无法继续，用 qa_report 说明原因。");
 		return t;
+	},
+	"task.transcript": async (p) => {
+		const t = ownTask(p.id);
+		const num = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+		return { ...readTranscript(t.sessionFile, { after: num(p.after), before: num(p.before), limit: num(p.limit), full: num(p.full) }), status: t.status, machine: t.machine };
 	},
 	"task.project": async (p) => projects.move(ownTask(p.id), p.project),
 	"task.screen": async (p) => {
@@ -1340,14 +1352,31 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 				return send(res, 200, { task: update(t, { activity: "pi 已退出" }) });
 			}
 			if (typeof body.summary === "string") patch.summary = body.summary;
-			if (typeof body.activity === "string") patch.activity = body.activity;
+			if (typeof body.activity === "string") {
+				patch.activity = body.activity;
+				// Raw tool line → plain words + milestones (also covers older workers that never send a plan).
+				if (body.kind === "activity") patch.progress = applyActivity(t.progress, body.activity);
+			}
 			if (typeof body.sessionFile === "string") patch.sessionFile = body.sessionFile;
+			let progressNote: string | undefined;
+			if (body.progress && typeof body.progress === "object") {
+				const r = applyProgress(patch.progress ?? t.progress, body.progress);
+				patch.progress = r.progress;
+				const planned = Array.isArray(body.progress.plan) && r.progress.steps?.length;
+				progressNote = planned ? `计划：${r.progress.steps!.map((x) => x.title).join(" / ")}` : r.milestones.length ? r.milestones.join("；") : undefined;
+			}
 			// Explicit attention request from the worker: a human decision is required.
 			if (body.needsHuman) {
 				const question = String(body.question ?? body.summary ?? "").trim();
 				const options = Array.isArray(body.options) ? body.options.map(String).filter(Boolean).slice(0, 8) : undefined;
 				patch.ask = { question, options: options?.length ? options : undefined, at: Date.now() };
 				if (!patch.status || ACTIVE_STATUSES.includes(patch.status)) patch.status = "needs_input";
+			}
+			// First progress of this run: elapsed time counts from when the run started, not from the first report.
+			if (patch.progress && !t.progress) patch.progress = { ...patch.progress, startedAt: ACTIVE_STATUSES.includes(t.status) ? (t.statusSince ?? t.createdAt) : patch.progress.startedAt };
+			if (body.kind === "progress") {
+				// Progress never interrupts: keep the event log to plan changes and finished steps.
+				return send(res, 200, { task: update(t, patch, progressNote ? { kind: "progress", text: progressNote } : undefined) });
 			}
 			const kind = body.kind ?? (body.status ? "status" : body.summary ? "report" : "activity");
 			const text = body.summary ?? body.activity ?? body.sessionFile;
@@ -1357,6 +1386,19 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		const owner = findTask(id).machine;
 		if (action === "screen" && m === "GET") return send(res, 200, await call(owner, "task.screen", { id }));
 		if (!action && m === "GET") return send(res, 200, await call(owner, "task.get", { id, events: url.searchParams.get("events") ?? 30, comments: url.searchParams.get("comments") ?? 50 }));
+		if (action === "transcript" && m === "GET") {
+			const q: Record<string, string> = {};
+			for (const k of ["after", "before", "limit", "full"]) {
+				const v = url.searchParams.get(k);
+				if (v !== null) q[k] = v;
+			}
+			try {
+				return send(res, 200, await call(owner, "task.transcript", { id, ...q }));
+			} catch (e) {
+				if (/unknown method/.test((e as Error).message)) throw new HttpError(501, `${owner} 上的 hub 版本较旧，还不能提供工作记录（升级后可用）`);
+				throw e;
+			}
+		}
 		if (action === "comments" && m === "GET") return send(res, 200, await call(owner, "task.comments", { id, limit: url.searchParams.get("limit") ?? 100 }));
 		if (m !== "POST") throw new HttpError(405, "method not allowed");
 		const body = await readJson(req);

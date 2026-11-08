@@ -6,6 +6,8 @@ import type { CronRun } from "./cron.ts";
 import type { CronView } from "../hub/cron.ts";
 import type { AttentionCounts, AttentionItem, FocusState } from "./attention.ts";
 import type { Project } from "./projects.ts";
+import type { ProgressInput } from "./progress.ts";
+import type { TranscriptPage } from "./transcript.ts";
 import type { HubEvent, Intake, MachineInfo, MachineView, Task, TaskEvent } from "./types.ts";
 import type { PublicMember, Role, TaskComment, Viewer } from "./team.ts";
 
@@ -100,6 +102,14 @@ export class HubClient {
 	getTask(id: string, events = 30) {
 		return this.request<{ task: Task; events: TaskEvent[]; comments?: TaskComment[] }>("GET", `/api/tasks/${enc(id)}?events=${events}`);
 	}
+	/** 工作记录 (shared/transcript.ts): after → live tail, before → scroll back, neither → latest page. */
+	transcript(id: string, q: { after?: number; before?: number; limit?: number; full?: number } = {}) {
+		const qs = Object.entries(q)
+			.filter(([, v]) => v !== undefined)
+			.map(([k, v]) => `${k}=${v}`)
+			.join("&");
+		return this.request<TranscriptPage & { status: Task["status"] }>("GET", `/api/tasks/${enc(id)}/transcript${qs ? `?${qs}` : ""}`);
+	}
 
 	// ---- team (docs/team-collaboration.md)
 	me() {
@@ -187,7 +197,7 @@ export class HubClient {
 		return this.request<{ focus: FocusState }>("POST", "/api/attention/focus", { on, minutes }).then((r) => r.focus);
 	}
 	/** Worker → hub state report. needsHuman marks an explicit request for a human decision. */
-	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; needsHuman?: boolean; question?: string; options?: string[] }) {
+	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; progress?: ProgressInput; needsHuman?: boolean; question?: string; options?: string[] }) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/report`, body).then((r) => r.task);
 	}
 	projects() {

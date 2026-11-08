@@ -16,6 +16,7 @@
 // batched into a digest by the hub (held while focus mode is on); nothing else ever notifies.
 // Pure module: no I/O, safe to import from the hub, the extensions and the CLI.
 import type { Task } from "./types.ts";
+import { progressLine } from "./progress.ts";
 
 export type AttentionLevel = "need" | "skim" | "snoozed" | "inflight" | "archived";
 export const ATTENTION_LEVELS: AttentionLevel[] = ["need", "skim", "snoozed", "inflight", "archived"];
@@ -107,7 +108,7 @@ export function attentionOf(t: Task, opts: AttentionOptions = {}): AttentionItem
 
 	if (t.status === "cancelled") return archived("已取消", t.updatedAt);
 	if (ACTIVE.includes(t.status)) {
-		const reason = t.status === "handoff" ? `交接中：${firstLine(t.activity) || "迁移到另一台机器"}` : t.status === "starting" ? "已交出去，正在启动" : `进行中：${firstLine(t.activity) || "worker 在做"}`;
+		const reason = t.status === "handoff" ? `交接中：${firstLine(t.activity) || "迁移到另一台机器"}` : t.status === "starting" ? "已交出去，正在启动" : `进行中：${firstLine(progressLine(t)) || "worker 在做"}`;
 		return { ...base, level: "inflight", mark: t.status === "handoff" ? "[MOVE]" : "[RUN]", reason, since: statusSince, actions: t.status === "handoff" ? [] : act("reply", "cancel", "attach") };
 	}
 	if (t.closed && !t.unread) return archived("窗口已关闭");

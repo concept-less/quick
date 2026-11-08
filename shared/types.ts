@@ -1,6 +1,7 @@
 // Data model shared by hub, CLI and extensions.
 import type { TaskPeople } from "./team.ts";
 import type { CronJob } from "./cron.ts";
+import type { TaskProgress } from "./progress.ts";
 import type { AttentionCounts, AttentionItem, AttentionLevel, FocusState, Interrupt } from "./attention.ts";
 
 export type TaskStatus =
@@ -49,8 +50,10 @@ export interface Task extends TaskPeople {
 	attachments: string[];
 	/** Latest summary / question / final answer from the worker. */
 	summary?: string;
-	/** Short description of what the worker is doing right now. */
+	/** Short description of what the worker is doing right now (raw tool line, e.g. "bash git push"). */
 	activity?: string;
+	/** Human-readable progress: the worker's plan / note, plus the activity in plain words (shared/progress.ts). */
+	progress?: TaskProgress;
 	/** True when there is news the human has not acknowledged yet (cleared by task.ack, "知道了"). */
 	unread: boolean;
 	/** When the status last changed (attention "since"). */
@@ -88,7 +91,7 @@ export interface Task extends TaskPeople {
 export interface TaskEvent {
 	ts: number;
 	taskId: string;
-	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment" | "project";
+	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment" | "project" | "progress";
 	text?: string;
 	/** Team member (or "agent") who caused the event, when known. */
 	by?: string;
