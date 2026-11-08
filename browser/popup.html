@@ -1,24 +1,42 @@
 <!doctype html>
-<html lang="zh"><head><meta charset="utf-8">
+<html lang="zh"><head><meta charset="utf-8"><title>quick-agent</title>
 <style>
-body{width:320px;margin:0;padding:12px;background:#0f1115;color:#e6e6e6;font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"PingFang SC",sans-serif}
-h1{font-size:14px;margin:0 0 10px}h1 span{color:#7aa2f7}
+body{width:330px;margin:0;padding:12px;background:#0f1115;color:#e6e6e6;font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+h1{font-size:14px;margin:0 0 10px;display:flex;align-items:center;gap:6px}h1 span{color:#7aa2f7}
+h1 .dot{margin-left:auto;width:8px;height:8px;border-radius:50%;background:#8a93a6}
+h1 .dot.ok{background:#9ece6a}h1 .dot.err{background:#f7768e}
 label{display:block;color:#8a93a6;font-size:12px;margin:8px 0 3px}
-input{width:100%;box-sizing:border-box;padding:6px 8px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:6px}
+input[type=text],input[type=password],input:not([type]){width:100%;box-sizing:border-box;padding:6px 8px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:6px}
+input:focus{outline:none;border-color:#7aa2f7}
 .row{display:flex;gap:6px;margin-top:10px}
 button{flex:1;background:#232837;color:#e6e6e6;border:1px solid #2f3542;border-radius:6px;padding:6px 8px;cursor:pointer}
-button.primary{background:#7aa2f7;color:#0f1115;border-color:#7aa2f7;font-weight:600}
-#status{margin-top:8px;font-size:12px;color:#8a93a6;min-height:16px}
+button:hover{border-color:#7aa2f7}
+button.primary{background:#7aa2f7;color:#0f1115;border-color:#7aa2f7;font-weight:600;width:100%}
+button:disabled{opacity:.5;cursor:default}
+#status{margin-top:8px;font-size:12px;color:#8a93a6;min-height:16px;white-space:pre-wrap}
 #status.ok{color:#9ece6a}#status.err{color:#f7768e}
-.hint{color:#8a93a6;font-size:12px;margin-top:10px}
-kbd{background:#232837;border:1px solid #2f3542;border-radius:4px;padding:0 4px}
+#pickErr{color:#f7768e;font-size:12px;margin-top:6px;display:none}
+.hint{color:#8a93a6;font-size:12px;margin-top:8px}
+.hint a{color:#7aa2f7;cursor:pointer;text-decoration:underline}
+kbd{background:#232837;border:1px solid #2f3542;border-radius:4px;padding:0 4px;font-family:inherit}
+details{margin-top:10px;border-top:1px solid #2f3542;padding-top:8px}
+summary{cursor:pointer;color:#c0c6d4}
+.check{display:flex;gap:6px;align-items:flex-start;margin-top:10px;color:#c0c6d4;font-size:12px}
+.check input{margin-top:2px}
+.foot{margin-top:10px;color:#5c6370;font-size:11px}
 </style></head><body>
-<h1><span>⚡</span> quick-agent</h1>
-<button class="primary" id="pick" style="width:100%">在当前页面框选评论</button>
-<div class="hint">快捷键 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>。点击元素即可评论，Shift+点击可多选，“框选区域”可以拖出一个矩形。</div>
-<label>Hub 地址（经 ssh -L 转发）</label><input id="hubUrl" placeholder="http://127.0.0.1:7788">
-<label>Token（服务器上运行 <code>quick token</code>）</label><input id="token" type="password">
-<div class="row"><button id="save">保存并测试</button><button id="dash">打开任务面板</button></div>
+<h1><span>⚡</span> quick-agent <i class="dot" id="dot" title="hub 连接状态"></i></h1>
+<button class="primary" id="pick">在当前页面框选评论</button>
+<div id="pickErr"></div>
+<div class="hint">快捷键 <span id="shortcut"><kbd>…</kbd></span>（<a id="shortcuts">修改快捷键</a>，即 chrome://extensions/shortcuts）。<br>点击元素即可评论，Shift+点击多选，「框选区域」可拖出矩形，Esc 退出。</div>
 <div id="status"></div>
+<details id="settings">
+	<summary>连接设置</summary>
+	<label for="hubUrl">Hub 地址（本机 hub 或 ssh -L 转发的端口）</label><input id="hubUrl" type="text" placeholder="http://127.0.0.1:7788">
+	<label for="token">Token（在 hub 所在机器运行 <code>quick token</code>）</label><input id="token" type="password" autocomplete="off">
+	<div class="row"><button id="save">保存并测试</button><button id="dash">打开任务面板</button></div>
+	<label class="check"><input type="checkbox" id="auto"> <span>在所有网站自动显示评论角标、从页面加载起记录控制台错误（需额外授予“所有网站”权限，可随时关闭）</span></label>
+</details>
+<div class="foot">数据只发送到你配置的 hub，不经过任何第三方服务器。</div>
 <script src="popup.js"></script>
 </body></html>

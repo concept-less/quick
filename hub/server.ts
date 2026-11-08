@@ -727,7 +727,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	if (p === "/extension.zip") {
 		// Browser extension package (no secrets inside): download, unzip, "Load unpacked".
 		const zip = join(paths.home, "quick-agent-extension.zip");
-		await run("python3", ["-m", "zipfile", "-c", zip, ...readdirSync(EXTENSION_DIR).map((f) => join(EXTENSION_DIR, f))]);
+		await run("python3", ["-m", "zipfile", "-c", zip, ...readdirSync(EXTENSION_DIR)
+			.filter((f) => /\.(js|json|html|css|png)$/.test(f) && !f.startsWith("."))
+			.map((f) => join(EXTENSION_DIR, f))]);
 		res.writeHead(200, { "content-type": "application/zip", "content-disposition": 'attachment; filename="quick-agent-extension.zip"' });
 		return res.end(readFileSync(zip));
 	}

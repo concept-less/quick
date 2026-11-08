@@ -2,8 +2,18 @@
 // Element picking (hover + click, Shift+click for multiple), region selection (drag),
 // comment box, and status pins for comments already sent from this page.
 (() => {
-	if (window.__qaContent) return;
-	window.__qaContent = true;
+	// Guard against double injection (auto content script + on-demand injection). After the
+	// extension is reloaded an old copy can be left orphaned with a dead runtime: replace it.
+	const prev = window.__qaContent;
+	if (prev && prev.alive()) return;
+	if (prev) prev.teardown();
+	const alive = () => {
+		try {
+			return !!chrome.runtime?.id;
+		} catch {
+			return false;
+		}
+	};
 
 	const STATUS_COLOR = {
 		pending: "#8a93a6", claimed: "#7aa2f7", dispatched: "#7aa2f7",
@@ -43,6 +53,7 @@
 		.box label{color:#8a93a6;font-size:12px;display:flex;gap:4px;align-items:center}
 		.toast{position:fixed;bottom:18px;right:18px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:8px;padding:8px 12px;pointer-events:auto;max-width:420px;box-shadow:0 8px 30px rgba(0,0,0,.35)}
 		.toast.err{border-color:#f7768e}
+		.toast .sub{color:#8a93a6;font-size:12px;margin-top:2px}
 		.pin{position:absolute;width:20px;height:20px;border-radius:50%;color:#0f1115;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;border:2px solid #0f1115;box-shadow:0 2px 6px rgba(0,0,0,.4)}
 		.pop{position:absolute;width:320px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:8px;padding:8px 10px;pointer-events:auto;box-shadow:0 8px 30px rgba(0,0,0,.4);white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
 		.pop .st{font-size:12px;margin-bottom:4px}
@@ -51,6 +62,16 @@
 	const layer = root.querySelector(".layer");
 	const pinLayer = root.querySelector(".pins");
 	document.documentElement.appendChild(host);
+	window.__qaContent = {
+		alive,
+		teardown: () => {
+			try {
+				stop();
+			} catch {}
+			clearTimeout(pollTimer);
+			host.remove();
+		},
+	};
 
 	const el = (cls, parent = layer, tag = "div") => {
 		const n = document.createElement(tag);
@@ -158,7 +179,12 @@
 		window.addEventListener("scroll", redrawSelection, true);
 	}
 	function stop() {
+		if (!active) return;
 		active = false;
+		document.documentElement.style.cursor = "";
+		dragStart = null;
+		regionBox = null;
+		hovered = null;
 		document.removeEventListener("mousemove", onMove, true);
 		document.removeEventListener("mousedown", onDown, true);
 		document.removeEventListener("mouseup", onUp, true);
@@ -386,7 +412,10 @@
 			res = { ok: false, error: String(e?.message || e) };
 		}
 		host.style.visibility = "";
-		if (!res?.ok) return toast(`发送失败：${res?.error ?? "unknown"}`, true);
+		if (!res?.ok) {
+			const hint = !alive() ? "插件已更新或重新加载，请刷新页面后重试（评论内容已保留在输入框）。" : "点击工具栏的 quick-agent 图标可检查连接。评论内容已保留，修好后再点发送。";
+			return toast(`发送失败：${res?.error ?? "unknown"}`, true, hint);
+		}
 		stop();
 		toast(`已发送给前台 agent（${res.intake.id}）`);
 		pins.push({ id: res.intake.id, comment, anchor: anchors[0], docAnchor, status: "pending", selector: elements[0]?.selector, region: payload.region });
@@ -394,10 +423,12 @@
 		schedulePoll(true);
 	}
 
-	function toast(text, err = false) {
+	function toast(text, err = false, sub = "") {
+		layer.querySelectorAll(".toast").forEach((n) => n.remove());
 		const t = el(`toast${err ? " err" : ""}`);
 		t.textContent = text;
-		setTimeout(() => t.remove(), err ? 6000 : 3000);
+		if (sub) el("sub", t).textContent = sub;
+		setTimeout(() => t.remove(), err ? 8000 : 3000);
 	}
 
 	// ------------------------------------------------------------ pins for sent comments
@@ -446,9 +477,12 @@
 	}
 
 	let pollTimer = null;
+	let hubDown = false;
 	async function poll() {
+		if (!alive()) return;
 		try {
 			const res = await chrome.runtime.sendMessage({ type: "qa-page-comments", url: location.href });
+			hubDown = !res?.ok;
 			if (res?.ok) {
 				const known = new Map(pins.map((p) => [p.id, p]));
 				pins = res.comments.map((c) => {
@@ -466,9 +500,11 @@
 	function schedulePoll(now = false) {
 		clearTimeout(pollTimer);
 		const tick = async () => {
+			if (!alive()) return; // extension reloaded/removed: stop quietly
 			if (document.visibilityState === "visible") await poll();
-			const active = pins.some((p) => !["done", "failed", "cancelled"].includes(p.taskStatus || ""));
-			pollTimer = setTimeout(tick, active ? 5000 : 30000);
+			const busy = pins.some((p) => !["done", "failed", "cancelled"].includes(p.taskStatus || ""));
+			// Back off when the hub is not reachable or not configured.
+			pollTimer = setTimeout(tick, hubDown ? 60000 : busy ? 5000 : 30000);
 		};
 		pollTimer = setTimeout(tick, now ? 1500 : 0);
 	}
@@ -481,8 +517,10 @@
 	});
 
 	// ------------------------------------------------------------ wiring
-	chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
-		if (msg.type === "qa-toggle") {
+	chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+		if (sender.id !== chrome.runtime.id) return;
+		if (msg?.type === "qa-ping") sendResponse({ ok: true, active });
+		else if (msg?.type === "qa-toggle") {
 			active ? stop() : start();
 			sendResponse({ ok: true, active });
 		}

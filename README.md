@@ -172,7 +172,7 @@ quick machines                           # 查看机器、路由、链路状态
 3. 打开 `chrome://extensions`，开启开发者模式，点「加载已解压的扩展程序」，选择解压后的目录。
 4. 点插件图标，填 Hub 地址 `http://127.0.0.1:7788` 和 Token（服务器上运行 `quick token` 获取），然后点「保存并测试」。
 
-使用方法：按 `Alt+Shift+C`，或点插件图标里的「在当前页面框选评论」。
+使用方法：按快捷键 **Mac `⌘⇧E`（Command+Shift+E）/ Windows·Linux `Ctrl+Shift+E`**，或点插件图标里的「在当前页面框选评论」。快捷键可以在 `chrome://extensions/shortcuts` 修改（弹窗里会显示当前生效的快捷键；从旧版本升级的用户可能仍是旧快捷键 `Alt+Shift+C`，需要在那里手动改）。
 
 - **元素模式**：鼠标悬停会高亮元素，点击即可评论；按住 Shift 点击可以多选，选好后按 Enter 写评论。
 - **框选区域**：拖出一个矩形，矩形里的元素会自动收集。
@@ -180,6 +180,27 @@ quick machines                           # 查看机器、路由、链路状态
 - 评论会先交给 **前台 agent**。前台根据项目映射确定工作目录，快速定位源码后派单；如果评论属于某个已有任务，就追加给对应的 worker。
 - 发出评论的元素旁边会出现编号角标，颜色表示任务状态：灰色＝等待处理，蓝色＝进行中，黄色＝需要你处理，绿色＝完成。点击角标可以查看 worker 的汇报。
 - 插件代码更新后，需要在 `chrome://extensions` 里点一下重新加载。
+- **权限**：默认只在你按快捷键/点按钮后才访问当前标签页（`activeTab`），所以角标在你第一次在该页面启动框选后才出现，控制台错误也从那一刻开始记录。想在所有网站自动显示角标、从页面加载起记录错误，可在弹窗「连接设置」里勾选「在所有网站自动显示…」（会额外申请"所有网站"权限，可随时关掉）。
+- hub 没启动、Token 不对时，弹窗会给出明确提示；用快捷键在不能运行的页面（如 `chrome://`、扩展商店）触发时，工具栏图标会显示红色 `!`，悬停可看原因。
+
+### 上架 Chrome Web Store / Edge / Firefox
+
+材料都在 [`docs/browser-extension/`](docs/browser-extension/)：[`STORE.md`](docs/browser-extension/STORE.md)（可行性评估、商店文案、权限 justification、隐私表单填写、测试说明、图片尺寸清单）和 [`PRIVACY.md`](docs/browser-extension/PRIVACY.md)（隐私政策）。
+
+打包：`scripts/pack-extension.sh` → `dist/quick-agent-extension-<版本>-chrome.zip`（Chrome / Edge 共用）和 `…-firefox.zip`。脚本只打包运行所需文件，并会检查 manifest 合法性、`<all_urls>`、`eval`/远程脚本等会被拒审的写法。每次提交新版本前先改 `browser/manifest.json` 的 `version`。
+
+**以下步骤必须由你本人手动完成**（涉及付费、身份与账号，agent 不会代做）：
+
+1. [ ] 确认仓库 `concept-less/quick` 公开（隐私政策 URL 与 `homepage_url` 指向它）；否则把 PRIVACY.md 放到 GitHub Pages / Gist 等公开地址，并同步修改 manifest 的 `homepage_url` 和 STORE.md 里的链接。
+2. [ ] 注册 Chrome Web Store 开发者账号：<https://chrome.google.com/webstore/devconsole>，支付一次性 **US$5** 注册费，完成邮箱验证（发布者需开启两步验证）。
+3. [ ] 准备图片：至少 1 张 1280×800 截图、1 张 440×280 小宣传图（清单见 STORE.md §5）。
+4. [ ] 运行 `scripts/pack-extension.sh`，在开发者后台「New item」上传 `dist/…-chrome.zip`。
+5. [ ] 填写 Store listing（文案复制 STORE.md §2，类别 Developer Tools，语言中文/英文）。
+6. [ ] 填写 Privacy 标签：单一用途、各权限 justification、数据使用勾选、隐私政策 URL（STORE.md §3）。
+7. [ ] 在 Test instructions 里粘贴 STORE.md §4（审核员需要 hub 才能测功能）。
+8. [ ] Distribution 选 Public 或 Unlisted（只给自己/团队用建议 Unlisted），提交审核；通常几天内出结果，被拒时按邮件里的条款修改后重新提交。
+9. [ ] （可选）Edge：在 <https://partner.microsoft.com/dashboard/microsoftedge> 免费注册，上传同一个 chrome zip，补一张 300×300 logo。
+10. [ ] （可选）Firefox：先在 `about:debugging` 临时载入 `…-firefox.zip` 自测，再到 <https://addons.mozilla.org/developers/> 免费提交。
 
 ## 配置 `~/.quick-agent/config.json`
 
@@ -218,6 +239,8 @@ extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions）
 extensions/front.ts          前台角色
 extensions/worker.ts         worker 角色
 browser/                     Chrome MV3 插件
+docs/browser-extension/      插件隐私政策与上架材料
+scripts/pack-extension.sh    打包上架用 zip（dist/）
 ```
 
 运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`hub.log`。worker 的会话是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`，可以用 `pi --session <file>` 打开。
