@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.1 — 2026-11-08
+
+- release.sh: BSD/macOS-compatible sed in the CHANGELOG step
+- update: realpath fallback for missing paths (pruned version dir under a symlinked tmp, e.g. macOS /var → /private/var, was misdetected as unmanaged; fixes update.test on macOS)
+- release workflow: give electron-builder a publish config (update metadata needs it; nothing is published); electron/package.json repository
+- Projects: tasks auto-organized by project. hub/projects.ts + shared/projects.ts: ~/.quick-agent/projects.json registry (id, name, git remotes, per-machine dirs, path/URL/keyword rules, members, LWW-replicated over the mesh, dedupe by remote), classification on create (explicit > git remote/worktre
+
+
+Full diff: https://github.com/concept-less/quick/compare/v0.4.0...v0.4.1
+
 ## v0.4.0 — 2026-11-08
 
 第一个正式 Release。从这个版本开始，quick-agent 基于 GitHub Release 发布和升级，不再跟着 main 分支同步。
