@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.4.6
+
+- Persist migration requirement independently of transient failure text
+- Pause direct tasks when committed diff exposes critical scope
+- Verify watchdog workers use isolated restricted hub credentials
+- Mock transcript availability in lifecycle visual smoke
+- Align lifecycle visual smoke with compact project task cards
+- Ignore late worker reports after lifecycle cancellation
+- Attention: dedupe repeated need interrupts for the same reason (idle loop); worker idle reports carry the last model error
+- feat: orchestrate risk-aware workspace, review and Git integration lifecycle
+- Show readable task titles for chat references without rewriting history
+- Web UI model lists: complete, grouped, refreshable. Front chat model select grouped by provider (provider · count), option = model id with capability metadata (context, max output, thinking, images), ↻ runs pi's official catalog refresh (ModelRuntime.refresh: reload models.json + provider refreshModels) and reports per-provider failures while keeping the previous list; GET /api/models returns metadata, current model, refresh result. WORKER panel: per-machine search, provider counts, metadata, 刷新列表 also refreshes the front list; hub keeps the last good pi --list-models list when a listing fails (stale + listError + listedAt) and passes pi's stderr warnings (listWarnings). Tests: unit (parse metadata, stderr warnings, stale list) + Playwright e2e test/e2e-model-list.mjs (35-37 models from a refreshModels provider extension, front = worker list, cross-machine difference, refresh, discovery failure keeps the list, front model unchanged); README
+- Retry transient GitHub transport errors and test full checksum publication gate
+- Handle inherited build stdout and pin draft source across retries; exercise successful prepare
+- Test project backfill in named fixture instead of relying on developer checkout name
+- Release main pushes on pinned cloud runner; stage cross-platform assets before publishing
+- Web UI worker default model (worker 默认模型), separate from the front chat model: header button WORKER <model> (front select now labeled 前台) opens a panel with every mesh machine: effective model, source (workerModel / inherited model), that machine's own pi --list-models list, thinking level where supported; save per machine, clear to inherit, or apply to all (per-machine validation, partial failures listed per machine, failed machines unchanged). Hub: GET/POST /api/worker-model, mesh RPC workerModel.info / workerModel.set, owner permission (machine.configure), validated against the target machine's pi, persisted to its config.json (other keys kept), live for new and resumed workers without a hub reload, running workers untouched; listing runs pi without any QA_* / PI_* identity. Tests: unit + two-hub mesh with fake pi (test/worker-model.test.ts), Playwright e2e test/e2e-worker-model.mjs; README
+- Browser extension: comment on top of modal <dialog>, popovers, fullscreen and z-index overlays
+- Web UI 按项目 view, stable list: left task list grouped by project as the first dimension (default; 注意力 | 项目 switch remembered), block per project with counts (需要你 / 运行中 / 待扫 / 稍后), collapsible (需要你 cards stay visible, 已折叠 n 件), shown even with one project; fixed project order (manual order, then creation; drag a title or Alt+↑/↓, stored on the hub as project.order, replicated, POST /api/projects/order, quick projects order), 未归类 last; tasks in creation order (newest first) in both views, status/activity never move a card; fixed-height compact cards with single-line activity; in-place DOM patching of #tlist (keyed nodes, keeps scroll/focus/animations), relative times refreshed once a minute with fixed width; 需要你 button cycles + highlights 需要你 cards. Classification: a project created on dispatch (explicit / new repo) and hub start re-check weakly classified tasks; a manual move teaches the page URL (never steals another project's repository). Tests: unit + hub e2e + test/e2e-projects.mjs (Playwright: grouping, counts, collapse, persistence, 12 frames of live updates without movement, drag reorder)
+- Expected time + watchdog reviews (预期时间与巡检): every task carries an expectation (qa_dispatch expected / quick new --expected, default by kind of task, one worker revision via qa_expect with a reason, ON_TRACK updates) and an active-time clock (starting/running only); the hub checks own running tasks on a timer and, when one is over its expectation (1.5x, 3x, 6x…, configurable), has made no progress for N minutes (progress.updatedAt from t8f4a, reports), shows a repeated pattern in its recent tool calls (same call + same result, same error, unchanged polling, edit flip-flop) or was corrected before, runs an independent read-only reviewer (pi -p, read/grep/find/ls, no QA_* identity, verdict JSON on stdout) with cooldown + dedupe; ON_TRACK silently updates the expectation, DRIFTING/STUCK/BAD_APPROACH send a 【巡检纠偏】 follow-up to the worker and escalate to 需要你 [CHECK] when it happens again, NEEDS_HUMAN escalates; the reviewer never edits code or stops a task. Web UI card 已用/预期 + [OVER], detail 巡检 section and on/off/now, quick watch, quick show/ls and front qa_task_read show it; config.json watchdog (multipliers, cooldown, stall, repeat, model, per-task off). Isolation: worker role only in interactive pi, QA_WATCH_TASK loads no role. docs/watchdog.md, README, tests (unit, isolated hub, real-reviewer e2e with screenshots)
+- Browser comments are one-shot: no page marks after sending, consumed on claim
+- Task progress + 工作记录: worker qa_progress (plan 3-8 steps, current step, plain-language note, percent/eta, expectedMinutes per step) → task.progress (shared/progress.ts: steps done/active/todo, note, now, recent milestones, startedAt, updatedAt only on real changes), persisted + SSE, never interrupts; fallback for workers without a plan: raw tool activity translated into plain words (git push → 推送代码, npm test → 跑测试, edit → 修改 X …) with milestones, also used for the attention reason; Web UI: step list (■ ▶ □), now line, elapsed / last update, raw command folded into 细节, card shows n/m step + thin bar; 工作记录 in the task detail (shared/transcript.ts, GET /api/tasks/:id/transcript, mesh task.transcript): text, thinking, tool calls with results/diffs, follow-up instructions, reports; incremental tail only while open, follows the bottom unless you scroll up, pages back, folds runs of reads/repeated commands; follow-up composer pinned under the detail with instant echo; quick log <id> [-f], quick show/ls and front qa_tasks/qa_task_read show progress; worker prompt asks for progress at milestones; tests (unit, hub e2e) + test/e2e-progress.mjs (Playwright demo)
+- install.sh: work on macOS /bin/bash 3.2 (empty auth array under set -u; brace $VAR before full-width punctuation)
+- update: ignore a legacy 0.3.x update.json (latest as a string) instead of crashing quick version / /api/update
+
+Source SHA: a00f95be03b9dcdad45ebb8c0a677fd50e65609d
+Build: https://github.com/concept-less/quick/actions/runs/42500067612
+Cloud: quick-release-cloud (dedicated trusted runner)
+
+<!-- quick-source:a00f95be03b9dcdad45ebb8c0a677fd50e65609d -->
+
 ## v0.4.1 — 2026-11-08
 
 - release.sh: BSD/macOS-compatible sed in the CHANGELOG step
