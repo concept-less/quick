@@ -40,7 +40,8 @@ jobs:
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --mac dmg zip --arm64 --publish never
+        # publish config only so electron-builder can write its update metadata; nothing is published by it
+        run: npx electron-builder --mac dmg zip --arm64 --publish never -c.publish.provider=github -c.publish.owner=concept-less -c.publish.repo=quick
       - name: upload to the release
         working-directory: electron/dist
         run: |

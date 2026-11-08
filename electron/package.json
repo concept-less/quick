@@ -6,6 +6,7 @@
   "description": "quick-agent desktop client (Electron): front-agent chat, task inbox/board, native notifications.",
   "main": "src/main.cjs",
   "author": "quick-agent",
+  "repository": { "type": "git", "url": "git+https://github.com/concept-less/quick.git" },
   "license": "MIT",
   "scripts": {
     "dev": "electron .",
