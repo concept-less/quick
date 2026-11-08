@@ -39,10 +39,10 @@ command -v node >/dev/null || die "需要 Node.js >= 22.18（https://nodejs.org�
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=18)?0:1)' || die "Node.js $(node -v) 太旧，需要 >= 22.18"
 command -v tar >/dev/null || die "需要 tar"
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
-fetch() { # url out [accept]
+fetch() { # url out [accept]   (${a[@]+…}: empty arrays under set -u on macOS bash 3.2)
 	local auth=()
 	if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ] && [[ "$1" == "$API"* ]]; then auth=(-H "Authorization: Bearer ${GITHUB_TOKEN:-$GH_TOKEN}"); fi
-	curl -fsSL --retry 2 "${auth[@]}" -H "Accept: ${3:-application/octet-stream}" -o "$2" "$1"
+	curl -fsSL --retry 2 ${auth[@]+"${auth[@]}"} -H "Accept: ${3:-application/octet-stream}" -o "$2" "$1"
 }
 
 mkdir -p "$APP"
@@ -73,7 +73,7 @@ if [ -f "$TMP/SHA256SUMS" ]; then
 	EXPECTED="$(awk -v n="$NAME" '{f=$2; sub(/^\*/,"",f)} f==n {print $1}' "$TMP/SHA256SUMS")"
 	[ -n "$EXPECTED" ] || die "SHA256SUMS 里没有 $NAME"
 	ACTUAL="$(sha256 "$TMP/$NAME")"
-	[ "$EXPECTED" = "$ACTUAL" ] || die "校验失败：$NAME 的 sha256 是 $ACTUAL，应为 $EXPECTED"
+	[ "$EXPECTED" = "$ACTUAL" ] || die "校验失败：$NAME 的 sha256 是 ${ACTUAL}，应为 $EXPECTED"
 	say "校验通过（sha256 ${ACTUAL:0:12}…）"
 elif [ -z "$TARBALL" ]; then
 	die "Release 没有 SHA256SUMS，拒绝安装"
@@ -104,7 +104,7 @@ else
 		set("current", ver);
 		if (old && old !== ver) set("previous", old);
 	' "$APP" "$VER"
-	say "已安装 quick-agent $VER → $APP/current${CUR:+（上一个版本 $CUR，可 quick upgrade --rollback）}"
+	say "已安装 quick-agent $VER → $APP/current${CUR:+（上一个版本 ${CUR}，可 quick upgrade --rollback）}"
 fi
 chmod +x "$APP/current/bin/quick" 2>/dev/null || true
 
@@ -113,10 +113,10 @@ if [ "$DO_LINK" = 1 ]; then
 	mkdir -p "$BIN_DIR"
 	OLD_LINK="$(readlink "$BIN_DIR/quick" 2>/dev/null || true)"
 	ln -sfn "$APP/current/bin/quick" "$BIN_DIR/quick"
-	say "quick → $BIN_DIR/quick${OLD_LINK:+（原来指向 $OLD_LINK）}"
+	say "quick → $BIN_DIR/quick${OLD_LINK:+（原来指向 ${OLD_LINK}）}"
 	case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "注意：$BIN_DIR 不在 PATH 里，请加到 shell 配置：export PATH=\"$BIN_DIR:\$PATH\"" ;; esac
 	FIRST="$(command -v quick 2>/dev/null || true)"
-	[ -n "$FIRST" ] && [ "$FIRST" != "$BIN_DIR/quick" ] && say "注意：PATH 里先找到的是 $FIRST，不是 $BIN_DIR/quick"
+	[ -n "$FIRST" ] && [ "$FIRST" != "$BIN_DIR/quick" ] && say "注意：PATH 里先找到的是 ${FIRST}，不是 $BIN_DIR/quick"
 fi
 
 # ---------------------------------------------------------------- pi extension
@@ -135,7 +135,7 @@ if [ "$DO_PI" = 1 ] && command -v pi >/dev/null; then
 				try { if (JSON.parse(fs.readFileSync(p.join(abs, "package.json"), "utf8")).name === "quick-agent" && p.resolve(abs) !== p.resolve(cur)) console.log(src); } catch {}
 			}
 		' "$PI_DIR" "$APP/current" | while read -r OTHER; do
-			say "pi: 移除另一份 quick-agent（$OTHER，目录本身保留）"
+			say "pi: 移除另一份 quick-agent（${OTHER}，目录本身保留）"
 			(cd "$PI_DIR" && pi remove "$OTHER" >/dev/null 2>&1) || say "  pi remove $OTHER 失败，请手动执行"
 		done
 	fi
@@ -152,4 +152,4 @@ if [ "$DO_RESTART" = 1 ]; then
 		"$APP/current/bin/quick" hub reload >/dev/null || say "hub reload 失败，见 $QA_HOME/hub.log"
 	fi
 fi
-say "完成：quick-agent $VER。以后用 quick upgrade 升级（或在 Web UI 顶栏点「升级」）。"
+say "完成：quick-agent ${VER}。以后用 quick upgrade 升级（或在 Web UI 顶栏点「升级」）。"
