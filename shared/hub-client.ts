@@ -32,7 +32,7 @@ export class HubClient {
 				signal,
 			});
 		} catch (err) {
-			throw new HubError(`quick-agent hub unreachable at ${this.base} (${(err as Error).message}). Start it with: qa hub start`);
+			throw new HubError(`quick-agent hub unreachable at ${this.base} (${(err as Error).message}). Start it with: quick hub start`);
 		}
 		const text = await res.text();
 		let data: any;

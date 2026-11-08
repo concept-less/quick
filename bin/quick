@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 # quick-agent CLI entry point
 DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-NODE_NO_WARNINGS=1 exec node "$DIR/cli/qa.ts" "$@"
+NODE_NO_WARNINGS=1 exec node "$DIR/cli/quick.ts" "$@"

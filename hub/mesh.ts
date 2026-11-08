@@ -345,9 +345,9 @@ class Dialer {
 		if (this.peer.url) return this.peer.url.replace(/\/+$/, "");
 		if (!this.peer.ssh) throw new Error("peer needs url or ssh");
 		if (this.ssh && this.ssh.exitCode === null && this.sshPort) return `http://127.0.0.1:${this.sshPort}`;
-		// Best effort: make sure the remote hub is running (needs `qa` on the remote PATH).
+		// Best effort: make sure the remote hub is running (needs `quick` on the remote PATH).
 		this.state = "starting remote hub";
-		await runSsh(this.peer, ["bash", "-lc", "'command -v qa >/dev/null && qa hub start >/dev/null 2>&1; true'"], 20_000).catch(() => {});
+		await runSsh(this.peer, ["bash", "-lc", "'command -v quick >/dev/null && quick hub start >/dev/null 2>&1; true'"], 20_000).catch(() => {});
 		this.sshPort = await freePort();
 		const args = [
 			"-N",

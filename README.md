@@ -5,13 +5,13 @@
 - **前台 agent**：打开 pi 时默认就是它，终端 TUI 和桌面端等 RPC 客户端都算。它要求 **快**，只负责理解任务、组装上下文、派单。前台模式下只有 `read/grep/find/ls` 和 `qa_*` 工具，其余工具一律拦截。
 - **worker agent**：每个任务都有一个独立的负责人，是一个完整的 pi 会话，跑在 tmux 窗口 `qa:<id>` 里，从头到尾把任务做完。它不是 subagent，你随时可以观看或接管。
 - **hub**：本地常驻服务，pi 启动时会自动拉起它。负责任务注册表、注意力收件箱、worker 生命周期、入口接入、SSE 事件流，还有一个网页面板（能看 worker 的实时终端）。
-- **入口**：pi 本身、浏览器插件（框选元素后写评论）、`qa` CLI，以及任何能发 HTTP 请求的程序。
+- **入口**：pi 本身、浏览器插件（框选元素后写评论）、`quick` CLI，以及任何能发 HTTP 请求的程序。
 
 ```
  入口                         前台层                      后台层
  pi (TUI/RPC) ─┐
  浏览器插件 ────┼──► hub ◄────► 你的 pi = 前台 ──qa_dispatch──► worker (pi @ tmux qa:<id>)
- qa CLI ───────┘    (任务/收件箱/SSE/面板)                     ├─► worker …
+ quick CLI ────┘    (任务/收件箱/SSE/面板)                     ├─► worker …
                     ▲                                          │
                     └──── qa_report / 活动 / 会话 ──────────────┘
 ```
@@ -25,10 +25,10 @@
 ```bash
 git clone git@github.com:concept-less/quick.git ~/quick-agent
 pi install ~/quick-agent                # 写入 ~/.pi/agent/settings.json 的 packages（加载本地目录，不拷贝）
-ln -sf ~/quick-agent/bin/qa ~/.local/bin/qa   # 命令行工具（确保 ~/.local/bin 在 PATH 中）
+ln -sf ~/quick-agent/bin/quick ~/.local/bin/quick   # 命令行工具（确保 ~/.local/bin 在 PATH 中）
 ```
 
-更新用 `cd ~/quick-agent && git pull`，然后在 pi 里 `/reload` 并运行 `qa hub restart`。卸载用 `pi remove ~/quick-agent`。改了代码以后，在 pi 里执行 `/reload`，或者新开一个 pi，就能生效。
+更新用 `cd ~/quick-agent && git pull`，然后在 pi 里 `/reload` 并运行 `quick hub restart`。卸载用 `pi remove ~/quick-agent`。改了代码以后，在 pi 里执行 `/reload`，或者新开一个 pi，就能生效。
 
 ## pi 如何选择角色（`extensions/quick-agent.ts`）
 
@@ -55,14 +55,14 @@ ln -sf ~/quick-agent/bin/qa ~/.local/bin/qa   # 命令行工具（确保 ~/.loca
 CLI（任何终端都能用）：
 
 ```bash
-qa ls                       # 任务列表（• 表示有未读汇报）
-qa show <id>                # 查看汇报、事件、简报
-qa send <id> "追加指令"      # worker 窗口关了也会自动用原会话恢复
-qa attach <id>              # 切换到 worker 的 tmux 窗口
-qa cancel <id> / qa close <id>
-qa new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
-qa hub start|stop|restart|status|logs
-qa dashboard | qa tunnel | qa token
+quick ls                       # 任务列表（• 表示有未读汇报）
+quick show <id>                # 查看汇报、事件、简报
+quick send <id> "追加指令"      # worker 窗口关了也会自动用原会话恢复
+quick attach <id>              # 切换到 worker 的 tmux 窗口
+quick cancel <id> / quick close <id>
+quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
+quick hub start|stop|restart|status|logs
+quick dashboard | quick tunnel | quick token
 ```
 
 ## 多机互联（mesh）
@@ -70,7 +70,7 @@ qa dashboard | qa tunnel | qa token
 quick-agent 自带原生的多机互联，不依赖 codexhost。每台机器跑一个 hub，hub 之间组成网状网络：
 
 - **随处派单**：前台的 `qa_dispatch` 可以带上 `machine`，任务和 worker 就跑在那台机器上。附件（截图等）会随请求一起传过去，简报里的路径也会自动改写。
-- **全局视图**：每个 hub 都能看到全网的任务。`qa ls`、面板、前台的任务组件都会标出 `@机器`。
+- **全局视图**：每个 hub 都能看到全网的任务。`quick ls`、面板、前台的任务组件都会标出 `@机器`。
 - **统一控制**：追加指令、中止、关闭、已读、实时终端（`/peek`、面板）都会自动路由到任务所在的机器。
 - **远程只读浏览**：前台用 `qa_remote_fs`（ls/read/grep）在派单前查看别的机器上的代码。
 - **评论跨机流转**：任何机器上的浏览器评论，都能被任何一台机器上的前台认领，截图会自动拉到认领方本地。
@@ -79,17 +79,17 @@ quick-agent 自带原生的多机互联，不依赖 codexhost。每台机器跑�
 
 ```bash
 # 机器 A（例如你的笔记本或主力服务器）
-qa mesh init --id laptop --desc "MacBook，前端项目在 ~/code"
+quick mesh init --id laptop --desc "MacBook，前端项目在 ~/code"
 
 # 方式一：A 能 ssh 到 B（B 上已经装好 quick-agent）。一条命令完成：
-qa mesh add simon@server-b            # 会在 B 上设置密钥、启动 hub，A 自动维护 ssh 隧道
+quick mesh add simon@server-b            # 会在 B 上设置密钥、启动 hub，A 自动维护 ssh 隧道
 
 # 方式二：邀请码
-qa mesh invite                        # 在 A 上运行，打印加入命令
-qa mesh join <code> --ssh simon@A     # 在 B 上运行（B 能 ssh 到 A）
-qa mesh join <code> --url http://A:7788   # 或者 A 的端口可以直接访问
+quick mesh invite                        # 在 A 上运行，打印加入命令
+quick mesh join <code> --ssh simon@A     # 在 B 上运行（B 能 ssh 到 A）
+quick mesh join <code> --url http://A:7788   # 或者 A 的端口可以直接访问
 
-qa machines                           # 查看机器、路由、链路状态
+quick machines                           # 查看机器、路由、链路状态
 ```
 
 ### 原理（`hub/mesh.ts`）
@@ -97,7 +97,7 @@ qa machines                           # 查看机器、路由、链路状态
 | 方面 | 做法 |
 |---|---|
 | 链路 | 由一方主动往外拨：`GET /mesh/link`（SSE，对端 → 我）加 `POST /mesh/send`（我 → 对端）。只需要一个方向能连通，处在 NAT 后面的笔记本也能加入。链路建立后是双向的。 |
-| SSH | peer 写成 `{"ssh": "user@host"}` 时，hub 会自己拉起并维护 `ssh -N -L <空闲端口>:127.0.0.1:<对端 hub 端口>`（BatchMode、断线重连），还会顺带尝试在远端执行 `qa hub start`。 |
+| SSH | peer 写成 `{"ssh": "user@host"}` 时，hub 会自己拉起并维护 `ssh -N -L <空闲端口>:127.0.0.1:<对端 hub 端口>`（BatchMode、断线重连），还会顺带尝试在远端执行 `quick hub start`。 |
 | 鉴权 | 全网共享一个 mesh secret（`Authorization: Mesh <secret>`，用 timingSafeEqual 比较），和本地 API token 分开。 |
 | 路由 | 距离向量加水平分割，最多 8 跳。比如 A→B←C 的拓扑里，A 会经 B 访问 C；存在直连时优先直连，某条路断了会自动绕行。 |
 | 复制 | 任务和评论各有一台归属机器，每次更新带递增的 `rev`，并广播给全网；收到的版本只有比本地新才会应用并继续转发，所以广播一定会结束。新链路建立时会互发一份快照。 |
@@ -107,14 +107,14 @@ qa machines                           # 查看机器、路由、链路状态
 
 ### 本地电脑 + 浏览器的推荐用法
 
-在本地电脑上也装一份 quick-agent，然后运行 `qa mesh join … --ssh <服务器>` 或 `qa mesh add <服务器>`，这样浏览器插件直接连本机的 `http://127.0.0.1:7788`，不用再手动开 ssh 端口转发。评论会进到 mesh，由服务器上的前台认领，再派给对应机器上的 worker。
+在本地电脑上也装一份 quick-agent，然后运行 `quick mesh join … --ssh <服务器>` 或 `quick mesh add <服务器>`，这样浏览器插件直接连本机的 `http://127.0.0.1:7788`，不用再手动开 ssh 端口转发。评论会进到 mesh，由服务器上的前台认领，再派给对应机器上的 worker。
 
 ## 浏览器插件（在本地电脑上用）
 
-1. 在本地电脑上开端口转发，保持开启：`ssh -N -L 7788:127.0.0.1:7788 <user>@<server>`（完整命令和 token 可以在服务器上运行 `qa tunnel` 查看）。
+1. 在本地电脑上开端口转发，保持开启：`ssh -N -L 7788:127.0.0.1:7788 <user>@<server>`（完整命令和 token 可以在服务器上运行 `quick tunnel` 查看）。
 2. 下载插件：<http://127.0.0.1:7788/extension.zip>，解压。
 3. 打开 `chrome://extensions`，开启开发者模式，点「加载已解压的扩展程序」，选择解压后的目录。
-4. 点插件图标，填 Hub 地址 `http://127.0.0.1:7788` 和 Token（服务器上运行 `qa token` 获取），然后点「保存并测试」。
+4. 点插件图标，填 Hub 地址 `http://127.0.0.1:7788` 和 Token（服务器上运行 `quick token` 获取），然后点「保存并测试」。
 
 使用方法：按 `Alt+Shift+C`，或点插件图标里的「在当前页面框选评论」。
 
@@ -135,7 +135,7 @@ qa machines                           # 查看机器、路由、链路状态
   "model": "tokenjoy/claude-opus-5-5",   // 前台和 worker 共用；也可以用 frontModel / workerModel 分开设置
   "tmuxSession": "qa",
   "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work" },
-  "mesh": { "secret": "…qa mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
+  "mesh": { "secret": "…quick mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
   "defaultCwd": "/home/simon",
   "projects": [
     // 浏览器评论按 URL 匹配工作目录（子串，或 /正则/）
@@ -144,13 +144,13 @@ qa machines                           # 查看机器、路由、链路状态
 }
 ```
 
-修改配置后需要运行 `qa hub restart`，并在 pi 里执行 `/reload` 或新开一个 pi，才会生效。
+修改配置后需要运行 `quick hub restart`，并在 pi 里执行 `/reload` 或新开一个 pi，才会生效。
 
 ## 目录结构
 
 ```
-bin/qa                       CLI 入口
-cli/qa.ts                    CLI
+bin/quick                       CLI 入口
+cli/quick.ts                    CLI
 hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/dashboard.ts             网页面板

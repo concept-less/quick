@@ -33,7 +33,7 @@ if(qs.get('token')){localStorage.qaToken=qs.get('token');history.replaceState(nu
 const token=localStorage.qaToken;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-if(!token){document.getElementById('app').outerHTML='<div id="tokenbox"><p>请输入 hub token（见 <code>~/.quick-agent/config.json</code> 或运行 <code>qa token</code>）</p><input id="tk"><p><button onclick="localStorage.qaToken=document.getElementById(\\'tk\\').value;location.reload()">保存</button></p></div>'}
+if(!token){document.getElementById('app').outerHTML='<div id="tokenbox"><p>请输入 hub token（见 <code>~/.quick-agent/config.json</code> 或运行 <code>quick token</code>）</p><input id="tk"><p><button onclick="localStorage.qaToken=document.getElementById(\\'tk\\').value;location.reload()">保存</button></p></div>'}
 const api=(m,p,b)=>fetch(p,{method:m,headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 let tasks=new Map(),sel=null,selfId='',machines=[];
 const mtag=t=>t.machine&&t.machine!==selfId?'<span class="mach">@'+esc(t.machine)+'</span>':'';
@@ -49,7 +49,7 @@ function renderList(){
 async function select(id){sel=id;renderList();const {task:t,events}=await api('GET','/api/tasks/'+id+'?events=80');if(!t)return;
   $('#detail').innerHTML='<div class="row"><h2 style="margin:0;flex:1">'+esc(t.title)+'</h2><span class="st '+t.status+'">'+t.status+'</span></div>'+
   '<p class="sub">'+t.id+' · 机器 '+esc(t.machine||selfId)+' · '+esc(t.cwd)+' · 来源 '+t.source.kind+(t.source.url?' · <a style="color:var(--acc)" href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</p>'+
-  ((t.machine&&t.machine!==selfId)?'<p class="sub">接管: 在 '+esc(t.machine)+' 上运行 <code>qa attach '+t.id+'</code></p>':'<p class="sub">接管: <code>tmux attach -t '+esc((t.tmuxTarget||'').split(':')[0])+' \\\\; select-window -t '+esc(t.tmuxTarget||'')+'</code>'+(t.sessionFile?' · 会话 <code>'+esc(t.sessionFile)+'</code>':'')+'</p>')+
+  ((t.machine&&t.machine!==selfId)?'<p class="sub">接管: 在 '+esc(t.machine)+' 上运行 <code>quick attach '+t.id+'</code></p>':'<p class="sub">接管: <code>tmux attach -t '+esc((t.tmuxTarget||'').split(':')[0])+' \\\\; select-window -t '+esc(t.tmuxTarget||'')+'</code>'+(t.sessionFile?' · 会话 <code>'+esc(t.sessionFile)+'</code>':'')+'</p>')+
   '<div class="row"><button onclick="act(\\'ack\\')">标记已读</button><button onclick="act(\\'cancel\\')">中止</button><button onclick="act(\\'close\\')">关闭窗口</button></div>'+
   (t.summary?'<h3>最新汇报</h3><pre>'+esc(t.summary)+'</pre>':'')+
   '<h3>实时终端</h3><pre id="screen" style="max-height:420px;overflow:auto;font:12px/1.35 ui-monospace,monospace">…</pre>'+

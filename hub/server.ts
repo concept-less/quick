@@ -1,6 +1,6 @@
 // quick-agent hub: task registry, attention inbox, worker lifecycle (tmux), intake, SSE,
 // and the multi-machine mesh (see mesh.ts).
-// Run: node hub/server.ts   (normally started automatically by pi or `qa hub start`)
+// Run: node hub/server.ts   (normally started automatically by pi or `quick hub start`)
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";

@@ -1,4 +1,4 @@
-// qa — quick-agent command line.
+// quick — quick-agent command line.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ let [cmd = "help", ...rest] = process.argv.slice(2);
 const ICON: Record<string, string> = { starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏" };
 
 function die(msg: string): never {
-	console.error(`qa: ${msg}`);
+	console.error(`quick: ${msg}`);
 	process.exit(1);
 }
 
@@ -63,7 +63,7 @@ function line(t: Task) {
 	return `${t.unread ? "•" : " "} ${ICON[t.status] ?? "·"} ${(t.id + where).padEnd(5)}  ${t.status.padEnd(11)} ${t.title}  \x1b[2m${ago}m · ${detail}\x1b[0m`;
 }
 
-/** quick-agent lives inside pi now: `qa front` is just `pi`. */
+/** quick-agent lives inside pi now: `quick front` is just `pi`. */
 async function front(args: string[]) {
 	await hubStart(true);
 	const r = spawnSync("pi", args, { stdio: "inherit", env: { ...process.env, NODE_NO_WARNINGS: "1" } });
@@ -72,38 +72,38 @@ async function front(args: string[]) {
 
 function attach(id: string) {
 	const target = `${cfg.tmuxSession}:${id}`;
-	if (!tmuxOk("list-panes", "-t", target)) die(`no tmux window for ${id} (resume it with: qa send ${id} "<message>")`);
+	if (!tmuxOk("list-panes", "-t", target)) die(`no tmux window for ${id} (resume it with: quick send ${id} "<message>")`);
 	const args = process.env.TMUX ? ["switch-client", "-t", target] : ["attach-session", "-t", target];
 	const r = spawnSync("tmux", args, { stdio: "inherit" });
 	process.exit(r.status ?? 0);
 }
 
-const HELP = `qa — quick-agent
+const HELP = `quick — quick-agent
 
-  pi                        直接打开 pi 就是前台 agent（qa front 是它的别名）；pi --qa-off 为普通 pi
-  qa hub start|stop|restart|status|logs
-  qa ls [-a]                列出任务（-a 包含已关闭）
-  qa show <id>              查看任务汇报、事件、简报
-  qa new [--machine M] [--cwd DIR] <title> <brief...>   不经前台直接派单
-  qa send <id> <message>    给 worker 追加指令（窗口已关会自动恢复会话）
-  qa attach <id>            切换到 worker 的 tmux 窗口
-  qa cancel <id>            中止 worker 当前运行
-  qa close <id>             关闭 worker 窗口
-  qa ack <id>               标记已读
-  qa machines               mesh 中的机器与链路状态
+  pi                        直接打开 pi 就是前台 agent（quick front 是它的别名）；pi --qa-off 为普通 pi
+  quick hub start|stop|restart|status|logs
+  quick ls [-a]             列出任务（-a 包含已关闭）
+  quick show <id>           查看任务汇报、事件、简报
+  quick new [--machine M] [--cwd DIR] <title> <brief...>   不经前台直接派单
+  quick send <id> <message> 给 worker 追加指令（窗口已关会自动恢复会话）
+  quick attach <id>         切换到 worker 的 tmux 窗口
+  quick cancel <id>         中止 worker 当前运行
+  quick close <id>          关闭 worker 窗口
+  quick ack <id>            标记已读
+  quick machines            mesh 中的机器与链路状态
 
   多机互联（mesh）:
-  qa mesh init [--id NAME] [--desc 描述]   初始化本机身份与 mesh 密钥
-  qa mesh add <ssh目标> [--port P] [--ssh-arg A]...
+  quick mesh init [--id NAME] [--desc 描述]   初始化本机身份与 mesh 密钥
+  quick mesh add <ssh目标> [--port P] [--ssh-arg A]...
                             一条命令把一台能 ssh 过去的机器拉进 mesh（远端需已安装 quick-agent）
-  qa mesh invite            打印给其他机器用的加入命令
-  qa mesh join <code> (--ssh 目标 | --url URL)   用邀请码加入并连接到邀请方
-  qa mesh accept <secret>   （由 mesh add 远程调用）设置密钥并重启 hub
-  qa mesh peers | remove <序号>   查看/删除本机主动连接的 peer
+  quick mesh invite         打印给其他机器用的加入命令
+  quick mesh join <code> (--ssh 目标 | --url URL)   用邀请码加入并连接到邀请方
+  quick mesh accept <secret>   （由 mesh add 远程调用）设置密钥并重启 hub
+  quick mesh peers | remove <序号>   查看/删除本机主动连接的 peer
 
-  qa token                  打印 hub token
-  qa dashboard              打印网页面板地址
-  qa tunnel                 打印本地浏览器连接所需的 ssh 端口转发命令
+  quick token               打印 hub token
+  quick dashboard           打印网页面板地址
+  quick tunnel              打印本地浏览器连接所需的 ssh 端口转发命令
 
   配置: ${join(paths.home, "config.json")}`;
 
@@ -168,12 +168,12 @@ async function mesh(args: string[]) {
 			const secret = ensureSecret();
 			const code = Buffer.from(JSON.stringify({ v: 1, secret, machine: cfg.machine.id, port: cfg.port })).toString("base64url");
 			const me = `${userInfo().username}@${hostname()}`;
-			console.log(`在另一台机器上运行（二选一）：\n\n  # 那台机器能 ssh 到这里（推荐，hub 会自己维护隧道）：\n  qa mesh join ${code} --ssh ${me}\n\n  # 或者这里的 hub 端口可以直接访问（需把 config.json 的 host 设为 0.0.0.0，并做好防火墙）：\n  qa mesh join ${code} --url http://<本机地址>:${cfg.port}\n`);
+			console.log(`在另一台机器上运行（二选一）：\n\n  # 那台机器能 ssh 到这里（推荐，hub 会自己维护隧道）：\n  quick mesh join ${code} --ssh ${me}\n\n  # 或者这里的 hub 端口可以直接访问（需把 config.json 的 host 设为 0.0.0.0，并做好防火墙）：\n  quick mesh join ${code} --url http://<本机地址>:${cfg.port}\n`);
 			await restartHubIfRunning();
 			return;
 		}
 		case "join": {
-			const code = args.shift() ?? die("usage: qa mesh join <code> (--ssh TARGET | --url URL)");
+			const code = args.shift() ?? die("usage: quick mesh join <code> (--ssh TARGET | --url URL)");
 			let inv: { secret: string; port?: number; machine?: string };
 			try {
 				inv = JSON.parse(Buffer.from(code, "base64url").toString("utf8"));
@@ -195,14 +195,14 @@ async function mesh(args: string[]) {
 			return main2(["machines"]);
 		}
 		case "add": {
-			const target = args.shift() ?? die("usage: qa mesh add <ssh-target> [--port P] [--ssh-arg A]...");
+			const target = args.shift() ?? die("usage: quick mesh add <ssh-target> [--port P] [--ssh-arg A]...");
 			const port = Number(flag(args, "--port") ?? 7788);
 			const sshArgs = flags(args, "--ssh-arg");
 			const secret = ensureSecret();
 			console.log(`→ 在 ${target} 上设置 mesh 密钥并启动 hub …`);
-			const r = spawnSync("ssh", ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", ...sshArgs, target, "bash", "-lc", `'qa mesh accept ${secret}'`], { stdio: "inherit" });
+			const r = spawnSync("ssh", ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", ...sshArgs, target, "bash", "-lc", `'quick mesh accept ${secret}'`], { stdio: "inherit" });
 			if (r.status !== 0) {
-				die(`远端设置失败。请确认 ${target} 上已安装 quick-agent（qa 在 PATH 中），或在那台机器上手动运行:\n  qa mesh accept ${secret}`);
+				die(`远端设置失败。请确认 ${target} 上已安装 quick-agent（quick 在 PATH 中），或在那台机器上手动运行:\n  quick mesh accept ${secret}`);
 			}
 			addPeer({ ssh: target, port, ...(sshArgs.length ? { sshArgs } : {}) });
 			await hubStop();
@@ -211,7 +211,7 @@ async function mesh(args: string[]) {
 			return main2(["machines"]);
 		}
 		case "accept": {
-			const secret = args.shift() ?? die("usage: qa mesh accept <secret>");
+			const secret = args.shift() ?? die("usage: quick mesh accept <secret>");
 			saveConfigPatch((raw) => {
 				raw.mesh = { ...(raw.mesh ?? {}), secret, peers: raw.mesh?.peers ?? [] };
 				raw.machine = { ...(raw.machine ?? {}), id: raw.machine?.id ?? cfg.machine.id };
@@ -229,7 +229,7 @@ async function mesh(args: string[]) {
 			const n = Number(args.shift());
 			saveConfigPatch((raw) => {
 				const peers = raw.mesh?.peers ?? [];
-				if (!(n >= 1 && n <= peers.length)) die("usage: qa mesh remove <序号>（见 qa mesh peers）");
+				if (!(n >= 1 && n <= peers.length)) die("usage: quick mesh remove <序号>（见 quick mesh peers）");
 				peers.splice(n - 1, 1);
 			});
 			return restartHubIfRunning();
@@ -256,7 +256,7 @@ async function main() {
 				const h = await hub.health();
 				return console.log(`hub running at ${hubUrl(cfg)} (pid ${h.pid}, ${h.tasks} tasks)`);
 			}
-			return console.log("hub not running (qa hub start)");
+			return console.log("hub not running (quick hub start)");
 		}
 		case "ls":
 		case "tasks": {
@@ -266,7 +266,7 @@ async function main() {
 			return console.log(list.map(line).join("\n"));
 		}
 		case "show": {
-			const id = rest[0] ?? die("usage: qa show <id>");
+			const id = rest[0] ?? die("usage: quick show <id>");
 			const { task: t, events } = await hub.getTask(id, 30);
 			console.log(`${ICON[t.status]} ${t.id} [${t.status}] ${t.title}\n  cwd: ${t.cwd}\n  tmux: ${t.tmuxTarget ?? "-"}\n  session: ${t.sessionFile ?? "-"}\n  activity: ${t.activity ?? "-"}`);
 			console.log(`\n── 汇报 ──\n${t.summary ?? "(暂无)"}`);
@@ -292,30 +292,30 @@ async function main() {
 				if (i < 0) cwd = ""; // remote: use that machine's default cwd unless --cwd is given
 			}
 			const [title, ...brief] = args;
-			if (!title || !brief.length) die("usage: qa new [--machine M] [--cwd DIR] <title> <brief...>");
+			if (!title || !brief.length) die("usage: quick new [--machine M] [--cwd DIR] <title> <brief...>");
 			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, source: { kind: "cli" } });
 			return console.log(line(t));
 		}
 		case "send": {
 			const [id, ...msg] = rest;
-			if (!id || !msg.length) die("usage: qa send <id> <message>");
+			if (!id || !msg.length) die("usage: quick send <id> <message>");
 			return console.log(line(await hub.sendMessage(id, msg.join(" "))));
 		}
 		case "cancel":
-			return console.log(line(await hub.cancel(rest[0] ?? die("usage: qa cancel <id>"))));
+			return console.log(line(await hub.cancel(rest[0] ?? die("usage: quick cancel <id>"))));
 		case "close":
-			return console.log(line(await hub.close(rest[0] ?? die("usage: qa close <id>"))));
+			return console.log(line(await hub.close(rest[0] ?? die("usage: quick close <id>"))));
 		case "ack":
-			return console.log(line(await hub.ack(rest[0] ?? die("usage: qa ack <id>"))));
+			return console.log(line(await hub.ack(rest[0] ?? die("usage: quick ack <id>"))));
 		case "attach":
-			return attach(rest[0] ?? die("usage: qa attach <id>"));
+			return attach(rest[0] ?? die("usage: quick attach <id>"));
 		case "machines": {
 			const r = await hub.machines();
 			for (const m of r.machines)
 				console.log(
 					`${m.online ? "●" : "○"} ${m.id.padEnd(16)} ${m.self ? "self" : m.hops === -1 ? "offline" : m.hops === 1 ? "direct" : `via ${m.via} (${m.hops} hops)`}  \x1b[2m${m.description ?? ""}${m.activeTasks ? ` · ${m.activeTasks} running` : ""}\x1b[0m`,
 				);
-			if (!r.links.enabled) console.log("\n(mesh 未启用：运行 qa mesh init)");
+			if (!r.links.enabled) console.log("\n(mesh 未启用：运行 quick mesh init)");
 			for (const d of r.links.dialed) console.log(`  → ${d.label}: ${d.state}${d.peer ? ` (${d.peer})` : ""}${d.error ? ` — ${d.error}` : ""}`);
 			for (const l of r.links.inbound) console.log(`  ← ${l.peer} from ${l.label}`);
 			return;
