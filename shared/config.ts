@@ -38,6 +38,8 @@ export interface MeshConfig {
 export interface QaConfig {
 	host: string;
 	port: number;
+	/** Port of the Web UI (`quick ui`), always bound to 127.0.0.1. */
+	uiPort: number;
 	token: string;
 	/** Model for both front and worker agents ("provider/id[:thinking]"). */
 	model: string;
@@ -89,6 +91,9 @@ export const paths = {
 	intake: join(QA_HOME, "intake"),
 	log: join(QA_HOME, "hub.log"),
 	pid: join(QA_HOME, "hub.pid"),
+	uiLog: join(QA_HOME, "ui.log"),
+	uiPid: join(QA_HOME, "ui.pid"),
+	uiSessions: join(QA_HOME, "ui-sessions"),
 };
 
 export function ensureDirs(): void {
@@ -108,6 +113,7 @@ export function loadConfig(): QaConfig {
 	const cfg: QaConfig = {
 		host: raw.host ?? "127.0.0.1",
 		port: Number(process.env.QA_PORT ?? raw.port ?? 7788),
+		uiPort: Number(process.env.QA_UI_PORT ?? raw.uiPort ?? 7790),
 		token: raw.token ?? randomBytes(18).toString("base64url"),
 		model: raw.model ?? "tokenjoy/claude-opus-5-5",
 		frontModel: raw.frontModel,

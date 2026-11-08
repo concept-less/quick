@@ -118,8 +118,27 @@ quick cancel <id> / quick close <id>
 quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
 quick hub start|stop|restart|status|logs
 quick upgrade [--check] [--all]  # 升级（见「升级」）
+quick ui                       # 浏览器里的前台 agent + 任务面板（见下文 Web UI）
 quick dashboard | quick tunnel | quick token
 ```
+
+## Web UI（在浏览器里用前台 agent）
+
+```bash
+quick ui                      # 启动（已在运行则直接复用）并在浏览器打开；前台工作目录 = 当前目录
+quick ui --cwd ~/proj --new   # 指定前台工作目录、开一个新会话；--no-open 只打印地址
+quick ui status | url | logs | stop | restart
+```
+
+`quick ui` 会先确保 hub 在运行，再拉起一个常驻的 Web UI 进程（`ui/server.ts`，日志 `~/.quick-agent/ui.log`），然后打开 `http://127.0.0.1:7790/?token=…`。
+
+- **对话**：左侧和前台 agent 对话，回复流式显示，思考过程可折叠。工具调用显示为卡片，派单卡片带任务 ID 和实时状态，点击任务 ID 会在右侧打开详情。回复过程中继续发消息会排到本轮之后（Alt+Enter 插入当前轮），可以随时「停止」。支持粘贴图片，`/tasks`、`/qa on|off` 等扩展命令照常可用，扩展弹出的选择框、确认框会显示成网页对话框。
+- **会话**：前台会话通过 pi SDK 托管在 Web UI 进程里，加载的是同一个 quick-agent 扩展和系统提示（等同于一个 RPC 模式的 pi）。会话持久化在 `~/.quick-agent/ui-sessions/`，启动时自动接着上次的会话。顶栏可以切换或新建会话、重命名，也可以切换模型和思考级别。会话文件是标准的 pi 会话，也能用 `pi --session <文件>` 在终端里接着用。
+- **任务面板**：右侧实时列出全网任务，包括状态、标题、机器和最新摘要，hub 的 SSE 事件会实时推送过来。点开任务可以查看汇报、实时终端、简报和事件，也可以追加指令、中止、关闭窗口或标记已读。
+- **汇报与评论**：由这个会话派出的任务，完成或提问时会以「quick-agent 汇报」卡片进入对话，同时弹出通知。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。「浏览器评论」标签页列出所有评论，以及它们对应的任务。
+- **安全**：只监听 `127.0.0.1`（端口用 config 的 `uiPort` 或环境变量 `QA_UI_PORT` 设置，默认 7790）。访问需要 hub token：`?token=` 只用一次，换成 HttpOnly、SameSite=Strict 的 cookie 后，就会从地址栏移除。服务端还会拒绝非 localhost 的 Host 头（防 DNS rebinding）和跨源写请求。浏览器对 hub 的调用都由 Web UI 进程代理，token 不会暴露给页面脚本。
+- 深色和浅色跟随系统，也可以用右上角 ◐ 手动切换；窄屏时对话和任务可以切换显示。
+- 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理，汇报只会进入派单的那个会话。
 
 ## 多机互联（mesh）
 
@@ -208,6 +227,7 @@ quick machines                           # 查看机器、路由、链路状态
 {
   "host": "127.0.0.1",
   "port": 7788,
+  "uiPort": 7790,                         // Web UI（quick ui），只监听 127.0.0.1
   "token": "…自动生成…",
   "model": "tokenjoy/claude-opus-5-5",   // 前台和 worker 共用；也可以用 frontModel / workerModel 分开设置
   "tmuxSession": "qa",
@@ -231,7 +251,9 @@ bin/quick                       CLI 入口
 cli/quick.ts                    CLI
 hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
-hub/dashboard.ts             网页面板
+hub/dashboard.ts             网页面板（任务视图）
+ui/server.ts                 Web UI：用 pi SDK 托管前台会话 + 代理 hub API + SSE（quick ui）
+ui/app.html                  Web UI 前端（对话、任务面板、浏览器评论）
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
 shared/update.ts             自动升级：版本来源、安装方式识别、安装、节流与锁
 test/                        npm test（升级逻辑 + 多机升级模拟）

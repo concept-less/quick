@@ -9,6 +9,7 @@ import { ensureHub, hubAlive as alive } from "../shared/hub-process.ts";
 import { HubClient } from "../shared/hub-client.ts";
 import { ACTIVE_STATUSES, type Task } from "../shared/types.ts";
 import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
+import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
 
 const cfg = loadConfig();
 const hub = new HubClient(cfg);
@@ -27,7 +28,7 @@ async function hubAlive() {
 
 async function hubStart(quiet = false) {
 	const r = await ensureHub(cfg, hub).catch((e) => die((e as Error).message));
-	if (!quiet) console.log(r === "running" ? `hub already running at ${hubUrl(cfg)}` : `hub started at ${hubUrl(cfg)} (log ${paths.log})`);
+	if (!quiet) console.log(`${r === "running" ? `hub already running at ${hubUrl(cfg)}` : `hub started at ${hubUrl(cfg)} (log ${paths.log})`}\nWeb UI: quick ui  →  ${uiLoginUrl(cfg)}`);
 }
 
 async function hubStop() {
@@ -82,6 +83,8 @@ function attach(id: string) {
 const HELP = `quick — quick-agent
 
   pi                        直接打开 pi 就是前台 agent（quick front 是它的别名）；pi --qa-off 为普通 pi
+  quick ui [--cwd DIR] [--new] [--no-open]   在浏览器里打开 Web UI（对话前台 agent + 任务面板）
+  quick ui stop|restart|status|url|logs
   quick hub start|stop|restart|status|logs
   quick ls [-a]             列出任务（-a 包含已关闭）
   quick show <id>           查看任务汇报、事件、简报
@@ -323,6 +326,34 @@ async function mesh(args: string[]) {
 	}
 }
 
+function openBrowser(url: string) {
+	const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+	return spawnSync(opener, [url], { stdio: "ignore" }).status === 0;
+}
+
+/** Web UI: chat with a front agent hosted in ui/server.ts plus a live task panel. */
+async function ui(args: string[]) {
+	const sub = args[0] && !args[0].startsWith("-") ? args[0] : "open";
+	const flag = (n: string) => args.includes(n);
+	const ci = args.indexOf("--cwd");
+	const cwd = ci >= 0 ? (args[ci + 1] ?? die("--cwd needs a value")) : process.env.PWD || process.cwd();
+	if (sub === "stop") return console.log((await stopUi()) ? "web ui stopped" : "web ui not running");
+	if (sub === "url") return console.log(uiLoginUrl(cfg));
+	if (sub === "logs") return void spawnSync("tail", ["-n", "80", "-f", paths.uiLog], { stdio: "inherit" });
+	if (sub === "status") {
+		const h = await uiHealth(cfg);
+		return console.log(h ? `web ui running at ${uiLoginUrl(cfg)} (pid ${h.pid}, cwd ${h.cwd})` : "web ui not running (quick ui)");
+	}
+	if (sub === "restart") await stopUi();
+	else if (sub !== "open") die(`unknown: quick ui ${sub}`);
+	await hubStart(true);
+	const r = await ensureUi(cfg, { cwd, newSession: flag("--new") }).catch((e) => die((e as Error).message));
+	const h = await uiHealth(cfg);
+	console.log(`${r === "started" ? "web ui started" : "web ui already running"} (cwd ${h?.cwd ?? cwd}, log ${paths.uiLog})\n${uiLoginUrl(cfg)}`);
+	if (r === "running" && h && h.cwd !== cwd && ci >= 0) console.log(`注意：已有 Web UI 在 ${h.cwd} 运行；要换目录请 quick ui restart --cwd ${cwd}`);
+	if (!flag("--no-open") && !openBrowser(uiLoginUrl(cfg))) console.log("(无法自动打开浏览器，请手动打开上面的地址)");
+}
+
 async function main() {
 	switch (cmd) {
 		case "front":
@@ -410,6 +441,8 @@ async function main() {
 		case "upgrade":
 		case "update":
 			return upgrade(rest);
+		case "ui":
+			return ui(rest);
 		case "token":
 			return console.log(cfg.token);
 		case "dashboard":

@@ -722,7 +722,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	if (p === "/health") return send(res, 200, { ok: true, machine: SELF, pid: process.pid, tasks: tasks.size, mesh: mesh.enabled, version: VERSION });
 	if (p === "/" || p === "/dashboard") {
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-		return res.end(dashboardHtml());
+		return res.end(dashboardHtml(cfg.uiPort));
 	}
 	if (p === "/extension.zip") {
 		// Browser extension package (no secrets inside): download, unzip, "Load unpacked".
@@ -868,6 +868,7 @@ const server = createServer((req, res) => {
 server.listen(cfg.port, cfg.host, () => {
 	writeFileSync(paths.pid, String(process.pid));
 	log(`[quick-agent hub] v${VERSION} machine "${SELF}" listening on http://${cfg.host}:${cfg.port} (pid ${process.pid}, mesh ${mesh.enabled ? `on, ${cfg.mesh.peers.length} peer(s)` : "off"})`);
+	log(`[quick-agent hub] web ui: run \`quick ui\` → http://127.0.0.1:${cfg.uiPort}/`);
 	mesh.start();
 	// Background version check: never blocks startup, throttled by update.intervalHours, silent on failure.
 	setTimeout(backgroundUpdate, 10_000).unref();
