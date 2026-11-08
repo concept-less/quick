@@ -15,11 +15,11 @@ import { autoUpdate, compareVersions, readState, readVersion } from "../shared/u
 import { priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
 
-const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_machines", "qa_remote_fs"];
+const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs"];
 const FRONT_TOOLS = ["read", "grep", "find", "ls", ...QA_TOOLS];
 
 const ICON: Record<string, string> = {
-	starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏",
+	starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏", handoff: "⇄",
 };
 
 function frontRules(cwd: string, defaultCwd: string, projects: string, machines: string): string {
@@ -41,6 +41,8 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
    - 人类点名机器时照做（传 machine）。代码/环境只在某台机器上时派到那台。
    - cwd 必须是选中机器上的路径，不能把一台机器的路径用到另一台。拿不准就不传 cwd：hub 会用选中机器的项目映射或默认目录；需要特定项目时，用该机器 projects/默认目录下的路径（可先用 qa_remote_fs 确认）。只传 cwd 不传 machine 时，hub 会选择该路径存在的、优先级最高的机器。
    - 资源不满足或机器离线时 qa_dispatch 会报错：不要换到不满足条件的机器硬派；拿不准该用哪台机器、或资源声明不清楚时，先问人类。
+
+12. 人类要求把某个任务"挪到/交接到/换到"另一台机器继续时，用 qa_handoff（会话、任务元数据、未提交的代码改动都会带过去，任务 id 不变）。worker 正在运行时默认等它这一轮结束；人类说"马上/立刻"才设 abort=true。目标目录有冲突时 qa_handoff 会失败并给出选项，把选项转述给人类，不要自己替他选 stash/backup。
 
 本机: ${machines.split("\n")[0]}
 mesh 中的机器（qa_machines 查看最新状态）:
@@ -124,7 +126,7 @@ export function setupFront(pi: ExtensionAPI) {
 			const lines = list.slice(0, 8).map((t) => {
 				const color = t.status === "done" ? "success" : ACTIVE_STATUSES.includes(t.status) ? "accent" : ATTENTION_STATUSES.includes(t.status) ? "warning" : "dim";
 				const mark = t.unread ? th.fg("warning", "• ") : "  ";
-				const detail = ACTIVE_STATUSES.includes(t.status) ? (t.activity ?? "") : (t.summary ?? "").split("\n")[0];
+				const detail = ACTIVE_STATUSES.includes(t.status) || t.status === "handoff" ? (t.activity ?? "") : (t.summary ?? "").split("\n")[0];
 				return `${mark}${th.fg(color as any, `${ICON[t.status] ?? "·"} ${tag(t)}`)} ${t.title}${detail ? th.fg("dim", ` — ${detail.slice(0, 70)}`) : ""}`;
 			});
 			if (list.length > 8) lines.push(th.fg("dim", `  … 还有 ${list.length - 8} 个任务（/tasks）`));
@@ -319,6 +321,31 @@ export function setupFront(pi: ExtensionAPI) {
 			tasks.set(task.id, task);
 			renderWidget();
 			return { content: [{ type: "text", text: `Cancelled ${task.id}${p.close ? " and closed its window" : ""}.` }], details: { task } };
+		},
+	});
+
+	pi.registerTool({
+		name: "qa_handoff",
+		label: "Hand off task",
+		defaultActive: false,
+		description:
+			"Move a quick-agent task to another online machine of the mesh, losslessly: the worker's pi session (full history), task metadata/events and the workspace (git commit + staged/unstaged diff + untracked files, or a tar of a non-git dir) are transferred, verified by hash, and the worker resumes there under the same task id. Asynchronous: returns once the handoff has started (task status becomes 'handoff'); check progress with qa_task_read.",
+		parameters: Type.Object({
+			id: Type.String({ description: "Task id" }),
+			machine: Type.String({ description: "Target machine id (from qa_machines)" }),
+			cwd: Type.Optional(Type.String({ description: "Target working directory on that machine (default: derived from project mapping / home dir / same path)" })),
+			no_workspace: Type.Optional(Type.Boolean({ description: "Do not transfer the workspace (target cwd must already exist)" })),
+			abort: Type.Optional(Type.Boolean({ description: "Interrupt a running worker instead of waiting for its turn to end" })),
+			on_conflict: Type.Optional(StringEnum(["fail", "stash", "backup"] as const, { description: "Only when the human chose it: what to do with conflicting state in the target dir (default fail)" })),
+		}),
+		async execute(_id, p) {
+			const task = await hub.handoff(p.id, { to: p.machine, cwd: p.cwd, noWorkspace: p.no_workspace, abort: p.abort, onConflict: p.on_conflict });
+			tasks.set(task.id, task);
+			renderWidget();
+			return {
+				content: [{ type: "text", text: `Handoff of ${task.id} to ${p.machine} started (status ${task.status}: ${task.activity ?? ""}). Progress and result appear in the task's activity/events (qa_task_read).` }],
+				details: { task },
+			};
 		},
 	});
 

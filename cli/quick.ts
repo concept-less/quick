@@ -17,7 +17,7 @@ const cfg = loadConfig();
 const hub = new HubClient(cfg);
 let [cmd = "help", ...rest] = process.argv.slice(2);
 
-const ICON: Record<string, string> = { starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏" };
+const ICON: Record<string, string> = { starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏", handoff: "⇄" };
 
 function die(msg: string): never {
 	console.error(`quick: ${msg}`);
@@ -57,7 +57,7 @@ async function hubStop() {
 }
 
 function line(t: Task) {
-	const detail = (["starting", "running"].includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 90) ?? "";
+	const detail = (["starting", "running", "handoff"].includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 90) ?? "";
 	const ago = Math.round((Date.now() - t.updatedAt) / 60000);
 	const where = t.machine && t.machine !== cfg.machine.id ? `@${t.machine}` : "";
 	return `${t.unread ? "•" : " "} ${ICON[t.status] ?? "·"} ${(t.id + where).padEnd(5)}  ${t.status.padEnd(11)} ${t.title}  \x1b[2m${ago}m · ${detail}\x1b[0m`;
@@ -94,6 +94,8 @@ const HELP = `quick — quick-agent
                             不经前台直接派单（不指定机器时按资源+优先级自动选机器）
   quick send <id> <message> 给 worker 追加指令（窗口已关会自动恢复会话）
   quick attach <id>         进入 worker 的 tmux 窗口（远程任务经 ssh；C-b d 返回）
+  quick handoff <id> <machine> [--cwd 路径] [--no-workspace] [--abort] [--wait 秒] [--on-conflict fail|stash|backup] [--no-follow]
+                            把任务（会话 + 元数据 + 工作区）无损交接到 mesh 里另一台在线机器继续
   quick cancel <id>         中止 worker 当前运行
   quick close <id>          关闭 worker 窗口
   quick ack <id>            标记已读
@@ -492,6 +494,8 @@ async function main() {
 			return console.log(line(await hub.close(rest[0] ?? die("usage: quick close <id>"))));
 		case "ack":
 			return console.log(line(await hub.ack(rest[0] ?? die("usage: quick ack <id>"))));
+		case "handoff":
+			return handoffCmd(rest);
 		case "attach":
 			return attach(rest[0] ?? die("usage: quick attach <id>"));
 		case "machines": {
@@ -530,6 +534,50 @@ async function main() {
 			);
 		default:
 			return console.log(HELP);
+	}
+}
+
+async function handoffCmd(args: string[]) {
+	const a = [...args];
+	const cwd = flag(a, "--cwd");
+	const wait = flag(a, "--wait");
+	const onConflict = flag(a, "--on-conflict") as "fail" | "stash" | "backup" | undefined;
+	const testFail = flag(a, "--test-fail");
+	const bool = (n: string) => {
+		const i = a.indexOf(n);
+		if (i >= 0) a.splice(i, 1);
+		return i >= 0;
+	};
+	const noWorkspace = bool("--no-workspace");
+	const abort = bool("--abort");
+	const noFollow = bool("--no-follow");
+	const [id, to] = a;
+	if (!id || !to) die("usage: quick handoff <id> <machine> [--cwd DIR] [--no-workspace] [--abort] [--wait SEC] [--on-conflict fail|stash|backup] [--no-follow]");
+	if (onConflict && !["fail", "stash", "backup"].includes(onConflict)) die("--on-conflict must be fail, stash or backup");
+	const before = (await hub.getTask(id, 0)).task;
+	const t = await hub.handoff(id, { to, cwd, noWorkspace, abort, waitSec: wait ? Number(wait) : undefined, onConflict, testFail });
+	console.log(`⇄ ${t.id} ${before.machine} → ${to}: started`);
+	if (noFollow) return;
+	let last = "";
+	for (;;) {
+		await new Promise((r) => setTimeout(r, 700));
+		let cur: Task;
+		let events: { kind: string; text?: string }[];
+		try {
+			({ task: cur, events } = await hub.getTask(id, 5));
+		} catch {
+			continue; // ownership moving between hubs
+		}
+		if (cur.status === "handoff") {
+			if (cur.activity && cur.activity !== last) console.log(`  ${(last = cur.activity)}`);
+			continue;
+		}
+		const ev = [...events].reverse().find((e) => e.kind === "handoff");
+		if (cur.machine === to) {
+			console.log(`✓ ${cur.id} 现在在 ${cur.machine} 上（${cur.cwd}，状态 ${cur.status}）${ev?.text ? `\n  ${ev.text}` : ""}`);
+			return;
+		}
+		if (cur.machine === before.machine) die(ev?.text ?? `handoff did not complete (status ${cur.status})`);
 	}
 }
 

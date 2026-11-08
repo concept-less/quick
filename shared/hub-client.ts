@@ -83,6 +83,10 @@ export class HubClient {
 	close(id: string) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/close`, {}).then((r) => r.task);
 	}
+	/** Move a task to another machine (async: poll the task to follow progress). */
+	handoff(id: string, body: { to: string; cwd?: string; noWorkspace?: boolean; abort?: boolean; waitSec?: number; onConflict?: "fail" | "stash" | "backup"; testFail?: string }) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/handoff`, body).then((r) => r.task);
+	}
 	ack(id: string) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/ack`, {}).then((r) => r.task);
 	}

@@ -9,7 +9,8 @@ export type TaskStatus =
 	| "done" // worker reported completion
 	| "failed" // worker crashed / spawn failed
 	| "cancelled" // you cancelled it
-	| "exited"; // pi process in the window exited
+	| "exited" // pi process in the window exited
+	| "handoff"; // being moved to another machine (see hub/handoff.ts)
 
 /** Statuses that need the human's attention. */
 export const ATTENTION_STATUSES: TaskStatus[] = ["idle", "needs_input", "blocked", "done", "failed", "exited"];
@@ -50,12 +51,20 @@ export interface Task {
 	owner?: string;
 	/** Arbitrary flag set when the worker has closed its window. */
 	closed?: boolean;
+	/** Number of machine handoffs; orders replicas across owners (higher epoch wins, then rev). */
+	epoch?: number;
+	/** Set while a handoff is in progress. */
+	handoff?: { from: string; to: string; startedAt: number; prevStatus: TaskStatus; phase?: string };
+	/** Completed handoffs, oldest first. */
+	handoffs?: { from: string; to: string; fromCwd: string; toCwd: string; at: number }[];
+	/** Note for the worker, prepended to the next message it receives (e.g. after a handoff). */
+	pendingNote?: string;
 }
 
 export interface TaskEvent {
 	ts: number;
 	taskId: string;
-	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "session";
+	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "session" | "handoff";
 	text?: string;
 	status?: TaskStatus;
 }

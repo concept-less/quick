@@ -23,6 +23,7 @@ import {
 import { dashboardHtml } from "./dashboard.ts";
 import { Mesh } from "./mesh.ts";
 import { autoUpdate, readState, readVersion, runUpgrade, type UpgradeResult } from "../shared/update.ts";
+import { createHandoff } from "./handoff.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -73,7 +74,10 @@ function loadAll() {
 			const t = JSON.parse(readFileSync(join(taskDir(id), "task.json"), "utf8")) as Task;
 			t.machine ??= SELF;
 			t.rev ??= 0;
-			if (t.machine === SELF) tasks.set(t.id, t);
+			if (t.machine === SELF) {
+				handoff.recoverOnLoad(t);
+				tasks.set(t.id, t);
+			}
 		} catch {}
 	}
 	for (const id of safeReaddir(paths.intake)) {
@@ -166,8 +170,15 @@ const mesh = new Mesh({
 		if (kind === "task") {
 			const t = data.task as Task;
 			if (!t || t.machine === SELF) return false;
+			// Replicas are ordered by (epoch, rev); epoch increases with every handoff to another machine.
+			const ep = (x: Task) => x.epoch ?? 0;
+			const own = tasks.get(t.id);
+			if (own) {
+				if (ep(t) <= ep(own)) return false;
+				yieldTask(own, t);
+			}
 			const cur = mirrorTasks.get(t.id);
-			if (cur && cur.machine === t.machine && cur.rev >= t.rev) return false;
+			if (cur && (ep(cur) > ep(t) || (ep(cur) === ep(t) && cur.machine === t.machine && cur.rev >= t.rev))) return false;
 			mirrorTasks.set(t.id, t);
 			broadcast({ type: "task", task: t, event: data.event });
 			return true;
@@ -191,8 +202,16 @@ const mesh = new Mesh({
 });
 
 /** Call a method on a machine (locally when it is us). */
-function call<T = any>(machine: string, method: string, params: any): Promise<T> {
-	return mesh.request<T>(machine, method, params);
+function call<T = any>(machine: string, method: string, params: any, timeoutMs?: number): Promise<T> {
+	return mesh.request<T>(machine, method, params, timeoutMs);
+}
+
+/** Another machine took over a task we own (a newer handoff epoch): stop running it here. */
+function yieldTask(own: Task, newer: Task) {
+	log(`task ${own.id} is now owned by ${newer.machine} (epoch ${newer.epoch ?? 0}); yielding`);
+	tasks.delete(own.id);
+	if (own.tmuxTarget && !own.closed) void tmux("kill-window", "-t", own.tmuxTarget).catch(() => {});
+	saveTask(newer);
 }
 
 // ---------------------------------------------------------------- local task mutations
@@ -259,7 +278,7 @@ function sh(s: string) {
 }
 
 /** Spawn (or resume) the worker pi process for a task in its own tmux window. */
-async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: string } = {}) {
+async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: string; idle?: boolean; status?: TaskStatus } = {}) {
 	await ensureTmuxSession();
 	const dir = taskDir(t.id);
 	const briefPath = join(dir, "brief.md");
@@ -267,9 +286,9 @@ async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: stri
 	// The quick-agent pi package is installed globally; QA_TASK_ID selects the worker role.
 	const piArgs = ["--model", model];
 	let initial: string[];
-	if (opts.resumeMessage && t.sessionFile && existsSync(t.sessionFile)) {
+	if ((opts.resumeMessage || opts.idle) && t.sessionFile && existsSync(t.sessionFile)) {
 		piArgs.push("--session", t.sessionFile);
-		initial = [opts.resumeMessage];
+		initial = opts.resumeMessage ? [opts.resumeMessage] : [];
 	} else {
 		piArgs.push("--name", `[${t.id}] ${t.title}`);
 		initial = [`@${briefPath}`, "以上是你负责的任务简报（quick-agent task brief）。请完整负责并完成它。"];
@@ -279,6 +298,7 @@ async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: stri
 		`export PATH=${sh(process.env.PATH ?? "")}`,
 		`export QA_TASK_ID=${sh(t.id)}`,
 		`export QA_HOME=${sh(paths.home)}`,
+		...(process.env.PI_CODING_AGENT_DIR ? [`export PI_CODING_AGENT_DIR=${sh(process.env.PI_CODING_AGENT_DIR)}`] : []),
 		"export NODE_NO_WARNINGS=1",
 		`cd ${sh(t.cwd)} || exit 1`,
 		`pi ${[...piArgs, ...initial].map(sh).join(" ")}`,
@@ -291,7 +311,8 @@ async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: stri
 	const target = `${cfg.tmuxSession}:${t.id}`;
 	await tmux("new-window", "-d", "-t", `${cfg.tmuxSession}:`, "-n", t.id, "-c", t.cwd, `bash ${sh(scriptPath)}`);
 	await tmux("set-window-option", "-t", target, "automatic-rename", "off").catch(() => {});
-	update(t, { status: "starting", tmuxTarget: target, closed: false, activity: "启动中" }, { kind: "status", status: "starting", text: opts.resumeMessage ? "resumed" : "spawned" });
+	const status = opts.status ?? "starting";
+	update(t, { status, tmuxTarget: target, closed: false, activity: opts.idle ? "已恢复会话，等待指令" : "启动中" }, { kind: "status", status, text: opts.resumeMessage || opts.idle ? "resumed" : "spawned" });
 }
 
 // ---------------------------------------------------------------- methods (local implementations, callable over the mesh)
@@ -389,6 +410,11 @@ async function createTaskLocal(body: any): Promise<Task> {
 }
 
 async function deliverMessage(t: Task, text: string) {
+	if (handoff.interceptMessage(t, text)) return;
+	if (t.pendingNote) {
+		text = `${t.pendingNote}\n\n---\n${text}`;
+		t.pendingNote = undefined;
+	}
 	t.messages += 1;
 	if (workerConnected(t.id)) {
 		broadcast({ type: "task.message", taskId: t.id, text, ts: Date.now() }, (c) => c.taskId === t.id);
@@ -468,12 +494,14 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	},
 	"task.cancel": async (p) => {
 		const t = ownTask(p.id);
+		if (handoff.busy(t.id)) throw new HttpError(409, `task ${t.id} is being handed off`);
 		broadcast({ type: "task.cancel", taskId: t.id, ts: Date.now() }, (c) => c.taskId === t.id);
 		if (!workerConnected(t.id) && t.tmuxTarget) await tmux("send-keys", "-t", t.tmuxTarget, "Escape").catch(() => {});
 		return update(t, { status: "cancelled", activity: undefined }, { kind: "cancel" });
 	},
 	"task.close": async (p) => {
 		const t = ownTask(p.id);
+		if (handoff.busy(t.id)) throw new HttpError(409, `task ${t.id} is being handed off`);
 		if (t.tmuxTarget) await tmux("kill-window", "-t", t.tmuxTarget).catch(() => {});
 		return update(t, { closed: true, unread: false, ...(ACTIVE_STATUSES.includes(t.status) ? { status: "cancelled" as TaskStatus } : {}) }, { kind: "close", text: "closed by user" });
 	},
@@ -542,6 +570,28 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		}
 	},
 };
+
+const handoff = createHandoff({
+	self: SELF,
+	log,
+	tasks,
+	mirrorTasks,
+	taskDir,
+	saveTask,
+	update,
+	recordEvent,
+	broadcast,
+	spawnWorker,
+	call,
+	reachable: (m) => mesh.reachable(m),
+	workerConnected,
+	liveWindows,
+	tmux,
+	deliverMessage,
+	projects: () => cfg.projects.filter((p) => !p.machine || p.machine === SELF),
+	httpError: (status, msg) => new HttpError(status, msg),
+});
+Object.assign(methods, handoff.methods);
 
 // ---------------------------------------------------------------- global (mesh-wide) views
 
@@ -734,7 +784,7 @@ function backgroundUpdate() {
 async function reconcile() {
 	const live = await liveWindows();
 	for (const t of tasks.values()) {
-		if (t.closed) continue;
+		if (t.closed || t.status === "handoff") continue;
 		if (!live.has(t.id) && t.tmuxTarget && Date.now() - t.updatedAt > 5000) {
 			const patch: Partial<Task> = { closed: true };
 			if (ACTIVE_STATUSES.includes(t.status)) patch.status = "exited";
@@ -865,6 +915,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			if (m !== "POST") throw new HttpError(405, "method not allowed");
 			const t = ownTask(id);
 			const body = await readJson(req);
+			handoff.onReport(t, body);
 			const patch: Partial<Task> = {};
 			if (body.status) patch.status = body.status;
 			// A worker exiting after it finished (or after the user closed it) is not news.
@@ -884,7 +935,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		if (!action && m === "GET") return send(res, 200, await call(owner, "task.get", { id, events: url.searchParams.get("events") ?? 30 }));
 		if (m !== "POST") throw new HttpError(405, "method not allowed");
 		const body = await readJson(req);
-		if (!["message", "cancel", "close", "ack"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		if (!["message", "cancel", "close", "ack", "handoff"].includes(action ?? "")) throw new HttpError(404, "unknown action");
 		const task = await call<Task>(owner, `task.${action}`, { ...body, id });
 		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
 		return send(res, 200, { task });

@@ -114,6 +114,7 @@ quick ls                       # 任务列表（• 表示有未读汇报）
 quick show <id>                # 查看汇报、事件、简报
 quick send <id> "追加指令"      # worker 窗口关了也会自动用原会话恢复
 quick attach <id>              # 切换到 worker 的 tmux 窗口
+quick handoff <id> <机器>       # 把任务（会话 + 元数据 + 工作区）无损交接到另一台机器继续
 quick cancel <id> / quick close <id>
 quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
 quick hub start|stop|restart|status|logs
@@ -222,14 +223,85 @@ quick new --requires browser:chrome-gui "标题" "简报"   # 按资源派单
 | SSH | peer 写成 `{"ssh": "user@host"}` 时，hub 会自己拉起并维护 `ssh -N -L <空闲端口>:127.0.0.1:<对端 hub 端口>`（BatchMode、断线重连），还会顺带尝试在远端执行 `quick hub start`。 |
 | 鉴权 | 全网共享一个 mesh secret（`Authorization: Mesh <secret>`，用 timingSafeEqual 比较），和本地 API token 分开。 |
 | 路由 | 距离向量加水平分割，最多 8 跳。比如 A→B←C 的拓扑里，A 会经 B 访问 C；存在直连时优先直连，某条路断了会自动绕行。 |
-| 复制 | 任务和评论各有一台归属机器，每次更新带递增的 `rev`，并广播给全网；收到的版本只有比本地新才会应用并继续转发，所以广播一定会结束。新链路建立时会互发一份快照。 |
-| RPC | 请求按目标机器 ID 一跳一跳转发，响应沿路由表返回，超时 30 秒。远程方法包括 `task.create/get/message/cancel/close/ack/screen`、`intake.claim/update`、`fs.ls/read/grep`。 |
+| 复制 | 任务和评论各有一台归属机器，每次更新带递增的 `rev`，并广播给全网；任务每交接一次 `epoch` 加一，副本按 `(epoch, rev)` 比新旧。收到的版本只有比本地新才会应用并继续转发，所以广播一定会结束。新链路建立时会互发一份快照。 |
+| RPC | 请求按目标机器 ID 一跳一跳转发，响应沿路由表返回，超时 30 秒。远程方法包括 `task.create/get/message/cancel/close/ack/screen/handoff`、`handoff.probe/begin/chunk/apply/start/abort`、`intake.claim/update`、`fs.ls/read/grep`。 |
 
 安全提示：mesh secret 相当于能在全网所有机器上执行 worker（也就是任意代码），请妥善保管。hub 默认只监听 `127.0.0.1`，跨机连接推荐走 ssh 隧道；如果要把 `host` 设成 `0.0.0.0` 直连，一定要配好防火墙或者用 Tailscale 这类内网。
 
 ### 本地电脑 + 浏览器的推荐用法
 
 在本地电脑上也装一份 quick-agent，然后运行 `quick mesh join … --ssh <服务器>` 或 `quick mesh add <服务器>`，这样浏览器插件直接连本机的 `http://127.0.0.1:7788`，不用再手动开 ssh 端口转发。评论会进到 mesh，由服务器上的前台认领，再派给对应机器上的 worker。
+
+## 任务跨机器交接（handoff）
+
+已有任务可以随时迁移到 mesh 里另一台在线机器继续执行，也可以来回反复迁移。任务 id 不变，worker 在目标机器上用同一份会话继续。
+
+```bash
+quick handoff <id> <机器> [--cwd 目标目录] [--no-workspace] [--abort] [--wait 秒] [--on-conflict fail|stash|backup] [--no-follow]
+```
+
+- 前台 agent：直接说"把 t1234 挪到 cloud 上继续"，前台会调用 `qa_handoff` 工具。
+- 面板：任务详情里点「交接到其他机器…」。
+- API：`POST /api/tasks/:id/handoff {to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}`。这个调用是异步的，任务状态先变成 `handoff`，进度显示在 activity 里，结果记录在事件里。`quick handoff` 默认会一直跟踪到结束。
+
+### 保证哪些东西不丢
+
+| 内容 | 做法 | 校验 |
+|---|---|---|
+| 会话 | worker 的 pi 会话 jsonl 整份传过去，放进目标机器的 `<agentDir>/sessions/--<目标 cwd 编码>--/`，文件名不变。只改写第一行 header 的 `cwd`，否则 pi 打开会话时会因为原 cwd 不存在而停下来；其余每一行逐字节保留。 | 传输用 sha256 校验；写入后再读回来，比对除 header 以外的全部字节 |
+| 任务元数据 | 保留 id、标题、brief、summary、来源（含 intake_id）、owner、`events.jsonl` 全部事件、附件（附件路径和 brief 里的引用会改写成目标机器上的路径）。只更新 `machine/cwd/tmuxTarget/sessionFile`。`handoffs[]` 记录每一次 from/to/cwd/时间，事件里也会写 `handoff` 记录。 | 每个文件都做 sha256 校验 |
+| 工作区：git | cwd 在 git 仓库里时：只有目标缺少的那部分提交才打进 `git bundle`（目标已有该提交就不传）；另外传分支名、`git diff --cached`（已暂存）、`git diff`（未暂存）、untracked 且未被忽略的文件（tar 打包，保留权限和符号链接）。目标上会切到同名分支，依次 `git apply --index`、`git apply`，再解出 untracked 文件。 | 两边都算一份 manifest：每个文件的 sha256 和可执行位、符号链接、HEAD、分支、`git write-tree`（index）。必须完全一致 |
+| 工作区：非 git | 把整个 cwd 打成 tar（排除 `node_modules .venv venv __pycache__ .cache .next …`，嵌套的 `.git` 会一起带上），默认上限 200 MB | 同样比对 manifest |
+
+目标目录按以下顺序确定：`--cwd` 指定的目录 → 这个任务以前在目标机器上用过的目录（交接回去时自动用原来的目录）→ 项目映射（两台机器的 `projects` 里 `match` 相同的规则，例如 `{match:"myapp", cwd:"/Users/me/myapp", machine:"laptop"}` 和 `{match:"myapp", cwd:"/home/me/myapp", machine:"cloud"}`）→ 家目录相对路径（`/Users/me/x` 映射为 `/home/me/x`）→ 相同路径。如果 cwd 是仓库的子目录，会映射到目标仓库里的同一个子目录。
+
+### 过程与安全
+
+1. **安全点**：worker 正在运行时，默认等它这一轮结束（最多 `--wait` 秒，默认 600 秒，可以在 `config.json` 的 `handoff.waitSeconds` 里改），超时就失败、什么都不改。加 `--abort` 会像 `quick cancel` 一样立即中止当前这一轮，正在执行的工具调用会被打断，等会话文件写稳后再打包；到了目标机器，worker 会收到一条说明，提示它上一个工具调用可能没有完成。交接过程中，worker 的状态汇报只会被记下来，任务状态保持 `handoff`。
+2. **先做冲突检查**：在停 worker 之前，先问一次目标机器，目录明显冲突时直接失败，不会白白打断 worker。
+3. 打包 → 通过 mesh RPC 分块传输（4 MB 一块，可以多跳转发，不需要额外的 ssh/rsync）→ 目标机器校验 sha256，应用工作区，比对 manifest，放置会话 → 在目标机器上登记任务（`epoch+1`）并拉起 worker → **之后**才关闭源机器的窗口。
+4. **回滚**：第 3 步中任何一环失败（包括目标端校验失败、目标机器拉起 worker 失败、传输中断），目标机器都会撤销自己做过的改动：删掉新建的目录或恢复备份，`reset`/`clean` 后切回原分支并 `stash pop`，恢复原来的会话文件和任务目录。源任务恢复交接前的状态，源窗口一直没动过，可以继续用。如果交接时用了 `--abort`，会自动发一条消息让 worker 在本机继续。
+5. 交接期间发给这个任务的追加指令会先排队，交接完成后转给新机器上的 worker；失败的话就在本机投递。交接期间不能执行中止或关闭（返回 409）。
+6. worker 在目标机器上怎么启动：交接前正在运行，就带着一条交接说明恢复会话，让它接着做；交接前已经停下（done、idle、needs_input 等），就只恢复会话、不触发新一轮，交接说明会附在下一条追加指令的前面；交接前窗口已经关闭，就不拉起 worker，下次 `quick send` 时再恢复会话。
+
+### 目标目录冲突：不会静默覆盖
+
+目标目录满足以下任一条件时，交接会直接失败，并给出可选的处理方式：
+
+- 有未提交的改动或 untracked 文件；
+- 不是同一个仓库；
+- 非 git 模式下目录非空；
+- 同名分支和源分支已经分叉；
+- 被目标机器上正在运行的任务占用。
+
+可选的处理方式：
+
+- `--on-conflict stash`：把目标仓库里原有的改动 `git stash -u` 保存起来，stash 名为 "quick-agent handoff <id>"。如果分支已经分叉，旧提交会保存在 `refs/quick-agent/backup/` 下。
+- `--on-conflict backup`：把整个目录挪到 `<目录>.qa-handoff-bak-<时间>`。
+- `--cwd`：换一个目录。
+
+例外是交接回去的情况。源机器在任务离开时会在 `~/.quick-agent/handoff/departed.json` 里记下离开时工作区和会话的 manifest 摘要。之后任务交接回来，如果那份旧状态没有被动过，说明它的内容已经包含在传回来的状态里，可以安全替换，这时会自动 stash 或挪开，成功后丢弃。所以 A→B→A 的来回迁移不需要任何选项。
+
+### 已知限制
+
+- 源机器和目标机器必须同时在线：交接由源机器的 hub 编排，源机器离线时无法交接，这时只能在目标机器上新建任务。
+- 被 `.gitignore` 忽略的文件不同步（`node_modules`、`.env`、构建产物等），会话说明里会提醒 worker 重新确认环境。另外这些内容也不迁移：stash、其他分支、未推送的其他本地分支、git 配置和 hooks、子模块内容、正在进行中的 merge/rebase（这种情况会直接拒绝交接）。目标仓库是新建的话，只包含当前分支的历史，`origin` 设为源仓库的 origin URL。
+- 会话历史逐字保留，不会改写历史里出现的绝对路径。worker 收到的交接说明里会写明路径映射（`源 cwd → 目标 cwd`）。
+- 运行中的进程、端口、终端里的状态都不会迁移。用 `--abort` 中止时，正在执行的工具调用会被打断，到了目标机器，由 worker 自己检查后继续。
+- 传输走 mesh RPC，适合几百 MB 以内的数据。工作区大小上限在 `config.json` 的 `handoff.maxWorkspaceMB` 里设置（默认 200），排除列表是 `handoff.exclude`。
+- 如果目标机器的 hub 在"应用之后、启动之前"崩溃，源机器会回滚，但目标机器上已经应用的工作区改动无法自动撤销（暂存目录会在重启时清掉）。源机器的 hub 在交接中途重启时，任务会恢复为交接前的状态并留在源机器。如果交接其实已经在目标机器完成，源机器收到更高 epoch 的副本后，会自动让出任务并关闭本地窗口。
+- 两台机器上的 pi 都要能用同一个 worker 模型。会话放在 `PI_CODING_AGENT_DIR`（默认 `~/.pi/agent`）下。
+
+### 测试
+
+`test/handoff-e2e.sh` 会在 `/tmp/qa-ho` 下起两个互相隔离的 hub：`ma` 用端口 17791、tmux 会话 `qa-hoA`，`mb` 用端口 17792、tmux 会话 `qa-hoB`，各自有独立的 `QA_HOME` 和 `PI_CODING_AGENT_DIR`。脚本用便宜的模型跑真实的 worker，依次验证：
+
+- A→B 交接，带已暂存、未暂存、删除、untracked、符号链接等改动；
+- 会话逐字节一致，恢复后的 worker 记得之前的暗号；
+- B→A 交接回去；
+- 目标端校验失败时回滚，任务仍然可用。
+
+`test/handoff-env.sh up|restart|down` 可以单独搭建这套环境，用 `source test/handoff-env.sh vars` 之后就能用 `A quick …`、`B quick …`。
 
 ## 浏览器插件（在本地电脑上用）
 
@@ -298,6 +370,8 @@ bin/quick                       CLI 入口
 cli/quick.ts                    CLI
 hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
+hub/handoff.ts               任务跨机器交接：编排、分块传输、目标端应用/回滚
+hub/workspace.ts             交接用的工作区快照（git bundle/diff/untracked 或 tar）、manifest 校验、撤销
 hub/dashboard.ts             网页面板（任务视图）
 ui/server.ts                 Web UI：用 pi SDK 托管前台会话 + 代理 hub API + SSE（quick ui）
 ui/app.html                  Web UI 前端（对话、任务面板、浏览器评论）
@@ -323,6 +397,7 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, attachments?, source?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器 |
 | POST | `/api/tasks/:id/message` | `{text}` 追加指令（必要时恢复会话） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 标记已读 |
+| POST | `/api/tasks/:id/handoff` | `{to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}` 把任务交接到另一台机器（异步） |
 | POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动 |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
 | GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本、resources、priority） |
