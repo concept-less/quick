@@ -10,6 +10,7 @@ import { HubClient } from "../shared/hub-client.ts";
 import { ACTIVE_STATUSES, type Task } from "../shared/types.ts";
 import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
+import { openAttach, planAttach, runForeground } from "../shared/attach.ts";
 
 const cfg = loadConfig();
 const hub = new HubClient(cfg);
@@ -54,10 +55,6 @@ async function hubStop() {
 	} catch {}
 }
 
-function tmuxOk(...args: string[]) {
-	return spawnSync("tmux", args, { stdio: "ignore" }).status === 0;
-}
-
 function line(t: Task) {
 	const detail = (["starting", "running"].includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 90) ?? "";
 	const ago = Math.round((Date.now() - t.updatedAt) / 60000);
@@ -72,12 +69,16 @@ async function front(args: string[]) {
 	process.exit(r.status ?? 0);
 }
 
-function attach(id: string) {
-	const target = `${cfg.tmuxSession}:${id}`;
-	if (!tmuxOk("list-panes", "-t", target)) die(`no tmux window for ${id} (resume it with: quick send ${id} "<message>")`);
-	const args = process.env.TMUX ? ["switch-client", "-t", target] : ["attach-session", "-t", target];
-	const r = spawnSync("tmux", args, { stdio: "inherit" });
-	process.exit(r.status ?? 0);
+async function attach(id: string) {
+	try {
+		const plan = await planAttach(cfg, hub, id);
+		// From a shell, run remote attaches in the foreground (nested tmux) rather than opening a window.
+		const r = openAttach(plan, { remoteWindow: false });
+		console.error(`quick: ${r.message}`);
+		if (r.kind === "foreground") process.exit((await runForeground(r)) ?? 1);
+	} catch (e) {
+		die((e as Error).message);
+	}
 }
 
 const HELP = `quick — quick-agent
@@ -90,7 +91,7 @@ const HELP = `quick — quick-agent
   quick show <id>           查看任务汇报、事件、简报
   quick new [--machine M] [--cwd DIR] <title> <brief...>   不经前台直接派单
   quick send <id> <message> 给 worker 追加指令（窗口已关会自动恢复会话）
-  quick attach <id>         切换到 worker 的 tmux 窗口
+  quick attach <id>         进入 worker 的 tmux 窗口（远程任务经 ssh；C-b d 返回）
   quick cancel <id>         中止 worker 当前运行
   quick close <id>          关闭 worker 窗口
   quick ack <id>            标记已读

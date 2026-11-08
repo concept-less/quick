@@ -1,15 +1,15 @@
 // Front role: your normal interactive pi *is* the quick-agent front agent.
 // It understands tasks, assembles context and delegates them to worker agents through the hub.
 // Toggle per session with /qa on|off, or start pi with --qa-off (or QA_ROLE=off) for a plain pi.
-import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { Key, truncateToWidth } from "@earendil-works/pi-tui";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { hubUrl, loadConfig, matchProject, REPO_ROOT } from "../shared/config.ts";
 import { HubClient } from "../shared/hub-client.ts";
+import { openAttach, planAttach, runForeground, type AttachResult } from "../shared/attach.ts";
 import { ensureHub } from "../shared/hub-process.ts";
 import { autoUpdate, compareVersions, readState, readVersion } from "../shared/update.ts";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
@@ -342,24 +342,63 @@ export function setupFront(pi: ExtensionAPI) {
 	// ---------------------------------------------------------------- watching workers
 
 	const dashboardUrl = (id?: string) => `${hubUrl(cfg)}/?token=${cfg.token}${id ? `#${id}` : ""}`;
-	const targetOf = (id: string) => tasks.get(id)?.tmuxTarget ?? `${cfg.tmuxSession}:${id}`;
 	const markRead = (id: string) => {
 		if (tasks.get(id)?.unread) void hub.ack(id).then((x) => tasks.set(x.id, x)).then(() => renderWidget()).catch(() => {});
 	};
 
-	/** Switch the terminal to the worker's tmux window (only when this pi runs inside tmux). */
-	const attach = (id: string, ctx: ExtensionContext): boolean => {
-		const target = targetOf(id);
-		const t = tasks.get(id);
-		if (!process.env.TMUX || (t?.machine && t.machine !== selfId())) return false; // remote → peek
+	/**
+	 * Jump into a worker's tmux window, local or remote (shared/attach.ts). Inside tmux this switches
+	 * client / opens a window and pi keeps running; outside tmux pi's TUI is stopped, the terminal is
+	 * handed to `tmux attach` / `ssh -t …`, and the TUI is restarted and fully redrawn on detach.
+	 */
+	const attach = async (id: string, ctx: ExtensionContext): Promise<void> => {
+		let r: AttachResult;
 		try {
-			execFileSync("tmux", ["switch-client", "-t", target], { stdio: "ignore" });
-			markRead(id);
-			return true;
-		} catch {
-			ctx.ui.notify(`窗口 ${target} 不存在（可以追加指令来恢复 worker）`, "error");
-			return true;
+			r = openAttach(await planAttach(cfg, hub, id, { task: tasks.get(id), selfId: selfId() }), { remoteWindow: true });
+		} catch (e) {
+			ctx.ui.notify((e as Error).message, "error");
+			return;
 		}
+		markRead(id);
+		if (r.kind === "switched") return ctx.ui.notify(r.message, "info");
+		if (ctx.mode !== "tui") return ctx.ui.notify(`请在终端里运行: quick attach ${id}`, "info");
+		const fg = r;
+		const code = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
+			tui.stop(); // cooked mode, cursor visible, bracketed paste/kitty off, stdin paused
+			process.stdout.write(`\n${fg.message}\n`);
+			void runForeground(fg).then((c) => {
+				tui.start(); // raw mode + input handlers back
+				tui.requestRender(true); // full redraw
+				done(c);
+			});
+			return { render: () => [], invalidate() {} };
+		});
+		if (code) ctx.ui.notify(`${id}: ${fg.cmd} 退出码 ${code}`, "warning");
+		renderWidget();
+	};
+
+	/** Pick a worker whose window is still open (id, machine, status, title). */
+	const pickTask = async (ctx: ExtensionContext, title: string): Promise<string | undefined> => {
+		await refresh();
+		const list = [...tasks.values()]
+			.filter((t) => !t.closed)
+			.sort((a, b) => Number(ACTIVE_STATUSES.includes(b.status)) - Number(ACTIVE_STATUSES.includes(a.status)) || b.updatedAt - a.updatedAt);
+		if (!list.length) {
+			ctx.ui.notify("没有打开着的 worker 窗口", "info");
+			return undefined;
+		}
+		const labels = list.map((t) => `${t.unread ? "•" : " "} ${ICON[t.status] ?? "·"} ${t.id.padEnd(6)} ${(t.machine || selfId()).padEnd(12)} ${`[${t.status}]`.padEnd(13)} ${t.title}`);
+		const picked = await ctx.ui.select(title, labels);
+		return picked === undefined ? undefined : list[labels.indexOf(picked)]?.id;
+	};
+
+	const attachCommand = {
+		description: "进入 worker 的 tmux 窗口（本机/远程均可；不带 id 弹出选择）：/qa-attach [task-id]",
+		getArgumentCompletions: (p: string) => taskCompletions(p),
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const id = args.trim() || (await pickTask(ctx, "进入 worker 窗口"));
+			if (id) await attach(id, ctx);
+		},
 	};
 
 	/** Live, read-only view of a worker's terminal inside this pi (works without tmux on our side). */
@@ -375,7 +414,6 @@ export function setupFront(pi: ExtensionAPI) {
 			return;
 		}
 		markRead(id);
-		const isLocal = !tasks.get(id)?.machine || tasks.get(id)?.machine === selfId();
 		const action = await ctx.ui.custom<"send" | "attach" | undefined>(
 			(tui, theme, keybindings, done) => {
 				let lines: string[] = first.text.split("\n");
@@ -403,14 +441,14 @@ export function setupFront(pi: ExtensionAPI) {
 						const t = tasks.get(id);
 						const rows = Math.max(8, Math.floor(tui.terminal.rows * 0.8) - 3);
 						const head = `${theme.fg("accent", `⚡ ${t ? tag(t) : id}`)} ${t?.title ?? ""} ${theme.fg("dim", `[${t?.status ?? "?"}]`)}`;
-						const help = theme.fg("dim", `Esc 关闭 · Enter 追加指令${process.env.TMUX && isLocal ? " · a 接管窗口" : ""}`);
+						const help = theme.fg("dim", "Esc 关闭 · Enter 追加指令 · a 进入窗口");
 						const body = lines.slice(-rows).map((l) => truncateToWidth(` ${l}`, width));
 						return [truncateToWidth(head, width), truncateToWidth(theme.fg("dim", "─".repeat(width)), width), ...body, truncateToWidth(help, width)];
 					},
 					handleInput(data: string) {
 						if (keybindings.matches(data, "tui.select.cancel") || data === "q") close(undefined);
 						else if (keybindings.matches(data, "tui.select.confirm")) close("send");
-						else if (data === "a" && process.env.TMUX && isLocal) close("attach");
+						else if (data === "a") close("attach");
 					},
 					invalidate() {},
 				};
@@ -421,7 +459,7 @@ export function setupFront(pi: ExtensionAPI) {
 			const msg = await ctx.ui.input(`发给 ${id} 的追加指令`, "");
 			if (msg?.trim()) tasks.set(id, await hub.sendMessage(id, msg.trim()));
 			renderWidget();
-		} else if (action === "attach") attach(id, ctx);
+		} else if (action === "attach") await attach(id, ctx);
 	};
 
 	// ---------------------------------------------------------------- commands
@@ -457,13 +495,13 @@ export function setupFront(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("attach", {
-		description: "切换到 worker 的 tmux 窗口（不在 tmux 中则实时查看）：/attach <task-id>",
-		getArgumentCompletions: taskCompletions,
-		handler: async (args, ctx) => {
-			const id = args.trim();
-			if (!id) return ctx.ui.notify("用法: /attach <task-id>", "warning");
-			if (!attach(id, ctx)) await peek(id, ctx);
+	pi.registerCommand("qa-attach", attachCommand);
+	pi.registerCommand("attach", { ...attachCommand, description: "同 /qa-attach：进入 worker 的 tmux 窗口" });
+	pi.registerShortcut(Key.ctrlAlt("a"), {
+		description: "quick-agent: 选择并进入 worker 的 tmux 窗口",
+		handler: async (ctx) => {
+			const id = await pickTask(ctx, "进入 worker 窗口");
+			if (id) await attach(id, ctx);
 		},
 	});
 
@@ -487,14 +525,14 @@ export function setupFront(pi: ExtensionAPI) {
 			if (picked === undefined) return;
 			const t = list[labels.indexOf(picked)];
 			if (!t) return;
-			const actions = ["查看汇报", "实时观看 worker", ...(process.env.TMUX ? ["接管（切换到 tmux 窗口）"] : []), "追加指令", "标记已读", "中止当前运行", "关闭窗口"];
+			const actions = ["查看汇报", "实时观看 worker", "接管（进入 tmux 窗口）", "追加指令", "标记已读", "中止当前运行", "关闭窗口"];
 			const a = await ctx.ui.select(`${t.id} ${t.title}`, actions);
 			if (a === "查看汇报") {
 				const { task } = await hub.getTask(t.id, 0);
 				await ctx.ui.editor(`${task.id} [${task.status}] ${task.title}`, `${task.summary ?? "(暂无汇报)"}\n\n---\n活动: ${task.activity ?? "-"}\n目录: ${task.cwd}\n会话: ${task.sessionFile ?? "-"}`);
 				tasks.set(t.id, await hub.ack(t.id));
 			} else if (a === "实时观看 worker") await peek(t.id, ctx);
-			else if (a?.startsWith("接管")) attach(t.id, ctx);
+			else if (a?.startsWith("接管")) await attach(t.id, ctx);
 			else if (a === "追加指令") {
 				const msg = await ctx.ui.input(`发给 ${t.id} 的追加指令`, "");
 				if (msg?.trim()) tasks.set(t.id, await hub.sendMessage(t.id, msg.trim()));
