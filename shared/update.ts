@@ -321,7 +321,14 @@ async function fetchLatestNpm(s: UpdateConfig, timeoutMs = FETCH_TIMEOUT_MS): Pr
 
 export function readState(): UpdateState {
 	try {
-		return JSON.parse(readFileSync(STATE_PATH, "utf8"));
+		const st = JSON.parse(readFileSync(STATE_PATH, "utf8"));
+		if (!st || typeof st !== "object") return {};
+		// 0.3.x wrote `latest` as a plain version string (and `source: "git"`): treat it as no cache.
+		if (st.latest !== undefined && (typeof st.latest !== "object" || typeof st.latest?.version !== "string" || !Array.isArray(st.latest?.assets))) {
+			delete st.latest;
+			delete st.checkedAt;
+		}
+		return st;
 	} catch {
 		return {};
 	}

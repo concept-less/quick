@@ -157,6 +157,14 @@ describe("release lookup + cache", () => {
 		await U.getLatest(s, { kind: "release" });
 		assert.equal(mock.hits, 1, "errors are cached as well (no hammering)");
 	});
+	test("a legacy 0.3.x update.json (latest as a string) is ignored, not a crash", async () => {
+		writeFileSync(U.STATE_PATH, JSON.stringify({ checkedAt: Date.now(), current: "0.3.0", latest: "0.3.0", source: "git", available: false, error: "timeout" }));
+		assert.equal(U.readState().latest, undefined);
+		release("0.4.0");
+		writeFileSync(U.STATE_PATH, JSON.stringify({ checkedAt: Date.now(), current: "0.3.0", latest: "0.3.0", source: "git" }));
+		const r = await U.getLatest(loadConfig().update, { kind: "release" });
+		assert.equal(r.latest?.version, "0.4.0", "stale legacy cache is refetched");
+	});
 	test("a release with a non-version tag is rejected", async () => {
 		mock.release = { tag_name: "nightly", assets: [] };
 		const r = await U.getLatest(loadConfig().update, { kind: "release", maxAgeMs: 0 });
