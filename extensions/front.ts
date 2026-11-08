@@ -14,8 +14,9 @@ import { ensureHub } from "../shared/hub-process.ts";
 import { autoUpdate, compareVersions, readState, readVersion } from "../shared/update.ts";
 import { priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
+import { createTeamFront, TEAM_TOOLS } from "./team-tools.ts";
 
-const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs"];
+const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
 const FRONT_TOOLS = ["read", "grep", "find", "ls", ...QA_TOOLS];
 
 const ICON: Record<string, string> = {
@@ -73,11 +74,15 @@ export function setupFront(pi: ExtensionAPI) {
 	};
 	/** "，首选" for the machine an unconstrained dispatch lands on. */
 	const rank = (_list: MachineView[], m: MachineView) => (machines.length && m.online && rankMachines(machines.filter((x) => x.online))[0]?.id === m.id ? "，默认首选" : "");
+	const team = createTeamFront(pi, hub, (t) => {
+		tasks.set(t.id, t);
+		renderWidget();
+	});
 	const describeMachines = (list: MachineView[]) =>
 		(list.length ? list : [{ id: cfg.machine.id, self: true, online: true, hops: 0 } as MachineView])
 			.map(
 				(m) =>
-					`- ${m.id}${m.self ? "（本机）" : ""} ${m.online ? "在线" : "离线"}${m.hops > 1 ? `，经 ${m.via} 转发` : ""}${m.description ? `：${m.description}` : ""}；优先级 ${priorityOf(m)}${rank(list, m)}；资源 ${resourcesOf(m).join(", ") || "（未声明）"}${m.resourceNotes ? `（${m.resourceNotes}）` : ""}${m.platform ? `；系统 ${m.platform}` : ""}${m.defaultCwd ? `；默认目录 ${m.defaultCwd}` : ""}${m.activeTasks ? `；运行中任务 ${m.activeTasks}` : ""}${m.projects?.length ? `；项目 ${m.projects.map((p) => `${p.match}→${p.cwd}`).join(", ")}` : ""}`,
+					`- ${m.id}${m.self ? "（本机）" : ""} ${m.online ? "在线" : "离线"}${m.hops > 1 ? `，经 ${m.via} 转发` : ""}${m.description ? `：${m.description}` : ""}${m.owner ? `；所有者 ${m.owner}` : ""}；优先级 ${priorityOf(m)}${rank(list, m)}；资源 ${resourcesOf(m).join(", ") || "（未声明）"}${m.resourceNotes ? `（${m.resourceNotes}）` : ""}${m.platform ? `；系统 ${m.platform}` : ""}${m.defaultCwd ? `；默认目录 ${m.defaultCwd}` : ""}${m.activeTasks ? `；运行中任务 ${m.activeTasks}` : ""}${m.projects?.length ? `；项目 ${m.projects.map((p) => `${p.match}→${p.cwd}`).join(", ")}` : ""}`,
 			)
 			.join("\n");
 	const claimed = new Set<string>();
@@ -228,6 +233,9 @@ export function setupFront(pi: ExtensionAPI) {
 			requires: Type.Optional(
 				Type.Array(Type.String(), { description: 'Resource tags the worker needs, e.g. ["browser:chrome-gui"], ["macos"], ["codex"], ["gpu"]. "browser" matches any browser:* tag.' }),
 			),
+			reviewer: Type.Optional(Type.String({ description: "Team: member id asked to verify/decide when the worker hands back (\"让 Alice 验收\")" })),
+			assignee: Type.Optional(Type.String({ description: "Team: member id responsible for the task instead of the requester (\"交给 Bob 负责\")" })),
+			watchers: Type.Optional(Type.Array(Type.String(), { description: "Team: member ids who follow the task quietly" })),
 		}),
 		async execute(_id, p) {
 			const intake = p.intake_id ? await hub.request<{ intake: Intake }>("GET", `/api/intake/${p.intake_id}`).then((r) => r.intake).catch(() => undefined) : undefined;
@@ -239,6 +247,9 @@ export function setupFront(pi: ExtensionAPI) {
 				owner,
 				machine: p.machine,
 				requires: p.requires,
+				reviewer: p.reviewer,
+				assignee: p.assignee,
+				watchers: p.watchers,
 				source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
 			});
 			tasks.set(task.id, task);
@@ -255,15 +266,19 @@ export function setupFront(pi: ExtensionAPI) {
 		label: "List tasks",
 		defaultActive: false,
 		description: "List quick-agent tasks with status, current activity and latest summary.",
-		parameters: Type.Object({ include_closed: Type.Optional(Type.Boolean({ description: "Include closed/old tasks" })) }),
+		parameters: Type.Object({
+			include_closed: Type.Optional(Type.Boolean({ description: "Include closed/old tasks" })),
+			scope: Type.Optional(StringEnum(["mine", "team"] as const, { description: "Team: mine (default) = tasks involving the person you work for; team = everyone's" })),
+		}),
 		async execute(_id, p) {
 			const list = await hub.listTasks();
 			for (const t of list) tasks.set(t.id, t);
 			renderWidget();
-			const shown = list.filter((t) => p.include_closed || !t.closed || t.unread).slice(0, 40);
+			await team.load();
+			const shown = list.filter((t) => (p.include_closed || !t.closed || t.unread) && (p.scope === "team" || team.mine(t))).slice(0, 40);
 			const text = shown.length
 				? shown
-						.map((t) => `${t.id} [${t.status}${t.unread ? ", unread" : ""}] ${t.title} — ${t.machine}:${t.cwd}\n    ${(ACTIVE_STATUSES.includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 160) ?? ""}`)
+						.map((t) => `${t.id} [${t.status}${t.unread ? ", unread" : ""}] ${t.title} — ${t.machine}:${t.cwd}${team.people(t)}\n    ${(ACTIVE_STATUSES.includes(t.status) ? t.activity : t.summary)?.split("\n")[0]?.slice(0, 160) ?? ""}`)
 						.join("\n")
 				: "No tasks.";
 			return { content: [{ type: "text", text }], details: { count: shown.length } };
@@ -277,7 +292,8 @@ export function setupFront(pi: ExtensionAPI) {
 		description: "Read one quick-agent task: brief, status, latest worker summary and recent events. Marks it as read.",
 		parameters: Type.Object({ id: Type.String(), events: Type.Optional(Type.Number({ description: "Recent events to include (default 15)" })) }),
 		async execute(_id, p) {
-			const { task, events } = await hub.getTask(p.id, p.events ?? 15);
+			const { task, events, comments } = await hub.getTask(p.id, p.events ?? 15);
+			await team.load();
 			const acked = task.unread ? await hub.ack(task.id).catch(() => task) : task;
 			tasks.set(task.id, acked);
 			renderWidget();
@@ -285,7 +301,9 @@ export function setupFront(pi: ExtensionAPI) {
 				`${task.id} "${task.title}" status=${task.status} machine=${task.machine} cwd=${task.cwd}`,
 				`tmux: ${task.tmuxTarget ?? "-"}  session: ${task.sessionFile ?? "-"}`,
 				task.activity ? `activity: ${task.activity}` : "",
+				team.people(task) ? `people:${team.people(task)}` : "",
 				`--- summary ---\n${task.summary ?? "(none yet)"}`,
+				comments?.length ? `--- comments ---\n${comments.slice(-10).map((c) => `${new Date(c.ts).toLocaleTimeString()} ${c.author}: ${c.text.slice(0, 400)}`).join("\n")}` : "",
 				`--- events ---\n${events.map((e) => `${new Date(e.ts).toLocaleTimeString()} ${e.kind}${e.status ? `→${e.status}` : ""} ${(e.text ?? "").slice(0, 200)}`).join("\n")}`,
 				`--- brief ---\n${task.brief}`,
 			]
@@ -680,7 +698,8 @@ export function setupFront(pi: ExtensionAPI) {
 			: "- （未配置）";
 		const ms = await loadMachines();
 		const selfLine = describeMachines(ms.filter((m) => m.self));
-		event.systemPromptOptions.sections.quick_agent_front = frontRules(ctx.cwd, cfg.defaultCwd, projects, `${selfLine}\n${describeMachines(ms.filter((m) => !m.self)) || "- （没有其他机器）"}`);
+		const teamRules = await team.prompt(ms);
+		event.systemPromptOptions.sections.quick_agent_front = frontRules(ctx.cwd, cfg.defaultCwd, projects, `${selfLine}\n${describeMachines(ms.filter((m) => !m.self)) || "- （没有其他机器）"}`) + (teamRules ? `\n\n${teamRules}` : "");
 	});
 
 	// Defence in depth: in front mode only the front toolset may run.

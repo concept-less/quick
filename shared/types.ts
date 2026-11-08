@@ -1,4 +1,5 @@
 // Data model shared by hub, CLI and extensions.
+import type { TaskPeople } from "./team.ts";
 
 export type TaskStatus =
 	| "starting" // tmux window spawned, worker not yet connected
@@ -23,7 +24,8 @@ export interface TaskSource {
 	url?: string;
 }
 
-export interface Task {
+/** Team fields (requester, assignee, reviewer, watchers, pings, comments) come from TaskPeople (shared/team.ts). */
+export interface Task extends TaskPeople {
 	id: string;
 	/** Machine (hub) that owns the task and runs its worker. */
 	machine: string;
@@ -64,8 +66,10 @@ export interface Task {
 export interface TaskEvent {
 	ts: number;
 	taskId: string;
-	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "session" | "handoff";
+	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "session" | "handoff" | "assign" | "comment";
 	text?: string;
+	/** Team member (or "agent") who caused the event, when known. */
+	by?: string;
 	status?: TaskStatus;
 }
 
@@ -120,6 +124,8 @@ export interface MachineInfo {
 	resourceNotes?: string;
 	/** Dispatch preference, lower = preferred (absent = 100). */
 	priority?: number;
+	/** Team member who owns this machine ("Bob's machine"), if set. */
+	owner?: string;
 }
 export interface MachineView extends MachineInfo {
 	self: boolean;
@@ -138,4 +144,6 @@ export type HubEvent =
 	| { type: "task.cancel"; taskId: string; ts: number }
 	| { type: "intake"; intake: Intake }
 	| { type: "machines"; machines: MachineView[] }
-	| { type: "update"; machine: string; from: string; to: string; ts: number };
+	| { type: "update"; machine: string; from: string; to: string; ts: number }
+	/** Team roster changed (members are listed without token hashes). */
+	| { type: "team"; members: import("./team.ts").PublicMember[]; ts: number };

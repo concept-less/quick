@@ -24,6 +24,8 @@ import { dashboardHtml } from "./dashboard.ts";
 import { Mesh } from "./mesh.ts";
 import { autoUpdate, readState, readVersion, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { createHandoff } from "./handoff.ts";
+import { createTeam } from "./team.ts";
+import { AGENT, can, type Viewer } from "../shared/team.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -118,6 +120,8 @@ interface SseClient {
 	res: ServerResponse;
 	taskId?: string; // set for worker connections
 	role: string;
+	/** Who is connected (team member / root). */
+	viewer?: Viewer;
 }
 const clients = new Set<SseClient>();
 
@@ -142,6 +146,7 @@ function machineInfo(): MachineInfo {
 		resources: mergeResources(detected, cfg.machine.resources),
 		resourceNotes: cfg.machine.resourceNotes,
 		priority: cfg.machine.priority,
+		owner: cfg.machine.owner,
 		defaultCwd: cfg.defaultCwd,
 		projects: cfg.projects.filter((p) => !p.machine || p.machine === SELF),
 		hostname: hostname(),
@@ -164,6 +169,7 @@ const mesh = new Mesh({
 		return [
 			...[...tasks.values(), ...mirrorTasks.values()].filter(recent).map((task) => ({ kind: "task", data: { task } })),
 			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => recent(i)).map((intake) => ({ kind: "intake", data: { intake } })),
+			...team.snapshot(),
 		];
 	},
 	onEvent: (kind, data) => {
@@ -192,6 +198,7 @@ const mesh = new Mesh({
 			broadcast({ type: "intake", intake: i });
 			return true;
 		}
+		if (kind === "member" || kind === "invite") return team.applyRemote(kind, data);
 		return false;
 	},
 	onRequest: (method, params, from) => {
@@ -382,6 +389,7 @@ async function createTaskLocal(body: any): Promise<Task> {
 		unread: false,
 		messages: 0,
 		owner: typeof body.owner === "string" ? body.owner : undefined,
+		...team.newTaskPeople(body),
 	};
 	tasks.set(id, t);
 	mkdirSync(taskDir(id), { recursive: true });
@@ -392,6 +400,7 @@ async function createTaskLocal(body: any): Promise<Task> {
 		`- 工作目录: ${cwd}`,
 		`- 来源: ${t.source.kind}${t.source.url ? ` (${t.source.url})` : ""}`,
 		attachments.length ? `- 附件:\n${attachments.map((a) => `  - ${a}`).join("\n")}` : "",
+		...team.briefLines(t),
 		"",
 		"## 任务简报",
 		"",
@@ -450,6 +459,11 @@ function configureMachine(p: any, from: string): MachineInfo {
 		if (typeof p.resourceNotes === "string") raw.machine.resourceNotes = p.resourceNotes;
 		if (p.resourceNotes === null) delete raw.machine.resourceNotes;
 		if (typeof p.description === "string") raw.machine.description = p.description;
+		if (typeof p.owner === "string" && p.owner) {
+			if (!team.member(p.owner)) throw new HttpError(400, `no such team member: ${p.owner} (quick team ls)`);
+			raw.machine.owner = p.owner;
+		}
+		if (p.owner === null || p.owner === "") delete raw.machine.owner;
 		if (p.priority === null) delete raw.machine.priority;
 		else if (p.priority !== undefined) {
 			const n = Number(p.priority);
@@ -484,11 +498,13 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	},
 
 	"task.create": async (p) => createTaskLocal(p),
-	"task.get": async (p) => ({ task: ownTask(p.id), events: readEvents(p.id, Math.min(Number(p.events ?? 30) || 30, 500)) }),
+	"task.get": async (p) => ({ task: ownTask(p.id), events: readEvents(p.id, Math.min(Number(p.events ?? 30) || 30, 500)), comments: team.readComments(p.id, Math.min(Number(p.comments ?? 50) || 50, 500)) }),
 	"task.message": async (p) => {
 		const t = ownTask(p.id);
 		const text = String(p.text ?? "").trim();
 		if (!text) throw new HttpError(400, "text is required");
+		const touched = team.touched(t, p.viewer?.user);
+		if (touched.pings !== t.pings) Object.assign(t, touched);
 		await deliverMessage(t, text);
 		return t;
 	},
@@ -505,7 +521,12 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		if (t.tmuxTarget) await tmux("kill-window", "-t", t.tmuxTarget).catch(() => {});
 		return update(t, { closed: true, unread: false, ...(ACTIVE_STATUSES.includes(t.status) ? { status: "cancelled" as TaskStatus } : {}) }, { kind: "close", text: "closed by user" });
 	},
-	"task.ack": async (p) => update(ownTask(p.id), { unread: false }),
+	"task.ack": async (p) => {
+		// Per person (shared/team.ts): clears the person's pings; only the holder's ack marks the task read.
+		const t = ownTask(p.id);
+		const r = team.ack(t, p.viewer);
+		return update(t, { ...r.patch, ...(r.holder ? { unread: false } : {}) }, p.viewer?.user ? { kind: "ack", by: p.viewer.user } : undefined);
+	},
 	"task.screen": async (p) => {
 		const t = ownTask(p.id);
 		if (!t.tmuxTarget || t.closed) return { alive: false, text: "" };
@@ -593,6 +614,21 @@ const handoff = createHandoff({
 });
 Object.assign(methods, handoff.methods);
 
+const team = createTeam({
+	file: paths.team,
+	log,
+	flood: (kind, data) => mesh.flood(kind, data),
+	onChange: () => broadcast({ type: "team", members: team.roster(), ts: Date.now() }),
+	rootToken: () => cfg.token,
+	machineOwner: () => cfg.machine.owner,
+	ownTask,
+	taskDir,
+	update,
+	deliverMessage,
+	httpError: (status, msg) => new HttpError(status, msg),
+});
+Object.assign(methods, team.methods);
+
 // ---------------------------------------------------------------- global (mesh-wide) views
 
 function findTask(id: string): Task {
@@ -659,6 +695,53 @@ async function apiCreateTask(body: any): Promise<Task> {
 		if (i) await call(i.machine, "intake.update", { id: i.id, status: "dispatched", taskId: task.id }).catch((e) => log(`intake.update failed: ${e.message}`));
 	}
 	return task;
+}
+
+/** /api/team…: roster, invites, member management (docs/team-collaboration.md). */
+async function apiTeam(m: string, p: string, url: URL, viewer: Viewer, req: IncomingMessage): Promise<any> {
+	const owners = () => mesh.machines().filter((x) => x.owner);
+	if (p === "/api/team" && m === "GET") {
+		return {
+			me: viewer.user ? team.member(viewer.user) : undefined,
+			root: !!viewer.root,
+			members: team.roster().map((x) => ({ ...x, machines: owners().filter((o) => o.owner === x.id).map((o) => o.id) })),
+			invites: can(viewer, "team.manage") ? team.listInvites() : undefined,
+		};
+	}
+	if (m !== "POST") throw new HttpError(405, "method not allowed");
+	const body = await readJson(req);
+	if (p === "/api/team/members") {
+		// Bootstrapping: the machine token may create the first owner; afterwards adding people needs owner.
+		need(viewer, "team.manage");
+		const r = team.addMember(body);
+		if (body.machineOwner && viewer.root) {
+			saveConfigPatch((raw) => {
+				raw.machine = { ...(raw.machine ?? {}), id: raw.machine?.id ?? SELF, owner: r.member.id };
+			});
+			cfg.machine.owner = r.member.id;
+			mesh.advertise(true);
+			broadcast({ type: "machines", machines: mesh.machines() });
+		}
+		return r;
+	}
+	if (p === "/api/team/invites") {
+		need(viewer, "team.manage");
+		if (body.revoke) return team.revokeInvite(String(body.revoke));
+		return team.createInvite(body, viewer.user ?? "root");
+	}
+	const mt = /^\/api\/team\/members\/([\w-]+)$/.exec(p);
+	if (mt) {
+		const id = mt[1]!;
+		const self = viewer.user === id;
+		if (body.name !== undefined && (self || can(viewer, "team.manage"))) return { member: team.rename(id, body.name) };
+		if (body.resetToken && (self || can(viewer, "team.manage"))) return team.resetToken(id);
+		need(viewer, "team.manage");
+		if (body.remove) return team.remove(id);
+		if (body.role) return { member: team.setRole(id, body.role) };
+		throw new HttpError(400, "nothing to do (role | name | resetToken | remove)");
+	}
+	void url;
+	throw new HttpError(404, "not found");
 }
 
 /** Claim an intake wherever it lives; remote screenshots are copied here so local front agents can read them. */
@@ -821,10 +904,14 @@ async function readJson(req: IncomingMessage): Promise<any> {
 		throw new HttpError(400, "invalid JSON");
 	}
 }
-function authorized(req: IncomingMessage, url: URL) {
+/** Who is calling: the machine token (root / machine owner) or a team member's token; undefined = unauthorized. */
+function viewerOf(req: IncomingMessage, url: URL): Viewer | undefined {
 	const h = req.headers.authorization;
-	if (h === `Bearer ${cfg.token}`) return true;
-	return url.searchParams.get("token") === cfg.token;
+	const token = h?.startsWith("Bearer ") ? h.slice(7) : url.searchParams.get("token");
+	return team.identify(token);
+}
+function need(v: Viewer, action: Parameters<typeof can>[1]) {
+	if (!can(v, action)) throw new HttpError(403, `forbidden: ${action} needs the owner role`);
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
@@ -862,12 +949,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		throw new HttpError(405, "method not allowed");
 	}
 
-	// ---- local clients (API token)
-	if (!authorized(req, url)) throw new HttpError(401, "unauthorized");
+	// ---- joining the team: the invite code is the credential
+	if (p === "/api/team/join" && m === "POST") return send(res, 200, team.join(await readJson(req)));
+
+	// ---- local clients (machine token) and team members (user tokens)
+	const viewer = viewerOf(req, url);
+	if (!viewer) throw new HttpError(401, "unauthorized");
 
 	if (p === "/api/events" && m === "GET") {
 		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...cors() });
-		const client: SseClient = { res, taskId: url.searchParams.get("task") ?? undefined, role: url.searchParams.get("role") ?? "client" };
+		const client: SseClient = { res, taskId: url.searchParams.get("task") ?? undefined, role: url.searchParams.get("role") ?? "client", viewer };
 		clients.add(client);
 		res.write(`data: ${JSON.stringify({ type: "hello", ts: Date.now() })}\n\n`);
 		const ping = setInterval(() => res.write(": ping\n\n"), 15000);
@@ -885,10 +976,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return;
 	}
 
-	if (p === "/api/upgrade" && m === "POST") return send(res, 200, { results: await apiUpgrade(await readJson(req)) });
+	if (p === "/api/upgrade" && m === "POST") {
+		need(viewer, "upgrade");
+		return send(res, 200, { results: await apiUpgrade(await readJson(req)) });
+	}
+	if (p === "/api/me" && m === "GET") return send(res, 200, { me: viewer.user ? team.member(viewer.user) : undefined, viewer, machine: SELF });
+	if (p.startsWith("/api/team")) return send(res, 200, await apiTeam(m, p, url, viewer, req));
 	if (p === "/api/machines" && m === "GET") return send(res, 200, { self: SELF, machines: mesh.machines(), links: mesh.linkStatus() });
 	if (p === "/api/machine" && m === "POST") {
 		// Configure resources/priority of this or another machine (`quick machine set`).
+		need(viewer, "machine.configure");
 		const body = await readJson(req);
 		const target = String(body.machine || SELF);
 		if (!mesh.reachable(target)) throw new HttpError(400, `machine ${target} is not reachable (see /api/machines)`);
@@ -904,7 +1001,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	}
 
 	if (p === "/api/tasks" && m === "GET") return send(res, 200, { tasks: allTasks() });
-	if (p === "/api/tasks" && m === "POST") return send(res, 200, { task: await apiCreateTask(await readJson(req)) });
+	if (p === "/api/tasks" && m === "POST") {
+		const body = await readJson(req);
+		// The requester is whoever asks; only the machine token may dispatch on someone's behalf (e.g. schedules).
+		if (!viewer.root || !body.requester) body.requester = viewer.user;
+		if (!body.requester) delete body.requester;
+		return send(res, 200, { task: await apiCreateTask(body) });
+	}
 
 	let mt = /^\/api\/tasks\/([\w-]+)(?:\/(\w+))?$/.exec(p);
 	if (mt) {
@@ -932,11 +1035,18 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		}
 		const owner = findTask(id).machine;
 		if (action === "screen" && m === "GET") return send(res, 200, await call(owner, "task.screen", { id }));
-		if (!action && m === "GET") return send(res, 200, await call(owner, "task.get", { id, events: url.searchParams.get("events") ?? 30 }));
+		if (!action && m === "GET") return send(res, 200, await call(owner, "task.get", { id, events: url.searchParams.get("events") ?? 30, comments: url.searchParams.get("comments") ?? 50 }));
+		if (action === "comments" && m === "GET") return send(res, 200, await call(owner, "task.comments", { id, limit: url.searchParams.get("limit") ?? 100 }));
 		if (m !== "POST") throw new HttpError(405, "method not allowed");
 		const body = await readJson(req);
-		if (!["message", "cancel", "close", "ack", "handoff"].includes(action ?? "")) throw new HttpError(404, "unknown action");
-		const task = await call<Task>(owner, `task.${action}`, { ...body, id });
+		if (action === "comments") {
+			const r = await call<{ task: Task; comment: any }>(owner, "task.comment", { id, text: body.text, toWorker: body.toWorker, by: viewer.root && body.asWorker ? AGENT : (viewer.user ?? "root") });
+			if (r.task.machine !== SELF) mirrorTasks.set(r.task.id, r.task);
+			return send(res, 200, r);
+		}
+		if (!["message", "cancel", "close", "ack", "handoff", "assign"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		// Mesh RPC params are trusted: the owning hub learns who acts from here, never from the client body.
+		const task = await call<Task>(owner, `task.${action}`, { ...body, id, viewer, by: viewer.user });
 		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
 		return send(res, 200, { task });
 	}

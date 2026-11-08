@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig, paths, REPO_ROOT, type QaConfig } from "./config.ts";
+import { hubUrl, loadConfig, paths, remoteHub, REPO_ROOT, type QaConfig } from "./config.ts";
 import { HubClient } from "./hub-client.ts";
 
 export async function hubAlive(hub: HubClient): Promise<boolean> {
@@ -22,6 +22,8 @@ export function hubArgs(): string[] {
 /** Ensure the hub is running. Returns "running" if it already was, "started" if we launched it. */
 export async function ensureHub(cfg: QaConfig = loadConfig(), hub = new HubClient(cfg)): Promise<"running" | "started"> {
 	if (await hubAlive(hub)) return "running";
+	// A team member using someone else's hub (config client / QA_HUB_URL): nothing to start here.
+	if (remoteHub(cfg)) throw new Error(`team hub ${hubUrl(cfg)} is unreachable (quick team status)`);
 	const out = openSync(paths.log, "a");
 	const child = spawn(process.execPath, hubArgs(), {
 		detached: true,

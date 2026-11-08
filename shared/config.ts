@@ -55,6 +55,8 @@ export interface QaConfig {
 	mesh: MeshConfig;
 	/** Self-upgrade settings (see shared/update.ts). */
 	update: UpdateConfig;
+	/** Use a (remote) team hub with a personal token instead of the local hub. */
+	client?: ClientConfig;
 }
 
 export interface MachineConfig {
@@ -70,6 +72,17 @@ export interface MachineConfig {
 	resourceNotes?: string;
 	/** Dispatch preference, lower = preferred (default 100). */
 	priority?: number;
+	/** Team member who owns this machine; the machine token then acts as that member (docs/team-collaboration.md). */
+	owner?: string;
+}
+
+/** Connection profile of a team member who uses someone else's hub (`quick team join`). Ignored by workers. */
+export interface ClientConfig {
+	/** Hub URL, e.g. http://10.0.0.5:7788 or a forwarded port. */
+	hub: string;
+	/** Personal user token (qau_…). */
+	token: string;
+	user?: string;
 }
 
 export interface UpdateConfig {
@@ -109,6 +122,8 @@ export const paths = {
 	uiLog: join(QA_HOME, "ui.log"),
 	uiPid: join(QA_HOME, "ui.pid"),
 	uiSessions: join(QA_HOME, "ui-sessions"),
+	/** Team roster (members, invites), replicated over the mesh. */
+	team: join(QA_HOME, "team.json"),
 };
 
 export function ensureDirs(): void {
@@ -139,6 +154,7 @@ export function loadConfig(): QaConfig {
 		machine: machineConfig(raw.machine),
 		mesh: { secret: raw.mesh?.secret, peers: raw.mesh?.peers ?? [] },
 		update: updateConfig(raw.update),
+		client: raw.client?.hub && raw.client?.token ? { hub: String(raw.client.hub).replace(/\/+$/, ""), token: String(raw.client.token), user: raw.client.user } : undefined,
 	};
 	if (!existsSync(CONFIG_PATH) || raw.token === undefined) {
 		// `update` is derived (env overrides, package.json defaults): only persist what the user sets.
@@ -157,6 +173,7 @@ function machineConfig(raw: Partial<MachineConfig> | undefined): MachineConfig {
 		resources: Array.isArray(raw?.resources) ? raw.resources.map(String) : undefined,
 		resourceNotes: typeof raw?.resourceNotes === "string" ? raw.resourceNotes : undefined,
 		priority: Number.isFinite(priority) && (env.QA_MACHINE_PRIORITY ?? raw?.priority) !== undefined ? priority : undefined,
+		owner: (env.QA_MACHINE_OWNER ?? raw?.owner) || undefined,
 	};
 }
 
@@ -207,8 +224,20 @@ export function saveConfigPatch(patch: (raw: any) => void): void {
 	writeFileSync(CONFIG_PATH, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
 }
 
+/** Is this process a worker (spawned by a hub for a task)? Workers always talk to their own machine's hub. */
+const isWorker = () => !!process.env.QA_TASK_ID;
+
 export function hubUrl(cfg: QaConfig): string {
-	return process.env.QA_HUB_URL ?? `http://${cfg.host}:${cfg.port}`;
+	return process.env.QA_HUB_URL ?? (!isWorker() && cfg.client ? cfg.client.hub : `http://${cfg.host}:${cfg.port}`);
+}
+/** Token for hub requests: QA_TOKEN, the team client token, or this machine's token. */
+export function hubToken(cfg: QaConfig): string {
+	return process.env.QA_TOKEN ?? (!isWorker() && cfg.client && !process.env.QA_HUB_URL ? cfg.client.token : cfg.token);
+}
+/** True when clients talk to a hub that this machine does not run (so it must not be auto-started here). */
+export function remoteHub(cfg: QaConfig): boolean {
+	const u = hubUrl(cfg);
+	return u !== `http://${cfg.host}:${cfg.port}` && !!(process.env.QA_HUB_URL || (!isWorker() && cfg.client));
 }
 
 export function matchProject(cfg: QaConfig, url: string | undefined): ProjectRule | undefined {

@@ -1,7 +1,8 @@
 // Minimal HTTP + SSE client for the quick-agent hub (uses global fetch).
-import { hubUrl, loadConfig, type QaConfig } from "./config.ts";
+import { hubToken, hubUrl, loadConfig, type QaConfig } from "./config.ts";
 import type { UpgradeResult } from "./update.ts";
 import type { HubEvent, Intake, MachineInfo, MachineView, Task, TaskEvent } from "./types.ts";
+import type { PublicMember, Role, TaskComment, Viewer } from "./team.ts";
 
 export class HubError extends Error {
 	status?: number;
@@ -17,7 +18,7 @@ export class HubClient {
 
 	constructor(cfg: QaConfig = loadConfig()) {
 		this.base = hubUrl(cfg);
-		this.token = process.env.QA_TOKEN ?? cfg.token;
+		this.token = hubToken(cfg);
 	}
 
 	async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -53,7 +54,37 @@ export class HubClient {
 		return this.request<{ tasks: Task[] }>("GET", "/api/tasks").then((r) => r.tasks);
 	}
 	getTask(id: string, events = 30) {
-		return this.request<{ task: Task; events: TaskEvent[] }>("GET", `/api/tasks/${enc(id)}?events=${events}`);
+		return this.request<{ task: Task; events: TaskEvent[]; comments?: TaskComment[] }>("GET", `/api/tasks/${enc(id)}?events=${events}`);
+	}
+
+	// ---- team (docs/team-collaboration.md)
+	me() {
+		return this.request<{ me?: PublicMember; viewer: Viewer; machine: string }>("GET", "/api/me");
+	}
+	team() {
+		return this.request<{ me?: PublicMember; root: boolean; members: (PublicMember & { machines: string[] })[]; invites?: any[] }>("GET", "/api/team");
+	}
+	addMember(body: { id: string; name?: string; role?: Role; machineOwner?: boolean }) {
+		return this.request<{ member: PublicMember; token: string }>("POST", "/api/team/members", body);
+	}
+	updateMember(id: string, body: { role?: Role; name?: string; resetToken?: boolean; remove?: boolean }) {
+		return this.request<any>("POST", `/api/team/members/${enc(id)}`, body);
+	}
+	invite(body: { role?: Role; hours?: number; revoke?: string }) {
+		return this.request<{ code: string; invite: any }>("POST", "/api/team/invites", body);
+	}
+	join(body: { code: string; id: string; name?: string }) {
+		return this.request<{ member: PublicMember; token: string }>("POST", "/api/team/join", body);
+	}
+	/** Hand a task to a person (assignee), ask someone to verify/decide (reviewer), add/remove watchers. null clears. */
+	assign(id: string, body: { assignee?: string | null; reviewer?: string | null; watchersAdd?: string[]; watchersRemove?: string[]; note?: string }) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/assign`, body).then((r) => r.task);
+	}
+	comment(id: string, text: string, opts: { toWorker?: boolean; asWorker?: boolean } = {}) {
+		return this.request<{ task: Task; comment: TaskComment }>("POST", `/api/tasks/${enc(id)}/comments`, { text, ...opts });
+	}
+	comments(id: string, limit = 100) {
+		return this.request<{ comments: TaskComment[] }>("GET", `/api/tasks/${enc(id)}/comments?limit=${limit}`).then((r) => r.comments);
 	}
 	createTask(input: {
 		title: string;
@@ -67,11 +98,15 @@ export class HubClient {
 		machine?: string;
 		/** Resource tags the worker needs (see shared/schedule.ts). */
 		requires?: string[];
+		/** Team: hand the task to a person, ask someone to verify/decide, people who follow it. */
+		assignee?: string;
+		reviewer?: string;
+		watchers?: string[];
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}
 	/** Set resources/priority/notes of a machine (default this hub's machine); null clears a field. */
-	configureMachine(input: { machine?: string; resources?: string[] | null; resourceNotes?: string | null; priority?: number | null; description?: string }) {
+	configureMachine(input: { machine?: string; resources?: string[] | null; resourceNotes?: string | null; priority?: number | null; description?: string; owner?: string | null }) {
 		return this.request<{ machine: MachineInfo }>("POST", "/api/machine", input).then((r) => r.machine);
 	}
 	sendMessage(id: string, text: string) {

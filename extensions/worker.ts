@@ -11,7 +11,8 @@ const WORKER_RULES = `你是 quick-agent 工作流中的 **负责人 worker**。
 - 遇到无法继续的阻塞，调用 qa_report(status="blocked")。
 - 完成后必须调用 qa_report(status="done")。summary 用简洁的中文写：做了什么、改了哪些文件、如何验证的、遗留问题。这是人类在收件箱里看到的内容，必须能独立看懂。
 - 较长任务中途可以用 status="progress" 汇报关键进展（不要频繁）。
-- 之后可能收到以【quick-agent 追加指令】开头的消息，把它当作同一任务的延续，处理完再次 qa_report。`;
+- 之后可能收到以【quick-agent 追加指令】开头的消息，把它当作同一任务的延续，处理完再次 qa_report。
+- 团队协作：简报里可能写着发起人、负责人和验收人（成员 id）。qa_report 的汇报和提问会自动交给该拍板的人。需要问某个具体的人、或让别人知道某件事时，用 qa_comment 在任务下评论并写 @成员id（例如 @alice）；收到以【团队评论】开头的消息时，那是队友在任务下写给你的。`;
 
 export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	let hub: HubClient | undefined;
@@ -51,6 +52,24 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 				content: [{ type: "text", text: error ? `Report NOT delivered: ${error}` : `Reported ${params.status} to the human's inbox.` }],
 				details: { status: params.status, error },
 			};
+		},
+	});
+
+	pi.registerTool({
+		name: "qa_comment",
+		label: "Comment on task",
+		description:
+			"Post a comment on your quick-agent task, visible to the team. Write @memberid to call a specific person (it lands in their 'needs you' queue), e.g. '@alice 两种方案选哪个？'. Omit text to read the task's comments.",
+		promptSnippet: "Comment on your task / @mention a team member",
+		parameters: Type.Object({ text: Type.Optional(Type.String({ description: "Comment (Chinese ok); @id mentions a team member" })) }),
+		async execute(_id, params) {
+			if (!hub) throw new Error("hub client not initialised");
+			if (!params.text?.trim()) {
+				const list = await hub.comments(taskId, 50);
+				return { content: [{ type: "text", text: list.length ? list.map((c) => `${new Date(c.ts).toLocaleString()} ${c.author}: ${c.text}`).join("\n") : "(no comments)" }], details: {} };
+			}
+			const r = await hub.comment(taskId, params.text, { asWorker: true });
+			return { content: [{ type: "text", text: `Commented${r.comment.mentions.length ? `, mentioned ${r.comment.mentions.join(", ")}` : " (no one mentioned)"}.` }], details: {} };
 		},
 	});
 

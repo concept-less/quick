@@ -12,6 +12,7 @@ import { applyResourceEdits, detectResources, mergeResources, normalizeRequires,
 import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
 import { openAttach, planAttach, runForeground } from "../shared/attach.ts";
+import { assignCmd, commentCmd, TEAM_HELP, teamCmd } from "./team.ts";
 
 const cfg = loadConfig();
 const hub = new HubClient(cfg);
@@ -101,8 +102,8 @@ const HELP = `quick — quick-agent
   quick ack <id>            标记已读
   quick machines            mesh 中的机器、资源、优先级与链路状态
   quick machine [show] [M]  查看机器的资源标签（探测 + 配置）与优先级
-  quick machine set [--machine M] [--priority N] [--resources a,b] [--add t]... [--remove t]... [--notes 文本] [--desc 描述]
-                            设置资源/优先级（数字越小越优先；--priority none / --resources none 清除），即时生效
+  quick machine set [--machine M] [--priority N] [--resources a,b] [--add t]... [--remove t]... [--notes 文本] [--desc 描述] [--owner 成员id|none]
+                            设置资源/优先级/所有者（数字越小越优先；--priority none / --resources none 清除），即时生效
   quick machine detect      只打印本机自动探测到的资源
   quick upgrade [--check] [--all | --machine M ... | M ...] [--json]
                             升级 quick-agent（update 是别名）：默认只升级本机；--all 所有在线机器；--check 只检查不安装
@@ -115,6 +116,8 @@ const HELP = `quick — quick-agent
   quick mesh join <code> (--ssh 目标 | --url URL)   用邀请码加入并连接到邀请方
   quick mesh accept <secret>   （由 mesh add 远程调用）设置密钥并重启 hub
   quick mesh peers | remove <序号>   查看/删除本机主动连接的 peer
+
+${TEAM_HELP}
 
   quick token               打印 hub token
   quick dashboard           打印网页面板地址
@@ -250,6 +253,7 @@ function printMachine(m: MachineView | undefined, extra?: string) {
 	console.log(`  优先级: ${priorityOf(m)}${m.priority === undefined ? "（默认）" : ""}`);
 	console.log(`  资源:   ${resourcesOf(m).join(", ") || "（无）"}`);
 	if (m.resourceNotes) console.log(`  说明:   ${m.resourceNotes}`);
+	if (m.owner) console.log(`  所有者: ${m.owner}`);
 	if (extra) console.log(extra);
 }
 
@@ -276,6 +280,7 @@ async function machineCmd(args: string[]) {
 	const remove = flags(args, "--remove").flatMap((x) => normalizeRequires(x));
 	const notes = flag(args, "--notes");
 	const desc = flag(args, "--desc");
+	const owner = flag(args, "--owner");
 	if (args.length) die(`unknown arguments: ${args.join(" ")}`);
 	const input: Parameters<typeof hub.configureMachine>[0] & { addResources?: string[]; removeResources?: string[] } = { machine };
 	if (pr !== undefined) input.priority = /^(none|null|default|)$/i.test(pr) ? null : Number(pr);
@@ -285,6 +290,7 @@ async function machineCmd(args: string[]) {
 	if (remove.length) input.removeResources = remove;
 	if (notes !== undefined) input.resourceNotes = notes || null;
 	if (desc !== undefined) input.description = desc;
+	if (owner !== undefined) input.owner = /^(none|null|)$/i.test(owner) ? null : owner;
 	if (Object.keys(input).length === 1) die("usage: quick machine set [--machine M] [--priority N] [--resources a,b] [--add t] [--remove t] [--notes 文本] [--desc 描述]");
 	if (await hubAlive()) return printMachine({ ...(await hub.configureMachine(input)), self: !machine || machine === cfg.machine.id, online: true, hops: 0 } as MachineView);
 	if (machine && machine !== cfg.machine.id) die("hub 未运行，无法设置其他机器（quick hub start）");
@@ -299,6 +305,8 @@ async function machineCmd(args: string[]) {
 		if (input.resourceNotes === null) delete raw.machine.resourceNotes;
 		else if (input.resourceNotes !== undefined) raw.machine.resourceNotes = input.resourceNotes;
 		if (desc !== undefined) raw.machine.description = desc;
+		if (input.owner === null) delete raw.machine.owner;
+		else if (input.owner) raw.machine.owner = input.owner;
 	});
 	const c = loadConfig();
 	printMachine({ id: c.machine.id, self: true, online: true, hops: 0, description: c.machine.description, priority: c.machine.priority, resourceNotes: c.machine.resourceNotes, resources: mergeResources(detectResources(), c.machine.resources) });
@@ -516,6 +524,12 @@ async function main() {
 		}
 		case "machine":
 			return machineCmd(rest);
+		case "team":
+			return teamCmd(rest, hub, cfg);
+		case "assign":
+			return assignCmd(rest, hub);
+		case "comment":
+			return commentCmd(rest, hub);
 		case "mesh":
 			return mesh(rest);
 		case "upgrade":
