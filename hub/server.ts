@@ -1395,6 +1395,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 	if (p === "/api/projects" && m === "GET") return send(res, 200, { self: SELF, projects: projects.list() });
 	if (p === "/api/projects" && m === "POST") return send(res, 200, { project: projects.create(await readJson(req)) });
+	if (p === "/api/projects/order" && m === "POST") return send(res, 200, { projects: projects.reorder((await readJson(req)).ids) });
 	if (p === "/api/projects/backfill" && m === "POST") return send(res, 200, projects.backfill(!!(await readJson(req)).all));
 	const mp = /^\/api\/projects\/([^/]+)\/(rename|merge|rules)$/.exec(p);
 	if (mp && m === "POST") {

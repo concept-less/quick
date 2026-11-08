@@ -229,6 +229,10 @@ export class HubClient {
 	backfillProjects(all = false) {
 		return this.request<{ checked: number; changed: number }>("POST", "/api/projects/backfill", { all });
 	}
+	/** Manual order of the project list (the listed ids first, in this order). */
+	orderProjects(ids: string[]) {
+		return this.request<{ projects: Project[] }>("POST", "/api/projects/order", { ids }).then((r) => r.projects);
+	}
 	/** Manually move a task to a project ("" = unsorted); remembered across reclassification. */
 	setTaskProject(id: string, project: string) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/project`, { project }).then((r) => r.task);

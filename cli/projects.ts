@@ -1,7 +1,7 @@
 // `quick projects …` and the project-grouped `quick ls`.
 import type { HubClient } from "../shared/hub-client.ts";
 import { LEVEL_LABEL, type AttentionItem } from "../shared/attention.ts";
-import { findProject, groupByProject, resolveProject, UNSORTED_LABEL, type Project } from "../shared/projects.ts";
+import { compareProjects, findProject, groupByProject, resolveProject, UNSORTED_LABEL, type Project } from "../shared/projects.ts";
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
@@ -112,8 +112,8 @@ export async function projectsCmd(hub: HubClient, args: string[]) {
 		case "list": {
 			const [{ projects }, items] = await Promise.all([hub.projects(), attentionItems(hub)]);
 			const live = projects.filter((p) => !p.mergedInto);
-			const order = groupItems(projects, items).map((g) => g.id);
-			live.sort((a, b) => (order.indexOf(a.id) + 1 || 1e9) - (order.indexOf(b.id) + 1 || 1e9));
+			// Stable order (manual order, then creation), the same as the Web UI's 项目 view.
+			live.sort(compareProjects);
 			for (const p of live) console.log(describe(p, items));
 			const none = items.filter((i) => !i.project || !live.some((p) => p.id === i.project));
 			console.log(`${bold(UNSORTED_LABEL)}  ${dim(countsOf(none))}`);
@@ -162,6 +162,13 @@ export async function projectsCmd(hub: HubClient, args: string[]) {
 			const v = value.join(" ");
 			const p = await hub.projectRules(key, op === "add" ? { add: { [k]: [v] } } : { remove: { [k]: [v] } });
 			return console.log(describe(p, await attentionItems(hub)));
+		}
+		case "order": {
+			if (!rest.length) die("usage: quick projects order <项目> [<项目> …]   (按这个顺序排在最前，其余保持原顺序)");
+			const all = (await hub.projects()).projects;
+			const ids = rest.map((k) => findProject(all, k)?.id ?? die(`no such project: ${k}`));
+			const projects = await hub.orderProjects(ids);
+			return console.log(projects.filter((p) => !p.mergedInto).sort(compareProjects).map((p) => p.name).join(" > "));
 		}
 		case "backfill": {
 			const r = await hub.backfillProjects(rest.includes("--all"));

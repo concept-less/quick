@@ -41,6 +41,8 @@ const fixtures: [string, string, string, string?][] = [
 	["td001", plain, "更新 quick-agent（cloud）"],
 	["te001", plain, "诊断 tokenjoy API 请求超时"],
 	["tf001", plain, "tokenjoy 账单对账"],
+	["tg001", plain, "共享页去掉说明小字", "http://10.144.144.2:5173/console/accounts"],
+	["tg002", plain, "积分页对齐", "http://10.144.144.2:5173/console/credits"],
 ];
 
 let hub: ChildProcess | undefined;
@@ -112,6 +114,8 @@ test("existing tasks are backfilled into projects on startup", async () => {
 		td001: ["quick-agent", "text"],
 		te001: [null, "none"], // unsorted
 		tf001: [null, "none"],
+		tg001: [null, "none"],
+		tg002: [null, "none"],
 	});
 	// updatedAt is not bumped by classification (list order stays)
 	assert.ok(t.ta001.updatedAt < Date.now() - 50_000);
@@ -151,4 +155,30 @@ test("a new project picks up weakly classified tasks (text rules)", async () => 
 	// te001 was moved by hand: it stays where the human put it
 	assert.equal(t.te001.project, "relay-website");
 	await assert.rejects(api("POST", "/api/projects", { name: "tokenjoy" }), /already exists/);
+});
+
+test("a manual move teaches the project the page URL, but never steals another project's repository", async () => {
+	await api("POST", "/api/tasks/tg001/project", { project: "tokenjoy" });
+	await new Promise((r) => setTimeout(r, 700));
+	let t = await byId();
+	assert.deepEqual([t.tg001.project, t.tg001.projectVia], ["tokenjoy", "manual"]);
+	assert.deepEqual([t.tg002.project, t.tg002.projectVia], ["tokenjoy", "url"]);
+	await api("POST", "/api/tasks/ta003/project", { project: "tokenjoy" });
+	await new Promise((r) => setTimeout(r, 700));
+	const { projects } = await api("GET", "/api/projects");
+	const tj = projects.find((p: any) => p.id === "tokenjoy");
+	assert.ok(tj.urls.includes("10.144.144.2:5173"));
+	assert.ok(!tj.remotes.length && !tj.dirs.length, JSON.stringify(tj));
+	t = await byId();
+	assert.equal(t.ta001.project, "quick-agent");
+});
+
+test("manual project order is stored and survives a restart", async () => {
+	const r = await api("POST", "/api/projects/order", { ids: ["tokenjoy", "relay-website"] });
+	const order = (ps: any[]) => ps.filter((p) => !p.mergedInto).sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9)).map((p) => p.id);
+	assert.deepEqual(order(r.projects).slice(0, 3), ["tokenjoy", "relay-website", "quick-agent"]);
+	await stop();
+	await start();
+	assert.deepEqual(order((await api("GET", "/api/projects")).projects).slice(0, 3), ["tokenjoy", "relay-website", "quick-agent"]);
+	await assert.rejects(api("POST", "/api/projects/order", { ids: "x" }), /array/);
 });

@@ -31,6 +31,8 @@ export interface Project {
 	urls: string[];
 	/** Extra words for the text match (the name and id always count). */
 	keywords: string[];
+	/** Position in the human's project list (manual drag order; lower first). Unset = after ordered ones, by creation. */
+	order?: number;
 	/** Free-text notes for front agents. */
 	notes?: string;
 	/** Team members of the project (member ids). */
@@ -227,9 +229,33 @@ export function normalizeProject(p: any): Project | undefined {
 		dirs: Array.isArray(p.dirs) ? p.dirs.filter((d: any) => d && typeof d.path === "string").map((d: any) => ({ machine: String(d.machine ?? ""), path: d.path })) : [],
 		urls: arr(p.urls),
 		keywords: arr(p.keywords),
+		order: Number.isFinite(p.order) ? Number(p.order) : undefined,
 		createdAt: Number(p.createdAt) || 0,
 		updatedAt: Number(p.updatedAt) || 0,
 	};
+}
+
+/** Stable display order of projects: manual order first, then creation time, then name. Never depends on activity. */
+export function compareProjects(a: Project, b: Project): number {
+	const ao = a.order ?? Number.POSITIVE_INFINITY;
+	const bo = b.order ?? Number.POSITIVE_INFINITY;
+	if (ao !== bo) return ao < bo ? -1 : 1;
+	return (a.createdAt || 0) - (b.createdAt || 0) || a.name.localeCompare(b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** Assign `order` to the listed live projects (in that order); the rest keep theirs after them. Returns the changed ones. */
+export function reorderProjects(projects: Project[], ids: string[], now = Date.now()): Project[] {
+	const live = projects.filter((p) => !p.mergedInto);
+	const listed = ids.map((id) => resolveProject(projects, id)).filter((p, i, a): p is Project => !!p && a.indexOf(p) === i);
+	const rest = live.filter((p) => !listed.includes(p)).sort(compareProjects);
+	const changed: Project[] = [];
+	[...listed, ...rest].forEach((p, i) => {
+		if (p.order === i) return;
+		p.order = i;
+		p.updatedAt = now;
+		changed.push(p);
+	});
+	return changed;
 }
 
 // ---------------------------------------------------------------- classification

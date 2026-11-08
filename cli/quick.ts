@@ -128,6 +128,7 @@ const HELP = `quick — quick-agent
   quick projects rename <项目> <新名字> | merge <项目> <并入项目> | move <任务> <项目|none>
   quick projects create <名字> [--url U] [--path P] [--remote R] [--keyword K]
   quick projects rule <项目> add|rm url|path|remote|keyword <值>
+  quick projects order <项目> [<项目> …]   项目列表顺序（列出的排最前；Web UI 里可拖动）
   quick projects backfill [--all]   给未归类过的任务归类（--all 重新归类所有非手动设置的任务）
   quick machines            mesh 中的机器、资源、优先级与链路状态
   quick machine [show] [M]  查看机器的资源标签（探测 + 配置）与优先级
