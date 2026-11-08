@@ -90,7 +90,7 @@ trap 'rm -f "$SECTION"' EXIT
 
 if [ "$DRY" = 0 ]; then
 	bump "$VER"
-	{ echo "# Changelog"; echo; cat "$SECTION"; echo; [ -f CHANGELOG.md ] && sed '1{/^# Changelog$/d}' CHANGELOG.md | sed '1{/^$/d}'; } >CHANGELOG.md.new
+	{ echo "# Changelog"; echo; cat "$SECTION"; echo; [ -f CHANGELOG.md ] && sed '1{/^# Changelog$/d;}' CHANGELOG.md | sed '1{/^$/d;}'; } >CHANGELOG.md.new
 	mv CHANGELOG.md.new CHANGELOG.md
 	git add package.json electron/package.json electron/package-lock.json browser/manifest.json CHANGELOG.md
 	git commit -qm "release $TAG"
