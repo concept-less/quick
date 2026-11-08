@@ -20,7 +20,7 @@ const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa
 const FRONT_TOOLS = ["read", "grep", "find", "ls", ...QA_TOOLS];
 
 const ICON: Record<string, string> = {
-	starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏", handoff: "⇄",
+	starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✕", cancelled: "⊘", exited: "○", handoff: "⇄",
 };
 
 function frontRules(cwd: string, defaultCwd: string, projects: string, machines: string): string {
@@ -139,7 +139,7 @@ export function setupFront(pi: ExtensionAPI) {
 		}
 		const active = list.filter((t) => ACTIVE_STATUSES.includes(t.status)).length;
 		const unread = list.filter((t) => t.unread).length;
-		const mode = enabled ? "⚡ quick-agent" : "○ plain pi";
+		const mode = enabled ? "■ quick-agent" : "○ plain pi";
 		ctx.ui.setStatus("qa", `${mode}${connected ? "" : " · hub offline"} · ${active} running${unread ? ` · ${unread} 待处理` : ""}`);
 	};
 
@@ -502,7 +502,7 @@ export function setupFront(pi: ExtensionAPI) {
 					render(width: number): string[] {
 						const t = tasks.get(id);
 						const rows = Math.max(8, Math.floor(tui.terminal.rows * 0.8) - 3);
-						const head = `${theme.fg("accent", `⚡ ${t ? tag(t) : id}`)} ${t?.title ?? ""} ${theme.fg("dim", `[${t?.status ?? "?"}]`)}`;
+						const head = `${theme.fg("accent", `■ ${t ? tag(t) : id}`)} ${t?.title ?? ""} ${theme.fg("dim", `[${t?.status ?? "?"}]`)}`;
 						const help = theme.fg("dim", "Esc 关闭 · Enter 追加指令 · a 进入窗口");
 						const body = lines.slice(-rows).map((l) => truncateToWidth(` ${l}`, width));
 						return [truncateToWidth(head, width), truncateToWidth(theme.fg("dim", "─".repeat(width)), width), ...body, truncateToWidth(help, width)];

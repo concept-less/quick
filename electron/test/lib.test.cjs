@@ -22,9 +22,9 @@ test("attention buckets", () => {
 test("tray and badge only show what needs you", () => {
 	const s = lib.summarize([T({}), T({ status: "starting" }), T({ status: "blocked" }), T({ status: "done", unread: true })]);
 	assert.deepEqual(s, { need: 1, inflight: 2, skim: 1 });
-	assert.equal(lib.trayTitle(s), "⚡1");
+	assert.equal(lib.trayTitle(s), "■1");
 	assert.equal(lib.badge(s), "1");
-	assert.equal(lib.trayTitle({ need: 0, inflight: 5, skim: 3 }), "⚡");
+	assert.equal(lib.trayTitle({ need: 0, inflight: 5, skim: 3 }), "□");
 	assert.equal(lib.badge({ need: 0, inflight: 5, skim: 3 }), "");
 });
 

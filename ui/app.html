@@ -295,7 +295,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
   <select class="btn hide-m" id="modelSel" title="模型"></select>
   <select class="btn hide-m" id="thinkSel" title="思考级别" style="max-width:140px"></select>
   <div id="mobtabs" role="tablist" aria-label="视图"><button data-v="side" role="tab">任务</button><button data-v="chat" role="tab">对话</button><button id="mobToggle" hidden></button></div>
-  <button class="btn icon hide-m" id="keysBtn" title="快捷键 (?)">⌨</button>
+  <button class="btn icon hide-m" id="keysBtn" title="快捷键 (?)">?</button>
   <button class="btn icon" id="themeBtn" title="主题：跟随系统">◐</button>
   <a class="btn icon hide-m" id="dashLink" target="_blank" title="hub 面板（旧版）">↗</a>
 </header>
@@ -439,7 +439,7 @@ function msgHtml(m){
       else if(b.type==='thinking'&&(b.thinking||'').trim())h+='<details class="think"'+(m===msgs[cur]&&streaming?' open':'')+'><summary>思考</summary><div class="body">'+esc(b.thinking)+'</div></details>';
       else if(b.type==='toolCall')h+=toolHtml(b);
     }
-    if(m.stopReason==='error'&&m.errorMessage)h+='<div class="errline">⚠ '+esc(m.errorMessage)+'</div>';
+    if(m.stopReason==='error'&&m.errorMessage)h+='<div class="errline">[ERR] '+esc(m.errorMessage)+'</div>';
     if(m.stopReason==='aborted')h+='<div class="note">— 已中止 —</div>';
     return h?'<div class="asst">'+h+'</div>':'';
   }
@@ -502,7 +502,7 @@ function onAgent(e){
     case 'session_info_changed':S.sessionName=e.name;renderHeader();break;
   }
 }
-function renderQueue(st,fu){const n=(st||[]).length+(fu||[]).length;$('#queue').textContent=n?'⏳ 排队中 '+n+' 条（当前回复结束后处理）':''}
+function renderQueue(st,fu){const n=(st||[]).length+(fu||[]).length;$('#queue').textContent=n?'■ 排队中 '+n+' 条（当前回复结束后处理）':''}
 /* ---------- keyboard: OS-aware labels + send key mode (persisted) ---------- */
 const IS_MAC=/Mac|iPhone|iPad/.test(navigator.platform||navigator.userAgent);
 const MOD=IS_MAC?'⌘':'Ctrl',SHIFT=IS_MAC?'⇧':'Shift',ALT=IS_MAC?'⌥':'Alt';

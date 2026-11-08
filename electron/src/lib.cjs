@@ -44,7 +44,7 @@ function summarize(tasks) {
 
 /** Menu-bar title / Dock badge only ever show what needs you. */
 function trayTitle(s) {
-	return s.need ? `⚡${s.need}` : "⚡";
+	return s.need ? `■${s.need}` : "□";
 }
 function badge(s) {
 	return s.need ? String(s.need) : "";

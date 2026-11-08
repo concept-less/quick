@@ -526,7 +526,7 @@ function renderIndicators() {
 	else app.setBadgeCount?.(s.need);
 	if (!tray) return;
 	const quiet = lib.quietMode(settings);
-	if (IS_MAC) tray.setTitle(hubConnected ? `${lib.trayTitle(s)}${quiet !== "off" ? " ☾" : ""}` : "⚡–", { fontType: "monospacedDigit" });
+	if (IS_MAC) tray.setTitle(hubConnected ? `${lib.trayTitle(s)}${quiet !== "off" ? " ☾" : ""}` : "□–", { fontType: "monospacedDigit" });
 	tray.setToolTip(s.need ? `quick-agent · ${s.need} 件事需要你` : "quick-agent · 没有需要你的事");
 	const item = (t) => ({ label: `${t.title.slice(0, 42)}  · ${lib.STATUS_LABEL[t.status] || t.status}`, click: () => openTask(t.id) });
 	const need = lib.byBucket(list, "need", 8).map(item);

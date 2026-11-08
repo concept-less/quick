@@ -18,7 +18,7 @@ const cfg = loadConfig();
 const hub = new HubClient(cfg);
 let [cmd = "help", ...rest] = process.argv.slice(2);
 
-const ICON: Record<string, string> = { starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏", handoff: "⇄" };
+const ICON: Record<string, string> = { starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✕", cancelled: "⊘", exited: "○", handoff: "⇄" };
 
 function die(msg: string): never {
 	console.error(`quick: ${msg}`);
@@ -132,7 +132,7 @@ const KIND_LABEL: Record<string, string> = { git: "git 安装", "npm-pi": "pi np
 function printUpgrade(r: UpgradeResult, verbose: boolean) {
 	const name = (r.machine ?? cfg.machine.id).padEnd(16);
 	let state: string;
-	if (!r.ok) state = `✗ ${r.error}`;
+	if (!r.ok) state = `✕ ${r.error}`;
 	else if (r.installed) state = `✓ 已升级 ${r.from} → ${r.to}`;
 	else if (r.available) state = r.blocker ? `! 有更新，但无法自动安装：${r.blocker}` : `↑ 有更新（quick upgrade 安装）`;
 	else state = "✓ 已是最新";

@@ -61,12 +61,12 @@ herdr 的口号是 "the runtime your coding agents live on"：一个 Rust 写的
 
 | 共同原则 | quick-agent 现状 |
 |---|---|
-| 任务是一等公民，上下文挂在任务上 | ✅ hub 里的 `Task`（brief、summary、events、session），`quick show` / Web UI 任务详情 |
-| agent 主动汇报，阻塞时主动说 | ✅ worker 的 `qa_report(done/needs_input/blocked/progress)` |
-| 人是验收者和决策者 | ✅ 汇报回到派单的前台；`unread` 标记 |
-| 只有"需要你"才打扰 | ⚠️ 原先任何状态变化都会出现在聊天流和面板里 → **本次改成三桶 + 克制通知** |
-| 关掉窗口工作不停 | ✅ worker 在 tmux 里；本次客户端关窗口只是隐藏，退出也不停 hub 和 worker |
-| 多机器一个视图 | ✅ mesh |
+| 任务是一等公民，上下文挂在任务上 | [OK] hub 里的 `Task`（brief、summary、events、session），`quick show` / Web UI 任务详情 |
+| agent 主动汇报，阻塞时主动说 | [OK] worker 的 `qa_report(done/needs_input/blocked/progress)` |
+| 人是验收者和决策者 | [OK] 汇报回到派单的前台；`unread` 标记 |
+| 只有"需要你"才打扰 | [!] 原先任何状态变化都会出现在聊天流和面板里 → **本次改成三桶 + 克制通知** |
+| 关掉窗口工作不停 | [OK] worker 在 tmux 里；本次客户端关窗口只是隐藏，退出也不停 hub 和 worker |
+| 多机器一个视图 | [OK] mesh |
 
 ---
 
@@ -75,7 +75,7 @@ herdr 的口号是 "the runtime your coding agents live on"：一个 Rust 写的
 与 [`docs/attention.md`](attention.md) 的 P1–P11 一一对应，这里只列客户端相关的部分：
 
 1. **只有"需要你"能打断**（attention.md P5；herdr 的 blocked、multica 的收件箱）。系统通知只为 `needs_input` / `blocked` / `failed` / `exited` / `idle` 立即弹出；进度汇报、活动变化永远不弹。
-2. **数字只回答"有几件事在等我"**（P11）。托盘标题 `⚡2`、Dock 角标 `2` 只数"需要你"，不显示任务总数、运行数或未读总数；没有需要你的事时只显示 `⚡`。
+2. **数字只回答"有几件事在等我"**（P11）。托盘标题 `■2`、Dock 角标 `2` 只数"需要你"，不显示任务总数、运行数或未读总数；没有需要你的事时只显示 `□`。
 3. **待扫合批**（P6；Fitz 等关于批量通知的研究）。完成的汇报攒成一条汇总通知（"3 件事已完成待扫：A、B、C"），默认 30 分钟一次，可调为 5/10/30/60 分钟；在汇总发出前已经被扫过的会自动剔除。
 4. **专注模式**（P6；Newport 的深度工作）。开启后不弹任何通知（"需要你"的数量仍在托盘上安静地更新），结束时只发一条汇总："专注结束 · N 件事需要你"，再补发待扫汇总。可以选 30 分钟、1 小时、2 小时或手动关闭；托盘标题带 `☾` 表示专注中。系统自带的"专注模式/勿扰"也照常生效。
 5. **用户在看的就不提醒**（herdr 的"当前 tab 不弹"、multica 的 `NotificationGate`）。窗口在前台时不弹系统通知，界面本身已经展示；同一事件（任务 + 状态 + 更新时间）只通知一次，断线重连后不会重复。

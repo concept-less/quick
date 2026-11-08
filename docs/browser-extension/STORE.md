@@ -8,13 +8,13 @@
 
 | 审核关注点 | 现状 |
 |---|---|
-| 单一用途（Single purpose） | 唯一用途：把网页评论发到用户自己的 quick-agent hub。✅ |
-| 权限最小化 | 必需权限只有 `activeTab`、`scripting`、`storage` + `http://127.0.0.1/*`、`http://localhost/*`。不再常驻注入所有网页，不要 `<all_urls>`、不要 `tabs`。"所有网站"改为 `optional_host_permissions`，默认关闭、用户在弹窗主动开启。✅ |
-| 远程代码 | 无 `eval` / `new Function` / 远程脚本，全部代码打包在 zip 内。打包脚本会自动检查。✅ |
-| 连接 localhost | 允许。需在描述与隐私政策中说明数据只发往用户本机 / 用户配置的 hub。✅（见下文与 PRIVACY.md） |
-| 用户数据（截图、URL、页面内容） | 属于"网站内容 / 网页浏览活动"，需在 Privacy practices 中如实勾选并提供隐私政策 URL。✅ |
-| 可测试性 | 审核员没有 hub 时插件只能显示"连不上 hub"。**建议**在"测试说明（Test instructions）"中写清安装 hub 的方法（见 §4），否则可能因"功能无法使用"被拒。⚠️ |
-| 隐私政策需公网可访问 | `docs/browser-extension/PRIVACY.md` 需要放在公开 URL（GitHub 仓库必须是 public，或用 GitHub Pages / Gist）。⚠️ 人类确认 |
+| 单一用途（Single purpose） | 唯一用途：把网页评论发到用户自己的 quick-agent hub。[OK] |
+| 权限最小化 | 必需权限只有 `activeTab`、`scripting`、`storage` + `http://127.0.0.1/*`、`http://localhost/*`。不再常驻注入所有网页，不要 `<all_urls>`、不要 `tabs`。"所有网站"改为 `optional_host_permissions`，默认关闭、用户在弹窗主动开启。[OK] |
+| 远程代码 | 无 `eval` / `new Function` / 远程脚本，全部代码打包在 zip 内。打包脚本会自动检查。[OK] |
+| 连接 localhost | 允许。需在描述与隐私政策中说明数据只发往用户本机 / 用户配置的 hub。[OK]（见下文与 PRIVACY.md） |
+| 用户数据（截图、URL、页面内容） | 属于"网站内容 / 网页浏览活动"，需在 Privacy practices 中如实勾选并提供隐私政策 URL。[OK] |
+| 可测试性 | 审核员没有 hub 时插件只能显示"连不上 hub"。**建议**在"测试说明（Test instructions）"中写清安装 hub 的方法（见 §4），否则可能因"功能无法使用"被拒。[!] |
+| 隐私政策需公网可访问 | `docs/browser-extension/PRIVACY.md` 需要放在公开 URL（GitHub 仓库必须是 public，或用 GitHub Pages / Gist）。[!] 人类确认 |
 
 **Edge Add-ons**：同一个 Chrome zip 可直接提交，注册免费（Partner Center），审核通常 ≤7 个工作日。快捷键 Ctrl+Shift+E 在 Edge 中若与内置快捷键冲突，用户可在 `edge://extensions/shortcuts` 修改。容易，推荐一起上。
 
@@ -116,10 +116,10 @@ Without a hub the popup shows a "cannot reach hub" message; that is expected.
 | 素材 | 尺寸 | 是否必需 | 状态 |
 |---|---|---|---|
 | 商店图标 | 128×128 PNG（建议图形 96×96 + 四周 16px 透明边距） | 必需 | `browser/icon128.png` 可用；当前为满幅圆角方块，审核可接受，有时间可按 96+16 规范重画 |
-| 截图 | 1280×800 或 640×400，PNG/JPEG，1–5 张 | 至少 1 张 | ⚠️ 需人工截取。建议：①元素高亮 + 工具条；②评论框；③页面上的状态角标 + 汇报气泡；④弹窗（已连接状态，拼到 1280×800 画布上）；⑤hub 面板里收到的评论 |
-| 小宣传图（Small promo tile） | 440×280 PNG/JPEG | 必需 | ⚠️ 需制作 |
+| 截图 | 1280×800 或 640×400，PNG/JPEG，1–5 张 | 至少 1 张 | [!] 需人工截取。建议：①元素高亮 + 工具条；②评论框；③页面上的状态角标 + 汇报气泡；④弹窗（已连接状态，拼到 1280×800 画布上）；⑤hub 面板里收到的评论 |
+| 小宣传图（Small promo tile） | 440×280 PNG/JPEG | 必需 | [!] 需制作 |
 | 大宣传图（Marquee） | 1400×560 | 可选 | — |
-| Edge：Logo | 300×300（推荐）/ 截图 1280×800、宣传图 440×280 等同 Chrome | Logo 必需 | ⚠️ 用 icon 放大重绘 |
+| Edge：Logo | 300×300（推荐）/ 截图 1280×800、宣传图 440×280 等同 Chrome | Logo 必需 | [!] 用 icon 放大重绘 |
 | Firefox | 图标从包内读取；截图可选 | — | — |
 
 截图注意：不要出现真实 token、私有代码或他人信息；截图里的界面语言与商店语言一致。

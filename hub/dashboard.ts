@@ -25,7 +25,7 @@ code{font-family:ui-monospace,monospace;background:var(--card);padding:1px 4px;b
 h3{margin:18px 0 6px;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
 #tokenbox{padding:40px;max-width:520px}input{width:100%;padding:8px;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px}
 </style></head><body>
-<header><h1>⚡ quick-agent</h1><span id="conn">connecting…</span><span id="machines" class="sub"></span><span style="flex:1"></span><span id="counts" class="sub"></span>${uiPort ? `<a href="http://127.0.0.1:${uiPort}/" target="_blank" style="color:var(--acc);font-size:12px" title="quick ui 启动">Web UI ↗</a>` : ""}<a href="/extension.zip" style="color:var(--acc);font-size:12px">下载浏览器插件</a></header>
+<header><h1>■ quick-agent</h1><span id="conn">connecting…</span><span id="machines" class="sub"></span><span style="flex:1"></span><span id="counts" class="sub"></span>${uiPort ? `<a href="http://127.0.0.1:${uiPort}/" target="_blank" style="color:var(--acc);font-size:12px" title="quick ui 启动">Web UI ↗</a>` : ""}<a href="/extension.zip" style="color:var(--acc);font-size:12px">下载浏览器插件</a></header>
 <main id="app"><div id="list"></div><div id="detail"><p class="sub">选择左侧任务查看详情</p></div></main>
 <script>
 const qs=new URLSearchParams(location.search);

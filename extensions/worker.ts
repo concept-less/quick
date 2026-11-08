@@ -79,7 +79,7 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 		abort?.abort();
 		abort = new AbortController();
 		void report({ sessionFile: ctx.sessionManager.getSessionFile(), kind: "session", activity: "worker 已连接" });
-		if (ctx.hasUI) ctx.ui.setStatus("qa", `⚡ quick-agent ${taskId}`);
+		if (ctx.hasUI) ctx.ui.setStatus("qa", `■ quick-agent ${taskId}`);
 		hub.subscribe(
 			(e) => {
 				const c = current;

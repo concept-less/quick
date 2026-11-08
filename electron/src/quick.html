@@ -45,8 +45,8 @@ async function submit(open){
   const text=t.value.trim();if(!text||busy)return;busy=true;msg.className='';msg.textContent='交出中…';
   try{const r=await window.quickInput.submit(text,mode,open);
     if(r&&r.ok){msg.className='ok';msg.textContent='✓ '+r.message+'，可以忘掉它了';t.value='';setTimeout(()=>{window.quickInput.hide();msg.className='';msg.innerHTML=HINT},800)}
-    else{msg.className='err';msg.textContent='✗ '+((r&&r.message)||'没交出去')}}
-  catch(e){msg.className='err';msg.textContent='✗ '+e.message}
+    else{msg.className='err';msg.textContent='✕ '+((r&&r.message)||'没交出去')}}
+  catch(e){msg.className='err';msg.textContent='✕ '+e.message}
   busy=false}
 t.addEventListener('keydown',e=>{
   if(e.key==='Escape'){e.preventDefault();window.quickInput.hide()}

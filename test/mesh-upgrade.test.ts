@@ -151,7 +151,7 @@ test("quick upgrade --all installs everywhere, summarises, and idle hubs restart
 	assert.match(r.out, /^a\s.*✓ 已升级 0\.3\.0 → 0\.4\.0/m);
 	assert.match(r.out, /^b\s.*✓ 已升级 0\.3\.0 → 0\.4\.0/m);
 	assert.match(r.out, /^c\s.*✓ 已升级 0\.3\.0 → 0\.4\.0/m);
-	assert.match(r.out, /^old\s.*✗ 对方 hub 版本过旧/m);
+	assert.match(r.out, /^old\s.*✕ 对方 hub 版本过旧/m);
 	assert.match(r.out, /4 台机器：3 台已升级，1 台失败/);
 	for (const id of ["a", "b", "c"]) assert.equal(JSON.parse(readFileSync(join(machines[id]!.root, "package.json"), "utf8")).version, "0.4.0");
 

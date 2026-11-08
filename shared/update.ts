@@ -491,5 +491,5 @@ export function dueForCheck(s: UpdateConfig = loadConfig().update): boolean {
 }
 
 export function describeSources(tried: CheckResult["tried"]): string {
-	return tried.map((t) => (t.ok ? `${t.source} ✓ ${t.version}` : `${t.source} ✗ ${t.error}`)).join(" · ");
+	return tried.map((t) => (t.ok ? `${t.source} ✓ ${t.version}` : `${t.source} ✕ ${t.error}`)).join(" · ");
 }
