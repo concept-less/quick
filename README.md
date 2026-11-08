@@ -155,7 +155,7 @@ npm run dist                                   # 打包 .app / .dmg（ad-hoc 签
 
 quick-agent 自带原生的多机互联，不依赖 codexhost。每台机器跑一个 hub，hub 之间组成网状网络：
 
-- **随处派单**：前台的 `qa_dispatch` 可以带上 `machine`，任务和 worker 就跑在那台机器上。附件（截图等）会随请求一起传过去，简报里的路径也会自动改写。
+- **随处派单**：前台的 `qa_dispatch` 可以带上 `machine`，任务和 worker 就跑在那台机器上；不带时按资源和优先级自动选机器（见下文「机器资源与调度」）。附件（截图等）会随请求一起传过去，简报里的路径也会自动改写。
 - **全局视图**：每个 hub 都能看到全网的任务。`quick ls`、面板、前台的任务组件都会标出 `@机器`。
 - **统一控制**：追加指令、中止、关闭、已读、实时终端（`/peek`、面板）都会自动路由到任务所在的机器。
 - **远程只读浏览**：前台用 `qa_remote_fs`（ls/read/grep）在派单前查看别的机器上的代码。
@@ -175,8 +175,44 @@ quick mesh invite                        # 在 A 上运行，打印加入命令
 quick mesh join <code> --ssh simon@A     # 在 B 上运行（B 能 ssh 到 A）
 quick mesh join <code> --url http://A:7788   # 或者 A 的端口可以直接访问
 
-quick machines                           # 查看机器、路由、链路状态
+quick machines                           # 查看机器、资源、优先级、路由、链路状态
 ```
+
+### 机器资源与调度
+
+每台机器在**自己的** `~/.quick-agent/config.json` 里声明资源标签和优先级，hub 会把它们随 mesh 公布出去：
+
+```jsonc
+"machine": {
+  "id": "mac-laptop",
+  "description": "人类本人的 Mac",
+  "resources": ["browser:chrome-gui", "codex", "-docker"],  // 与自动探测结果合并："x" 添加，"-x" 去掉探测到的 x，"-*" 清空探测结果
+  "resourceNotes": "可以操作人类的 Chrome；本地文件在 /Users/tianyu",
+  "priority": 50                                              // 越小越优先；不写为 100
+}
+```
+
+- **自动探测**（`shared/schedule.ts` 的 `detectResources`）：系统（`linux` / `macos` / `windows`）、`gui`（macOS/Windows，或有 `DISPLAY`/`WAYLAND_DISPLAY`）、`browser:chrome-gui` / `browser:chrome-headless` / `browser:safari-gui`、已安装的 `codex`、`claude`、`docker`、`gh`，以及 `gpu`（`nvidia-smi -L` 能运行）。还没升级的旧 hub 不公布资源，按它的平台推断（`darwin` → `macos, gui`）。
+- **匹配**：需要 `browser` 时，`browser:chrome-gui` 也算满足；需要 `browser:chrome`，`browser:chrome-gui` 同样满足（按 `:` / `-` 前缀匹配）。
+- **选机器**（`POST /api/tasks`、`qa_dispatch`、`quick new`）：
+  1. 传了 `machine`：只用这台；离线或缺资源时直接报错，并列出它有哪些资源。
+  2. 没传 `machine`、没传 `cwd`，但页面 URL 命中某台机器的 `projects`：用那台机器（满足 `requires` 的前提下）。
+  3. 其他情况：在满足全部 `requires` 的在线机器里，按 优先级 → 本机 → 运行中任务更少 → id 排序选第一台。
+  4. 传了 `cwd` 但没传 `machine`：按上面的顺序找第一台**存在这个路径**的机器（远程机器用 `fs.ls` 探测）。路径不会被搬到别的机器上用；没传 `cwd` 时用选中机器自己的 `projects` / `defaultCwd`。
+  5. 没有机器满足时返回 400，说明缺什么、哪些离线机器本来满足。
+- 前台系统提示和 `qa_machines` 会列出每台机器的资源、优先级和「默认首选」，并要求：需要人类本机的 GUI、浏览器或本地文件时必须派到那台机器；拿不准先问人类。
+
+```bash
+quick machine                                  # 本机：生效的资源、优先级、配置值和探测值
+quick machine show mac-laptop                  # 其他机器
+quick machine set --priority 10                # 设置本机优先级（none 清除）
+quick machine set --add gpu --remove docker --notes "A100 x1"
+quick machine set --machine mac-laptop --priority 50 --add browser:chrome-gui   # 经 mesh 改另一台（写入它自己的 config.json）
+quick machine detect                           # 只看自动探测结果
+quick new --requires browser:chrome-gui "标题" "简报"   # 按资源派单
+```
+
+`quick machine set` 通过 hub 修改并立即重新公布，不需要重启 hub；hub 没运行时直接写本机配置文件。
 
 ### 原理（`hub/mesh.ts`）
 
@@ -242,7 +278,7 @@ quick machines                           # 查看机器、路由、链路状态
   "token": "…自动生成…",
   "model": "tokenjoy/claude-opus-5-5",   // 前台和 worker 共用；也可以用 frontModel / workerModel 分开设置
   "tmuxSession": "qa",
-  "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work" },
+  "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work", "priority": 10, "resources": ["claude"], "resourceNotes": "无 GUI，网络稳定" },   // 见「机器资源与调度」
   "mesh": { "secret": "…quick mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
   "update": { "enabled": true, "autoInstall": true, "intervalHours": 6 },   // 见「升级」
   "defaultCwd": "/home/simon",
@@ -267,7 +303,8 @@ ui/server.ts                 Web UI：用 pi SDK 托管前台会话 + 代理 hub
 ui/app.html                  Web UI 前端（对话、任务面板、浏览器评论）
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
 shared/update.ts             自动升级：版本来源、安装方式识别、安装、节流与锁
-test/                        npm test（升级逻辑 + 多机升级模拟）
+shared/schedule.ts           机器资源探测与派单选机器（资源 + 优先级）
+test/                        npm test（升级逻辑、多机升级模拟、调度选择、两机派单）
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
 extensions/front.ts          前台角色
 extensions/worker.ts         worker 角色
@@ -283,12 +320,13 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
-| POST | `/api/tasks` | `{title, brief, cwd, machine?, attachments?, source?}` 在指定机器上创建任务并拉起 worker |
+| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, attachments?, source?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器 |
 | POST | `/api/tasks/:id/message` | `{text}` 追加指令（必要时恢复会话） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 标记已读 |
 | POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动 |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
-| GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本） |
+| GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本、resources、priority） |
+| POST | `/api/machine` | `{machine?, priority?, resources?, addResources?, removeResources?, resourceNotes?, description?}` 修改某台机器的资源/优先级（null 清除），即时生效 |
 | POST | `/api/upgrade` | `{all?, machines?, check?}` 升级或检查指定机器，返回每台的结果 |
 | POST | `/api/fs` | `{machine, op: ls/read/grep, path, pattern?}` 远程只读文件访问 |
 | GET/POST | `/mesh/link`、`/mesh/send` | hub 之间的链路（mesh secret） |

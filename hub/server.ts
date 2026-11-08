@@ -8,7 +8,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { hostname, platform } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { loadConfig, matchProject, paths, REPO_ROOT } from "../shared/config.ts";
+import { loadConfig, matchProject, paths, REPO_ROOT, saveConfigPatch } from "../shared/config.ts";
+import { applyResourceEdits, detectResources, mergeResources, normalizeRequires, pickMachineForCwd, ScheduleError } from "../shared/schedule.ts";
 import {
 	ACTIVE_STATUSES,
 	ATTENTION_STATUSES,
@@ -127,10 +128,16 @@ function workerConnected(taskId: string) {
 
 // ---------------------------------------------------------------- mesh
 
+/** Auto-detected resource tags (refreshed when the machine config is reloaded). */
+let detected = detectResources();
+
 function machineInfo(): MachineInfo {
 	return {
 		id: SELF,
 		description: cfg.machine.description,
+		resources: mergeResources(detected, cfg.machine.resources),
+		resourceNotes: cfg.machine.resourceNotes,
+		priority: cfg.machine.priority,
 		defaultCwd: cfg.defaultCwd,
 		projects: cfg.projects.filter((p) => !p.machine || p.machine === SELF),
 		hostname: hostname(),
@@ -406,8 +413,36 @@ function resolvePath(p: unknown): string {
 	return resolve(s.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
 }
 
+/** Persist resources/priority/description of this machine and re-announce it in the mesh (no restart needed). */
+function configureMachine(p: any, from: string): MachineInfo {
+	saveConfigPatch((raw) => {
+		raw.machine = { ...(raw.machine ?? {}), id: raw.machine?.id ?? SELF };
+		if (Array.isArray(p.resources)) raw.machine.resources = p.resources.map(String).map((x: string) => x.trim()).filter(Boolean);
+		if (p.resources === null) delete raw.machine.resources;
+		raw.machine.resources = applyResourceEdits(raw.machine.resources, p.addResources, p.removeResources);
+		if (!raw.machine.resources) delete raw.machine.resources;
+		if (typeof p.resourceNotes === "string") raw.machine.resourceNotes = p.resourceNotes;
+		if (p.resourceNotes === null) delete raw.machine.resourceNotes;
+		if (typeof p.description === "string") raw.machine.description = p.description;
+		if (p.priority === null) delete raw.machine.priority;
+		else if (p.priority !== undefined) {
+			const n = Number(p.priority);
+			if (!Number.isFinite(n)) throw new HttpError(400, `invalid priority: ${p.priority}`);
+			raw.machine.priority = n;
+		}
+	});
+	const fresh = loadConfig().machine;
+	cfg.machine = { ...fresh, id: SELF };
+	detected = detectResources();
+	log(`[machine] config updated by ${from}: priority ${cfg.machine.priority ?? "-"}, resources ${machineInfo().resources?.join(",")}`);
+	mesh.advertise(true);
+	broadcast({ type: "machines", machines: mesh.machines() });
+	return machineInfo();
+}
+
 const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	"machine.info": async () => machineInfo(),
+	"machine.configure": async (p, from) => configureMachine(p, from),
 
 	// Upgrade this machine (`quick upgrade --all` / `--machine`). The hub restarts itself afterwards when idle.
 	"update.run": async (p, from) => {
@@ -527,13 +562,44 @@ function allIntakes() {
 	return [...intakes.values(), ...mirrorIntakes.values()];
 }
 
-async function apiCreateTask(body: any): Promise<Task> {
+/** Choose the machine for a dispatch: explicit machine, URL project pin, or resources + priority (see shared/schedule.ts). */
+async function chooseMachine(body: any): Promise<string> {
 	let machine = String(body.machine ?? "").trim();
-	if (!machine && !body.cwd) machine = matchProject(cfg, body.source?.url)?.machine ?? "";
-	machine ||= SELF;
+	const requires = normalizeRequires(body.requires);
+	const cwd = String(body.cwd ?? "").trim();
+	const url = body.source?.url;
+	if (!machine && !cwd && url) {
+		const p = matchProject(cfg, url);
+		if (p) machine = p.machine ?? SELF;
+		else machine = mesh.machines().find((m) => !m.self && m.online && m.projects?.some((r) => matchProject({ projects: [r] } as any, url)))?.id ?? "";
+		// A pin that cannot satisfy the requirements falls back to scheduling.
+		if (machine && requires.length) {
+			try {
+				await pickMachineForCwd(mesh.machines(), { machine, requires }, async () => true);
+			} catch {
+				machine = "";
+			}
+		}
+	}
+	try {
+		const m = await pickMachineForCwd(mesh.machines(), { machine: machine || undefined, requires, cwd: cwd || undefined }, async (m, dir) => {
+			if (m.self) return existsSync(resolvePath(dir));
+			await call(m.id, "fs.ls", { path: dir });
+			return true;
+		});
+		return m.id;
+	} catch (e) {
+		if (e instanceof ScheduleError) throw new HttpError(400, `${e.message} (see /api/machines)`);
+		throw e;
+	}
+}
+
+async function apiCreateTask(body: any): Promise<Task> {
+	const machine = await chooseMachine(body);
 	if (!mesh.reachable(machine)) throw new HttpError(400, `machine ${machine} is not reachable (see /api/machines)`);
 	const params = { ...body };
 	delete params.machine;
+	delete params.requires;
 	if (machine !== SELF && Array.isArray(body.attachments) && body.attachments.length) params.files = readFiles(body.attachments.map(String));
 	const task = await call<Task>(machine, "task.create", params);
 	if (task.machine !== SELF) mirrorTasks.set(task.id, task);
@@ -771,6 +837,15 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 	if (p === "/api/upgrade" && m === "POST") return send(res, 200, { results: await apiUpgrade(await readJson(req)) });
 	if (p === "/api/machines" && m === "GET") return send(res, 200, { self: SELF, machines: mesh.machines(), links: mesh.linkStatus() });
+	if (p === "/api/machine" && m === "POST") {
+		// Configure resources/priority of this or another machine (`quick machine set`).
+		const body = await readJson(req);
+		const target = String(body.machine || SELF);
+		if (!mesh.reachable(target)) throw new HttpError(400, `machine ${target} is not reachable (see /api/machines)`);
+		const params = { ...body };
+		delete params.machine;
+		return send(res, 200, { machine: await call(target, "machine.configure", params) });
+	}
 	if (p === "/api/fs" && m === "POST") {
 		const body = await readJson(req);
 		const op = String(body.op ?? "");

@@ -198,7 +198,8 @@ export class Mesh {
 		}
 		for (const [id, r] of this.table) if (!next.has(id)) this.offline.set(id, r.info);
 		for (const id of next.keys()) this.offline.delete(id);
-		const changed = JSON.stringify([...this.table].map(([k, v]) => [k, v.hops, v.via])) !== JSON.stringify([...next].map(([k, v]) => [k, v.hops, v.via]));
+		const sig = (t: typeof next) => JSON.stringify([...t].map(([k, v]) => [k, v.hops, v.via, infoSig(v.info)]));
+		const changed = sig(this.table) !== sig(next);
 		this.table = next;
 		this.advertise(false);
 		if (changed) this.o.onTopologyChange();
@@ -209,7 +210,7 @@ export class Mesh {
 		const self = { id: this.o.selfId, hops: 0, info: this.o.info() };
 		for (const link of this.links.values()) {
 			const list = [self, ...[...this.table].filter(([, r]) => r.via !== link.peer).map(([id, r]) => ({ id, hops: r.hops, info: r.info }))];
-			const key = JSON.stringify(list.map((r) => [r.id, r.hops]));
+			const key = JSON.stringify(list.map((r) => [r.id, r.hops, infoSig(r.info)]));
 			if (!force && key === link.lastRoutesSent) continue;
 			link.lastRoutesSent = key;
 			link.send({ t: "routes", list });
@@ -515,4 +516,9 @@ function freePort(): Promise<number> {
 
 function sleep(ms: number) {
 	return new Promise((r) => setTimeout(r, ms));
+}
+
+/** The parts of MachineInfo whose change must be propagated through the mesh (not counters like activeTasks). */
+function infoSig(i: MachineInfo | undefined): string {
+	return JSON.stringify([i?.description, i?.resources, i?.resourceNotes, i?.priority, i?.defaultCwd, i?.version]);
 }

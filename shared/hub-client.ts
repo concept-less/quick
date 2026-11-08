@@ -1,7 +1,7 @@
 // Minimal HTTP + SSE client for the quick-agent hub (uses global fetch).
 import { hubUrl, loadConfig, type QaConfig } from "./config.ts";
 import type { UpgradeResult } from "./update.ts";
-import type { HubEvent, Intake, MachineView, Task, TaskEvent } from "./types.ts";
+import type { HubEvent, Intake, MachineInfo, MachineView, Task, TaskEvent } from "./types.ts";
 
 export class HubError extends Error {
 	status?: number;
@@ -63,10 +63,16 @@ export class HubClient {
 		source?: Task["source"];
 		model?: string;
 		owner?: string;
-		/** Machine to run the worker on (default: this hub's machine). */
+		/** Machine to run the worker on (default: best-priority online machine that has `requires`). */
 		machine?: string;
+		/** Resource tags the worker needs (see shared/schedule.ts). */
+		requires?: string[];
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
+	}
+	/** Set resources/priority/notes of a machine (default this hub's machine); null clears a field. */
+	configureMachine(input: { machine?: string; resources?: string[] | null; resourceNotes?: string | null; priority?: number | null; description?: string }) {
+		return this.request<{ machine: MachineInfo }>("POST", "/api/machine", input).then((r) => r.machine);
 	}
 	sendMessage(id: string, text: string) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/message`, { text }).then((r) => r.task);

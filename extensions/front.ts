@@ -12,6 +12,7 @@ import { HubClient } from "../shared/hub-client.ts";
 import { openAttach, planAttach, runForeground, type AttachResult } from "../shared/attach.ts";
 import { ensureHub } from "../shared/hub-process.ts";
 import { autoUpdate, compareVersions, readState, readVersion } from "../shared/update.ts";
+import { priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
 
 const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_machines", "qa_remote_fs"];
@@ -33,13 +34,19 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
 8. 纯闲聊或一句话能回答的问题直接回答，不用派单。
 9. 收到 [浏览器评论] 时，它来自人类在网页上框选元素后写的评论：判断它属于哪个项目/工作目录（参考下方项目映射；不确定就问人类），必要时快速确认相关源码位置，然后派单；如果它明显是某个已有任务的追加，就用 qa_task_send。
 10. 你没有 bash/edit/write，这是刻意的：所有实际工作都交给 worker。
-11. 多机：worker 可以跑在 mesh 里的任何在线机器上（qa_dispatch 的 machine 参数，默认是本机）。代码/环境在哪台机器就派到哪台；人类点名机器时照做。需要了解远程机器上的目录或文件时用 qa_remote_fs（ls/read/grep，只读），本地文件仍用 read/grep/ls。cwd 必须是目标机器上的路径。
+11. 多机：worker 可以跑在 mesh 里的任何在线机器上。需要了解远程机器上的目录或文件时用 qa_remote_fs（ls/read/grep，只读），本地文件仍用 read/grep/ls。
+12. 选机器（每台机器的资源标签和优先级见下方列表，优先级数字越小越优先）：
+   - 先判断任务需要哪些资源，把它们写进 qa_dispatch 的 requires（如 ["browser:chrome-gui"]、["macos"]、["codex"]、["gpu"]）；hub 会在满足全部资源的在线机器里选优先级最高的。没有特殊需要就不传 machine 也不传 requires，hub 自动选首选机器。
+   - 任务需要人类本机的图形界面、浏览器（例如让 codex 操作人类 Mac 上的 Chrome）或人类电脑上的本地文件/应用时，必须派到那台机器（requires 写上对应资源，或直接传 machine）。
+   - 人类点名机器时照做（传 machine）。代码/环境只在某台机器上时派到那台。
+   - cwd 必须是选中机器上的路径，不能把一台机器的路径用到另一台。拿不准就不传 cwd：hub 会用选中机器的项目映射或默认目录；需要特定项目时，用该机器 projects/默认目录下的路径（可先用 qa_remote_fs 确认）。只传 cwd 不传 machine 时，hub 会选择该路径存在的、优先级最高的机器。
+   - 资源不满足或机器离线时 qa_dispatch 会报错：不要换到不满足条件的机器硬派；拿不准该用哪台机器、或资源声明不清楚时，先问人类。
 
 本机: ${machines.split("\n")[0]}
 mesh 中的机器（qa_machines 查看最新状态）:
 ${machines}
 
-当前 pi 的工作目录（人类说"这个项目"时默认指它，也是派单的默认 cwd）: ${cwd}
+当前 pi 的工作目录（本机路径；人类说"这个项目"时默认指它，派到本机时可作为 cwd）: ${cwd}
 兜底工作目录: ${defaultCwd}
 浏览器 URL → 工作目录映射（~/.quick-agent/config.json 的 projects）：
 ${projects}`;
@@ -62,11 +69,13 @@ export function setupFront(pi: ExtensionAPI) {
 		} catch {}
 		return machines;
 	};
+	/** "，首选" for the machine an unconstrained dispatch lands on. */
+	const rank = (_list: MachineView[], m: MachineView) => (machines.length && m.online && rankMachines(machines.filter((x) => x.online))[0]?.id === m.id ? "，默认首选" : "");
 	const describeMachines = (list: MachineView[]) =>
 		(list.length ? list : [{ id: cfg.machine.id, self: true, online: true, hops: 0 } as MachineView])
 			.map(
 				(m) =>
-					`- ${m.id}${m.self ? "（本机）" : ""} ${m.online ? "在线" : "离线"}${m.hops > 1 ? `，经 ${m.via} 转发` : ""}${m.description ? `：${m.description}` : ""}${m.defaultCwd ? `；默认目录 ${m.defaultCwd}` : ""}${m.activeTasks ? `；运行中任务 ${m.activeTasks}` : ""}${m.projects?.length ? `；项目 ${m.projects.map((p) => `${p.match}→${p.cwd}`).join(", ")}` : ""}`,
+					`- ${m.id}${m.self ? "（本机）" : ""} ${m.online ? "在线" : "离线"}${m.hops > 1 ? `，经 ${m.via} 转发` : ""}${m.description ? `：${m.description}` : ""}；优先级 ${priorityOf(m)}${rank(list, m)}；资源 ${resourcesOf(m).join(", ") || "（未声明）"}${m.resourceNotes ? `（${m.resourceNotes}）` : ""}${m.platform ? `；系统 ${m.platform}` : ""}${m.defaultCwd ? `；默认目录 ${m.defaultCwd}` : ""}${m.activeTasks ? `；运行中任务 ${m.activeTasks}` : ""}${m.projects?.length ? `；项目 ${m.projects.map((p) => `${p.match}→${p.cwd}`).join(", ")}` : ""}`,
 			)
 			.join("\n");
 	const claimed = new Set<string>();
@@ -205,11 +214,18 @@ export function setupFront(pi: ExtensionAPI) {
 		promptGuidelines: ["Use qa_dispatch for any real work (coding, debugging, research, edits); the qa_dispatch brief must be self-contained."],
 		parameters: Type.Object({
 			title: Type.String({ description: "Short task title (Chinese ok), distinguishes it from other tasks" }),
-			cwd: Type.String({ description: "Absolute working directory for the worker" }),
+			cwd: Type.Optional(
+				Type.String({ description: "Absolute working directory ON THE TARGET MACHINE. Omit to use the chosen machine's project mapping / default directory." }),
+			),
 			brief: Type.String({ description: "Self-contained task brief: goal, context, relevant files, constraints, acceptance criteria" }),
 			attachments: Type.Optional(Type.Array(Type.String(), { description: "Absolute paths of files the worker should look at (e.g. screenshots)" })),
 			intake_id: Type.Optional(Type.String({ description: "Browser comment id when dispatching a [浏览器评论]" })),
-			machine: Type.Optional(Type.String({ description: "Machine id (from qa_machines) to run the worker on; default this machine. cwd must exist there." })),
+			machine: Type.Optional(
+				Type.String({ description: "Machine id (from qa_machines) to run the worker on. Omit to let the hub pick the online machine with the best priority that has all `requires`." }),
+			),
+			requires: Type.Optional(
+				Type.Array(Type.String(), { description: 'Resource tags the worker needs, e.g. ["browser:chrome-gui"], ["macos"], ["codex"], ["gpu"]. "browser" matches any browser:* tag.' }),
+			),
 		}),
 		async execute(_id, p) {
 			const intake = p.intake_id ? await hub.request<{ intake: Intake }>("GET", `/api/intake/${p.intake_id}`).then((r) => r.intake).catch(() => undefined) : undefined;
@@ -220,6 +236,7 @@ export function setupFront(pi: ExtensionAPI) {
 				attachments: p.attachments,
 				owner,
 				machine: p.machine,
+				requires: p.requires,
 				source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
 			});
 			tasks.set(task.id, task);
@@ -309,7 +326,7 @@ export function setupFront(pi: ExtensionAPI) {
 		name: "qa_machines",
 		label: "Machines",
 		defaultActive: false,
-		description: "List machines in the quick-agent mesh (id, online, description, default cwd, projects, active tasks). Workers can be dispatched to any online machine.",
+		description: "List machines in the quick-agent mesh (id, online, priority, resource tags, description, default cwd, projects, active tasks). Workers can be dispatched to any online machine that has the required resources.",
 		parameters: Type.Object({}),
 		async execute() {
 			const list = await loadMachines(0);

@@ -50,11 +50,26 @@ export interface QaConfig {
 	/** Fallback cwd for tasks when nothing else is known. */
 	defaultCwd: string;
 	projects: ProjectRule[];
-	/** Identity of this machine in the mesh. */
-	machine: { id: string; description?: string };
+	/** Identity, resources and scheduling preference of this machine in the mesh. */
+	machine: MachineConfig;
 	mesh: MeshConfig;
 	/** Self-upgrade settings (see shared/update.ts). */
 	update: UpdateConfig;
+}
+
+export interface MachineConfig {
+	id: string;
+	description?: string;
+	/**
+	 * Resource/capability tags merged with auto-detection (shared/schedule.ts detectResources):
+	 * "tag" adds, "-tag" removes a detected tag, "-*" drops all detected tags.
+	 * e.g. ["browser:chrome-gui", "codex", "-docker"].
+	 */
+	resources?: string[];
+	/** Free-text notes about this machine's resources, shown to front agents. */
+	resourceNotes?: string;
+	/** Dispatch preference, lower = preferred (default 100). */
+	priority?: number;
 }
 
 export interface UpdateConfig {
@@ -121,7 +136,7 @@ export function loadConfig(): QaConfig {
 		tmuxSession: raw.tmuxSession ?? "qa",
 		defaultCwd: raw.defaultCwd ?? homedir(),
 		projects: raw.projects ?? [],
-		machine: { id: process.env.QA_MACHINE ?? raw.machine?.id ?? sanitizeId(hostname()), description: raw.machine?.description },
+		machine: machineConfig(raw.machine),
 		mesh: { secret: raw.mesh?.secret, peers: raw.mesh?.peers ?? [] },
 		update: updateConfig(raw.update),
 	};
@@ -131,6 +146,18 @@ export function loadConfig(): QaConfig {
 		writeFileSync(CONFIG_PATH, `${JSON.stringify(raw.update ? { ...persist, update: raw.update } : persist, null, 2)}\n`, { mode: 0o600 });
 	}
 	return cfg;
+}
+
+function machineConfig(raw: Partial<MachineConfig> | undefined): MachineConfig {
+	const env = process.env;
+	const priority = Number(env.QA_MACHINE_PRIORITY ?? raw?.priority);
+	return {
+		id: env.QA_MACHINE ?? raw?.id ?? sanitizeId(hostname()),
+		description: raw?.description,
+		resources: Array.isArray(raw?.resources) ? raw.resources.map(String) : undefined,
+		resourceNotes: typeof raw?.resourceNotes === "string" ? raw.resourceNotes : undefined,
+		priority: Number.isFinite(priority) && (env.QA_MACHINE_PRIORITY ?? raw?.priority) !== undefined ? priority : undefined,
+	};
 }
 
 function packageJson(): any {

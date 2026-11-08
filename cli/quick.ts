@@ -7,7 +7,8 @@ import { hostname, userInfo } from "node:os";
 import { hubUrl, loadConfig, paths, REPO_ROOT, sanitizeId, saveConfigPatch, type PeerConfig } from "../shared/config.ts";
 import { ensureHub, hubAlive as alive } from "../shared/hub-process.ts";
 import { HubClient } from "../shared/hub-client.ts";
-import { ACTIVE_STATUSES, type Task } from "../shared/types.ts";
+import { ACTIVE_STATUSES, type MachineView, type Task } from "../shared/types.ts";
+import { applyResourceEdits, detectResources, mergeResources, normalizeRequires, priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
 import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
 import { openAttach, planAttach, runForeground } from "../shared/attach.ts";
@@ -89,13 +90,18 @@ const HELP = `quick — quick-agent
   quick hub start|stop|restart|status|logs
   quick ls [-a]             列出任务（-a 包含已关闭）
   quick show <id>           查看任务汇报、事件、简报
-  quick new [--machine M] [--cwd DIR] <title> <brief...>   不经前台直接派单
+  quick new [--machine M] [--requires a,b] [--cwd DIR] <title> <brief...>
+                            不经前台直接派单（不指定机器时按资源+优先级自动选机器）
   quick send <id> <message> 给 worker 追加指令（窗口已关会自动恢复会话）
   quick attach <id>         进入 worker 的 tmux 窗口（远程任务经 ssh；C-b d 返回）
   quick cancel <id>         中止 worker 当前运行
   quick close <id>          关闭 worker 窗口
   quick ack <id>            标记已读
-  quick machines            mesh 中的机器与链路状态
+  quick machines            mesh 中的机器、资源、优先级与链路状态
+  quick machine [show] [M]  查看机器的资源标签（探测 + 配置）与优先级
+  quick machine set [--machine M] [--priority N] [--resources a,b] [--add t]... [--remove t]... [--notes 文本] [--desc 描述]
+                            设置资源/优先级（数字越小越优先；--priority none / --resources none 清除），即时生效
+  quick machine detect      只打印本机自动探测到的资源
   quick upgrade [--check] [--all | --machine M ... | M ...] [--json]
                             升级 quick-agent（update 是别名）：默认只升级本机；--all 所有在线机器；--check 只检查不安装
 
@@ -234,6 +240,66 @@ function addPeer(peer: PeerConfig) {
 		raw.mesh.peers = raw.mesh.peers.filter((p: PeerConfig) => key(p) !== key(peer));
 		raw.mesh.peers.push(peer);
 	});
+}
+
+function printMachine(m: MachineView | undefined, extra?: string) {
+	if (!m) return;
+	console.log(`${m.id}${m.self ? "（本机）" : ""}${m.online === false ? " 离线" : ""}${m.description ? ` — ${m.description}` : ""}`);
+	console.log(`  优先级: ${priorityOf(m)}${m.priority === undefined ? "（默认）" : ""}`);
+	console.log(`  资源:   ${resourcesOf(m).join(", ") || "（无）"}`);
+	if (m.resourceNotes) console.log(`  说明:   ${m.resourceNotes}`);
+	if (extra) console.log(extra);
+}
+
+async function machineCmd(args: string[]) {
+	const sub = ["show", "set", "detect"].includes(args[0] ?? "") ? args.shift()! : args[0]?.startsWith("-") ? "set" : "show";
+	if (sub === "detect") return console.log(detectResources().join("\n"));
+	if (sub === "show") {
+		const id = args[0] ?? cfg.machine.id;
+		const local = `  配置:   resources ${JSON.stringify(cfg.machine.resources ?? [])}, priority ${cfg.machine.priority ?? "-"}（${join(paths.home, "config.json")}）\n  探测:   ${detectResources().join(", ")}`;
+		const list = await hub.machines().then((r) => r.machines).catch(() => undefined);
+		const m = list?.find((x) => x.id === id);
+		if (m) return printMachine(m, m.self ? local : undefined);
+		if (id !== cfg.machine.id) die(`unknown machine ${id}`);
+		return printMachine(
+			{ id, self: true, online: true, hops: 0, description: cfg.machine.description, priority: cfg.machine.priority, resourceNotes: cfg.machine.resourceNotes, resources: mergeResources(detectResources(), cfg.machine.resources) },
+			`${local}\n  （hub 未运行）`,
+		);
+	}
+	// set
+	const machine = flag(args, "--machine");
+	const pr = flag(args, "--priority");
+	const res = flag(args, "--resources");
+	const add = flags(args, "--add").flatMap((x) => normalizeRequires(x));
+	const remove = flags(args, "--remove").flatMap((x) => normalizeRequires(x));
+	const notes = flag(args, "--notes");
+	const desc = flag(args, "--desc");
+	if (args.length) die(`unknown arguments: ${args.join(" ")}`);
+	const input: Parameters<typeof hub.configureMachine>[0] & { addResources?: string[]; removeResources?: string[] } = { machine };
+	if (pr !== undefined) input.priority = /^(none|null|default|)$/i.test(pr) ? null : Number(pr);
+	if (typeof input.priority === "number" && !Number.isFinite(input.priority)) die(`invalid --priority ${pr}`);
+	if (res !== undefined) input.resources = /^(none|null|)$/i.test(res) ? null : normalizeRequires(res);
+	if (add.length) input.addResources = add;
+	if (remove.length) input.removeResources = remove;
+	if (notes !== undefined) input.resourceNotes = notes || null;
+	if (desc !== undefined) input.description = desc;
+	if (Object.keys(input).length === 1) die("usage: quick machine set [--machine M] [--priority N] [--resources a,b] [--add t] [--remove t] [--notes 文本] [--desc 描述]");
+	if (await hubAlive()) return printMachine({ ...(await hub.configureMachine(input)), self: !machine || machine === cfg.machine.id, online: true, hops: 0 } as MachineView);
+	if (machine && machine !== cfg.machine.id) die("hub 未运行，无法设置其他机器（quick hub start）");
+	saveConfigPatch((raw) => {
+		raw.machine = { ...(raw.machine ?? {}), id: raw.machine?.id ?? cfg.machine.id };
+		if (input.priority === null) delete raw.machine.priority;
+		else if (input.priority !== undefined) raw.machine.priority = input.priority;
+		if (input.resources === null) delete raw.machine.resources;
+		else if (input.resources) raw.machine.resources = input.resources;
+		raw.machine.resources = applyResourceEdits(raw.machine.resources, add, remove);
+		if (!raw.machine.resources) delete raw.machine.resources;
+		if (input.resourceNotes === null) delete raw.machine.resourceNotes;
+		else if (input.resourceNotes !== undefined) raw.machine.resourceNotes = input.resourceNotes;
+		if (desc !== undefined) raw.machine.description = desc;
+	});
+	const c = loadConfig();
+	printMachine({ id: c.machine.id, self: true, online: true, hops: 0, description: c.machine.description, priority: c.machine.priority, resourceNotes: c.machine.resourceNotes, resources: mergeResources(detectResources(), c.machine.resources) });
 }
 
 async function mesh(args: string[]) {
@@ -400,6 +466,8 @@ async function main() {
 				cwd = args[i + 1] ?? die("--cwd needs a value");
 				args.splice(i, 2);
 			}
+			const requires = normalizeRequires(flags(args, "--requires").join(","));
+			if (requires.length && i < 0) cwd = ""; // resource-based pick: use the chosen machine's default cwd unless --cwd is given
 			let machine: string | undefined;
 			const mi = args.indexOf("--machine");
 			if (mi >= 0) {
@@ -408,8 +476,9 @@ async function main() {
 				if (i < 0) cwd = ""; // remote: use that machine's default cwd unless --cwd is given
 			}
 			const [title, ...brief] = args;
-			if (!title || !brief.length) die("usage: quick new [--machine M] [--cwd DIR] <title> <brief...>");
-			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, source: { kind: "cli" } });
+			if (!title || !brief.length) die("usage: quick new [--machine M] [--requires a,b] [--cwd DIR] <title> <brief...>");
+			// cwd defaults to the current directory: the hub picks the best machine on which it exists.
+			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, source: { kind: "cli" } });
 			return console.log(line(t));
 		}
 		case "send": {
@@ -427,16 +496,22 @@ async function main() {
 			return attach(rest[0] ?? die("usage: quick attach <id>"));
 		case "machines": {
 			const r = await hub.machines();
-			for (const m of r.machines)
+			const first = rankMachines(r.machines.filter((m) => m.online))[0]?.id;
+			for (const m of r.machines) {
 				console.log(
-					`${m.online ? "●" : "○"} ${m.id.padEnd(16)} ${m.self ? "self" : m.hops === -1 ? "offline" : m.hops === 1 ? "direct" : `via ${m.via} (${m.hops} hops)`}  \x1b[2m${m.description ?? ""}${m.activeTasks ? ` · ${m.activeTasks} running` : ""}\x1b[0m`,
+					`${m.online ? "●" : "○"} ${m.id.padEnd(16)} ${(m.self ? "self" : m.hops === -1 ? "offline" : m.hops === 1 ? "direct" : `via ${m.via} (${m.hops} hops)`).padEnd(8)} P${String(priorityOf(m)).padEnd(4)}${m.id === first ? "★ " : "  "}\x1b[2m${m.description ?? ""}${m.activeTasks ? ` · ${m.activeTasks} running` : ""}\x1b[0m`,
 				);
+				console.log(`  \x1b[2m资源: ${resourcesOf(m).join(", ") || "（未声明）"}${m.resources ? "" : "（由系统推断）"}${m.resourceNotes ? ` — ${m.resourceNotes}` : ""}\x1b[0m`);
+			}
+			console.log("\x1b[2mP = 优先级（越小越优先），★ = 不指定机器时的默认派单目标\x1b[0m");
 			if (r.machines.some((m) => m.version)) console.log(`\x1b[2m版本: ${r.machines.map((m) => `${m.id} ${m.version ?? "?"}`).join(" · ")}\x1b[0m`);
 			if (!r.links.enabled) console.log("\n(mesh 未启用：运行 quick mesh init)");
 			for (const d of r.links.dialed) console.log(`  → ${d.label}: ${d.state}${d.peer ? ` (${d.peer})` : ""}${d.error ? ` — ${d.error}` : ""}`);
 			for (const l of r.links.inbound) console.log(`  ← ${l.peer} from ${l.label}`);
 			return;
 		}
+		case "machine":
+			return machineCmd(rest);
 		case "mesh":
 			return mesh(rest);
 		case "upgrade":

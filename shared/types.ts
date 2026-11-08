@@ -106,6 +106,11 @@ export interface MachineInfo {
 	activeTasks?: number;
 	/** quick-agent version of that hub. */
 	version?: string;
+	/** Effective resource tags (detected + configured), e.g. ["macos","gui","browser:chrome-gui","codex"]. */
+	resources?: string[];
+	resourceNotes?: string;
+	/** Dispatch preference, lower = preferred (absent = 100). */
+	priority?: number;
 }
 export interface MachineView extends MachineInfo {
 	self: boolean;
