@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, rmSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -92,6 +92,29 @@ test('driver resumes intact draft without reserving another version', () => {
     const bad=f.prepare(); assert.notEqual(bad.status,0); assert.match(bad.stderr,/draft missing cloud asset/);
   } finally {f.close();}
 });
+test('driver successful cloud build only pushes immutable release tag and creates draft', () => {
+  const f=fixture(); try {
+    mkdirSync(join(f.repo,'electron')); mkdirSync(join(f.repo,'browser'));
+    for(const file of ['electron/package.json','electron/package-lock.json','browser/manifest.json']) writeFileSync(join(f.repo,file),'{"version":"0.4.1"}');
+    writeFileSync(join(f.repo,'CHANGELOG.md'),'# Changelog\n');
+    writeFileSync(join(f.repo,'scripts/pack-extension.sh'),'mkdir -p dist; touch dist/quick-agent-extension-0.4.2-chrome.zip dist/quick-agent-extension-0.4.2-firefox.zip\n');
+    f.git('add','.'); f.git('commit','-m','build fixture'); f.git('tag','v0.4.1'); f.git('push','origin','main','--tags');
+    const source=f.git('rev-parse','HEAD');
+    f.stub('gh', `if [ "$1" = api ]; then echo '[[]]'; else printf '%s\\n' "$@" > '${f.root}/gh-args'; fi`);
+    f.stub('npm','if [ "$1" = test ]; then exit 0; else touch dist/release/quick-agent-0.4.2.tgz; fi');
+    const result=f.prepare(); assert.equal(result.status,0,result.stderr);
+    assert.equal(f.git('rev-parse','origin/main'),source); // no bump push, no self-trigger
+    assert.equal(f.git('rev-parse','v0.4.2^'),source); // annotated tag -> release-only commit's parent
+    const meta=JSON.parse(readFileSync(join(f.repo,'dist/release/release.json'),'utf8'));
+    assert.equal(meta.source,source); assert.equal(meta.version,'0.4.2');
+    assert.match(readFileSync(join(f.root,'gh-args'),'utf8'),/--draft/);
+    assert.match(readFileSync(f.output,'utf8'),/tag=v0.4.2/);
+    execFileSync('sha256sum',['-c','SHA256SUMS'],{cwd:join(f.repo,'dist/release'),stdio:'ignore'});
+    appendFileSync(join(f.repo,'dist/release/quick-agent-0.4.2.tgz'),'tampered');
+    assert.throws(()=>execFileSync('sha256sum',['-c','SHA256SUMS'],{cwd:join(f.repo,'dist/release'),stdio:'ignore'}));
+  } finally {f.close();}
+});
+
 test('finalizer rejects incomplete platform assets without publishing', () => {
   const f=fixture(); try {
     f.stub('gh', 'if [ "$1 $2" = "release view" ]; then echo \'{"isDraft":true,"assets":[],"body":""}\'; else echo "must not publish" >&2; exit 99; fi');

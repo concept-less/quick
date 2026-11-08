@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REPO, trusted, releaseForSource, nextVersion, requiredAssets, verifyAssets } from './release-policy.mjs';
 const env = process.env;
-const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: 'utf8', ...opts }).trim();
+const run = (cmd, args, opts = {}) => (execFileSync(cmd, args, { encoding: 'utf8', ...opts }) ?? '').trim();
 const git = (...args) => run('git', args);
 const gh = (...args) => run('gh', [...args, '-R', REPO]);
 const output = (key,value) => appendFileSync(env.GITHUB_OUTPUT, `${key}=${value}\n`);
@@ -17,8 +17,12 @@ if (mode === 'prepare') {
   // Fetch under the workflow lock: coalesce all queued pushes to the current main tip.
   git('fetch', 'origin', 'main', '--tags');
   git('checkout', '--detach', 'origin/main');
-  const source = git('rev-parse', 'HEAD');
   const releases = JSON.parse(run('gh', ['api', '--paginate', '--slurp', `repos/${REPO}/releases?per_page=100`])).flat();
+  // A retry of the same Action resumes its original source, even if main advanced.
+  const previousRun = releases.find(r => r.body?.includes(`Build: ${runUrl}\n`));
+  const pinnedSource = previousRun?.body?.match(/<!-- quick-source:([a-f0-9]{40}) -->/)?.[1];
+  if (pinnedSource) git('checkout', '--detach', pinnedSource);
+  const source = git('rev-parse', 'HEAD');
   const existing = releaseForSource(releases, source);
   if (existing && !existing.draft) {
     console.log(`Already published ${source}: ${existing.html_url}`);
