@@ -13,6 +13,8 @@ import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpg
 import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
 import { openAttach, planAttach, runForeground } from "../shared/attach.ts";
 import { assignCmd, commentCmd, TEAM_HELP, teamCmd } from "./team.ts";
+import { formatDuration, formatWall } from "../shared/cron.ts";
+import type { CronView } from "../hub/cron.ts";
 
 const cfg = loadConfig();
 const hub = new HubClient(cfg);
@@ -100,6 +102,13 @@ const HELP = `quick — quick-agent
   quick cancel <id>         中止 worker 当前运行
   quick close <id>          关闭 worker 窗口
   quick ack <id>            标记已读
+  quick cron add (--cron "0 9 * * *" | --every 2h | --at "2026-11-09 09:00" | --in 30m) [--tz 时区]
+                [--machine M] [--requires a,b] [--cwd DIR] [--overlap skip|queue|parallel] [--catch-up latest|skip]
+                [--silent] [--paused] <标题> <简报...>
+                            定时计划：到点后 hub 自动派一个 worker 任务（简报里可用 {{date}} {{time}} {{n}}）
+  quick cron ls [-a]        列出定时计划（-a 含已结束的一次性计划）
+  quick cron show <id>      计划详情与最近运行
+  quick cron rm|pause|resume|run <id>   删除 / 暂停 / 恢复 / 立即运行一次
   quick machines            mesh 中的机器、资源、优先级与链路状态
   quick machine [show] [M]  查看机器的资源标签（探测 + 配置）与优先级
   quick machine set [--machine M] [--priority N] [--resources a,b] [--add t]... [--remove t]... [--notes 文本] [--desc 描述] [--owner 成员id|none]
@@ -530,6 +539,8 @@ async function main() {
 			return assignCmd(rest, hub);
 		case "comment":
 			return commentCmd(rest, hub);
+		case "cron":
+			return cronCmd(rest);
 		case "mesh":
 			return mesh(rest);
 		case "upgrade":
@@ -592,6 +603,104 @@ async function handoffCmd(args: string[]) {
 			return;
 		}
 		if (cur.machine === before.machine) die(ev?.text ?? `handoff did not complete (status ${cur.status})`);
+	}
+}
+
+// ---------------------------------------------------------------- cron
+
+function rel(ms: number) {
+	const d = ms - Date.now();
+	// two most significant units are enough: "1d6h", "2h5m", "45s"
+	const short = (x: number) => formatDuration(x > 3600_000 ? Math.round(x / 60_000) * 60_000 : Math.round(x / 1000) * 1000).match(/^\d+[dhms](\d+[dhms])?/)![0];
+	return d >= 0 ? `in ${short(Math.max(1000, d))}` : `${short(-d)} ago`;
+}
+function cronState(j: CronView) {
+	if (j.finished) return "[DONE]";
+	if (!j.enabled) return "[OFF] ";
+	return j.running ? "[RUN] " : "[ON]  ";
+}
+function cronLine(j: CronView) {
+	const where = j.hub !== cfg.machine.id ? `@${j.hub}` : "";
+	const next = j.nextRunAt ? `next ${formatWall(j.nextRunAt, j.tz)} (${rel(j.nextRunAt)})` : j.finished ? "finished" : j.enabled ? "next -" : "paused";
+	const last = j.tasks[0] ? `last ${j.tasks[0].id} ${j.tasks[0].status ?? "?"}` : "";
+	const lastRun = j.runs[j.runs.length - 1];
+	const lastNote = lastRun && lastRun.result !== "dispatched" ? ` [${lastRun.result.toUpperCase()}]` : "";
+	return `${cronState(j)} ${(j.id + where).padEnd(6)} ${j.title}  \x1b[2m${j.describe} · ${next}${last ? ` · ${last}` : ""}${lastNote}\x1b[0m`;
+}
+
+async function cronCmd(args: string[]) {
+	const sub = args.shift() ?? "ls";
+	if (sub === "add" || sub === "new") {
+		const a = [...args];
+		const bool = (n: string) => {
+			const i = a.indexOf(n);
+			if (i >= 0) a.splice(i, 1);
+			return i >= 0;
+		};
+		const input: Parameters<typeof hub.createCron>[0] = { title: "", brief: "", createdBy: "cli" };
+		for (const [f, k] of [["--cron", "cron"], ["--every", "every"], ["--at", "at"], ["--in", "in"], ["--tz", "tz"], ["--machine", "machine"], ["--cwd", "cwd"], ["--hub", "hub"]] as const) {
+			const v = flag(a, f);
+			if (v !== undefined) (input as any)[k] = v;
+		}
+		const req = normalizeRequires(flags(a, "--requires").join(","));
+		if (req.length) input.requires = req;
+		const overlap = flag(a, "--overlap");
+		if (overlap) input.overlap = overlap as any;
+		const cu = flag(a, "--catch-up");
+		if (cu) input.catchUp = cu as any;
+		if (bool("--silent")) input.silent = true;
+		if (bool("--paused")) input.enabled = false;
+		// Like `quick new`: default cwd is the current directory unless a machine/resources are given.
+		if (!input.cwd && !input.machine && !req.length && !input.hub) input.cwd = process.cwd();
+		const unknown = a.find((x) => x.startsWith("--"));
+		if (unknown) die(`unknown option ${unknown}`);
+		const [title, ...brief] = a;
+		if (!title || !brief.length) die('usage: quick cron add (--cron "0 9 * * *" | --every 2h | --at "YYYY-MM-DD HH:MM" | --in 30m) [options] <title> <brief...>');
+		input.title = title;
+		input.brief = brief.join(" ");
+		await hubStart(true);
+		const j = await hub.createCron(input);
+		console.log(cronLine(j));
+		return;
+	}
+	if (sub === "ls" || sub === "list") {
+		const r = await hub.listCron();
+		const list = r.jobs.filter((j) => args.includes("-a") || !j.finished);
+		if (!list.length) return console.log(r.jobs.length ? "no active scheduled jobs (quick cron ls -a)" : "no scheduled jobs (quick cron add)");
+		console.log(list.map(cronLine).join("\n"));
+		return;
+	}
+	const id = args[0] ?? die(`usage: quick cron ${sub} <id>`);
+	switch (sub) {
+		case "show": {
+			const j = await hub.getCron(id);
+			console.log(cronLine(j));
+			console.log(`  hub: ${j.hub}   tz: ${j.tz}   overlap: ${j.overlap}   catch-up: ${j.catchUp}${j.silent ? "   silent" : ""}`);
+			console.log(`  dispatch: machine ${j.machine ?? "(auto)"} · requires ${j.requires?.join(",") || "-"} · cwd ${j.cwd ?? "(machine default)"}`);
+			console.log(`  runs: ${j.runCount}${j.lastRunAt ? ` · last ${formatWall(j.lastRunAt, j.tz, true)}` : ""}${j.queued ? " · 1 queued" : ""}`);
+			console.log(`\n-- recent --`);
+			for (const r of [...j.runs].reverse().slice(0, 10)) {
+				const t = r.taskId ? j.tasks.find((x) => x.id === r.taskId) : undefined;
+				console.log(`  ${formatWall(r.at, j.tz, true)}  ${r.trigger.padEnd(8)} ${`[${r.result.toUpperCase()}]`.padEnd(13)} ${r.taskId ?? ""}${t?.status ? ` ${t.status}` : ""}${r.reason ? `  \x1b[2m${r.reason}\x1b[0m` : ""}`);
+			}
+			console.log(`\n-- brief --\n${j.brief}`);
+			return;
+		}
+		case "rm":
+		case "delete":
+			await hub.cronAction(id, "delete");
+			return console.log(`deleted ${id}`);
+		case "pause":
+		case "resume":
+			return console.log(cronLine(await hub.cronAction(id, sub)));
+		case "run": {
+			const r = await hub.runCron(id);
+			console.log(r.run.result === "dispatched" ? `-> ${r.run.taskId} dispatched on ${r.run.machine}` : `[FAILED] ${r.run.reason}${r.run.taskId ? ` (task ${r.run.taskId})` : ""}`);
+			if (r.run.result !== "dispatched") process.exitCode = 1;
+			return;
+		}
+		default:
+			die(`unknown: quick cron ${sub} (add | ls | show | rm | pause | resume | run)`);
 	}
 }
 

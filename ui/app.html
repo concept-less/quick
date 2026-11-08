@@ -258,6 +258,17 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .send .acts{margin-top:8px;align-items:center}
 .send .acts .hintk{font:11px var(--mono);color:var(--fg-3);flex:1}
 .icard{padding:14px var(--s4);border-bottom:var(--bw) solid var(--line)}
+/* ---------- scheduled jobs (定时) ---------- */
+.cjob{padding:12px var(--s3) 12px var(--s4);border-bottom:var(--bw) solid var(--line);position:relative}
+.cjob.off .ttitle{color:var(--fg-3)}
+.cjob.bad::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--acc)}
+.cjob .crule{font:11.5px/1.5 var(--mono);color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.cjob .cruns{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px;font:11px/1 var(--mono);color:var(--fg-3)}
+.cjob .cmark{border:var(--bw) solid var(--line);padding:2px 5px;color:var(--fg-2)}
+.cjob .cmark.bad{border-color:var(--acc);color:var(--acc)}
+.cjob .acts{margin-top:8px}.cjob .acts .btn{height:26px;padding:0 10px;font-size:12px}
+.st.on{color:var(--fg);border-color:var(--fg)}.st.off{color:var(--fg-3);border-style:dashed}.st.off::before{display:none}.st.fin{color:var(--fg-3)}
+.chint{padding:10px var(--s4);font-size:12px;color:var(--fg-3);border-bottom:var(--bw) solid var(--line);background:var(--bg-2)}
 .icard .ctext{font-size:13.5px;white-space:pre-wrap;word-break:break-word;margin:8px 0;font-weight:500}
 .icard img{max-width:100%;max-height:150px;border:var(--bw) solid var(--line);cursor:zoom-in}
 /* ---------- overlays ---------- */
@@ -315,13 +326,14 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
     </div></div>
   </section>
   <aside id="side">
-    <div class="tabs"><button class="tab on" data-tab="tasks">任务<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span><kbd class="mk2"></kbd></button></div>
+    <div class="tabs"><button class="tab on" data-tab="tasks">任务<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span><kbd class="mk2"></kbd></button><button class="tab" data-tab="cron">定时<span class="badge" id="cBadge"></span><kbd class="mk3"></kbd></button></div>
     <div id="pane-tasks" style="display:flex;flex-direction:column;flex:1;min-height:0">
       <div class="filters"><button class="fchip on" data-f="open">进行中 / 待处理</button><button class="fchip" data-f="review" title="已读的完成任务">回顾</button><button class="fchip" data-f="all">全部</button><input id="tsearch" type="search" aria-label="搜索任务" autocomplete="off"><span class="grow"></span><span class="chip" id="tcount"></span></div>
       <div id="machines"></div>
       <div class="scroll" id="tlist" role="list"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
     </div>
     <div id="pane-intake" style="display:none;flex-direction:column;flex:1;min-height:0"><div class="scroll" id="ilist"><div class="skel"><i></i><i></i></div></div></div>
+    <div id="pane-cron" style="display:none;flex-direction:column;flex:1;min-height:0"><div class="scroll" id="clist"><div class="skel"><i></i><i></i></div></div></div>
     <div id="detail"></div>
   </aside>
 </div>
@@ -540,7 +552,7 @@ document.addEventListener('keydown',e=>{
   const mod=IS_MAC?e.metaKey&&!e.ctrlKey:e.ctrlKey&&!e.metaKey;
   if(mod&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='k'){e.preventDefault();document.querySelector('.modal')?.querySelector('[data-x]')?.click();if(document.activeElement===input)focusSearch();else focusComposer();return}
   if(document.querySelector('.modal'))return;
-  if(mod&&!e.altKey&&!e.shiftKey&&(e.key==='1'||e.key==='2')){e.preventDefault();switchTab(e.key==='1'?'tasks':'intake');return}
+  if(mod&&!e.altKey&&!e.shiftKey&&(e.key==='1'||e.key==='2'||e.key==='3')){e.preventDefault();switchTab({1:'tasks',2:'intake',3:'cron'}[e.key]);return}
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||'');
   if(e.key==='Escape'){if($('#zoom').style.display==='flex'){$('#zoom').style.display='none';return}if(selTask){closeTask();return}if(document.activeElement===$('#tsearch')){e.preventDefault();if($('#tsearch').value){$('#tsearch').value='';renderTasks()}else focusComposer();return}}
   if(typing||e.metaKey||e.ctrlKey||e.altKey)return;
@@ -548,14 +560,14 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='?'){e.preventDefault();showKeys()}
 });
 function showKeys(){
-  const rows=[['聚焦输入框 / 再按一次搜索任务',kbd(MOD,'K')],['任务面板 / 浏览器评论',kbd(MOD,'1')+' '+kbd(MOD,'2')],['发送消息',kbd(...SEND_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['换行',kbd(...NEWLINE_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['插入当前轮（steer）',kbd(ALT)+' + 发送键'],['停止回复（输入框为空时）',kbd('Esc')],['关闭任务详情 / 大图 / 清空搜索',kbd('Esc')],['任务列表上下移动 / 打开',kbd('↑')+kbd('↓')+' '+kbd('Enter')],['聚焦输入框',kbd('/')],['显示快捷键',kbd('?')]];
+  const rows=[['聚焦输入框 / 再按一次搜索任务',kbd(MOD,'K')],['任务面板 / 浏览器评论 / 定时',kbd(MOD,'1')+' '+kbd(MOD,'2')+' '+kbd(MOD,'3')],['发送消息',kbd(...SEND_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['换行',kbd(...NEWLINE_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['插入当前轮（steer）',kbd(ALT)+' + 发送键'],['停止回复（输入框为空时）',kbd('Esc')],['关闭任务详情 / 大图 / 清空搜索',kbd('Esc')],['任务列表上下移动 / 打开',kbd('↑')+kbd('↓')+' '+kbd('Enter')],['聚焦输入框',kbd('/')],['显示快捷键',kbd('?')]];
   modal('<h3>快捷键</h3><div class="dc"><table class="keys-t">'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+r[1]+'</td></tr>').join('')+'</table><p class="lbl" style="margin-top:14px">发送键当前：'+esc(SEND_COMBO())+' 发送 · '+esc(NEWLINE_COMBO())+' 换行</p></div><div class="df"><button class="btn" data-sk>切换发送键</button><span class="grow"></span><button class="btn primary" data-x>关闭</button></div>',(dlg,close)=>{dlg.querySelector('[data-x]').onclick=close;dlg.querySelector('[data-sk]').onclick=()=>{close();toggleSendKey()};dlg.querySelector('[data-x]').focus()});
 }
 $('#keysBtn').onclick=showKeys;$('#skBtn').onclick=()=>{toggleSendKey();input.focus()};
 $('#tsearch').placeholder='搜索任务  '+combo(MOD,'K');
 $('#tsearch').addEventListener('input',()=>renderTasks());
 $('#tsearch').addEventListener('keydown',e=>{if(e.key==='ArrowDown'||e.key==='Enter'){const f=$('#tlist .titem');if(f){e.preventDefault();e.key==='Enter'?openTask(f.dataset.id):f.focus()}}});
-document.querySelector('.mk1').textContent=combo(MOD,'1');document.querySelector('.mk2').textContent=combo(MOD,'2');
+document.querySelector('.mk1').textContent=combo(MOD,'1');document.querySelector('.mk2').textContent=combo(MOD,'2');document.querySelector('.mk3').textContent=combo(MOD,'3');
 $('#keysBtn').title='快捷键（?）';
 document.addEventListener('click',e=>{const b=e.target.closest('.copy');if(!b)return;const code=b.closest('.code')?.querySelector('pre')?.textContent||'';navigator.clipboard?.writeText(code).then(()=>{b.textContent='已复制';setTimeout(()=>b.textContent='复制',1200)},()=>toast('复制失败','error'))});
 input.addEventListener('paste',e=>{for(const it of e.clipboardData?.items||[]){if(it.type.startsWith('image/')){e.preventDefault();const f=it.getAsFile();const r=new FileReader();r.onload=()=>{const [h,d]=String(r.result).split(',');pending.push({mimeType:h.slice(5,h.indexOf(';')),data:d});renderThumbs()};r.readAsDataURL(f)}}});
@@ -654,7 +666,7 @@ function _renderTasks(){
   $('#tcount').textContent=act+' 运行 / '+all.length;$('#tcount').title=act+' 个运行中，共 '+all.length+' 个任务';$('#tBadge').textContent=un||'';
 }
 document.querySelectorAll('.fchip').forEach(b=>b.onclick=()=>{taskFilter=b.dataset.f;document.querySelectorAll('.fchip').forEach(x=>x.classList.toggle('on',x===b));renderTasks()});
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));$('#pane-tasks').style.display=b.dataset.tab==='tasks'?'flex':'none';$('#pane-intake').style.display=b.dataset.tab==='intake'?'flex':'none';closeTask()});
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));for(const k of ['tasks','intake','cron'])$('#pane-'+k).style.display=b.dataset.tab===k?'flex':'none';if(b.dataset.tab==='cron')renderCron();closeTask()});
 let detailSeq=0;
 async function openTask(id){
   if(innerWidth<=900&&!document.body.classList.contains('show-side'))$('#mobToggle').click();
@@ -692,18 +704,53 @@ function renderIntakes(){
   $('#iBadge').textContent=list.filter(i=>i.status==='pending').length||'';
 }
 
+/* ---------- scheduled jobs (定时) ---------- */
+const crons=new Map();let cronLoaded=false;
+const RUNRES={skipped:'SKIP',missed:'MISSED',failed:'FAILED',queued:'QUEUED'};
+const pad2=n=>String(n).padStart(2,'0');
+function whenIn(ms){const d=ms-Date.now(),s=Math.abs(d)/1000,v=s<60?Math.round(s)+' 秒':s<3600?Math.round(s/60)+' 分钟':s<86400?(+(s/3600).toFixed(s<36000?1:0))+' 小时':Math.round(s/86400)+' 天';return d>=0?v+'后':v+'前'}
+function clock(ms){const d=new Date(ms),t=pad2(d.getHours())+':'+pad2(d.getMinutes());return new Date().toDateString()===d.toDateString()?t:(d.getMonth()+1)+'-'+pad2(d.getDate())+' '+t}
+function ruleText(j){const r=j.rule||{};if(r.kind==='every')return '每 '+(j.describe||'').replace(/^every /,'');if(r.kind==='at')return '一次 '+clock(r.at)+' ('+j.tz+')';return 'cron '+r.expr+' ('+j.tz+')'}
+function cronState(j){return j.finished?'<span class="st fin">已结束</span>':!j.enabled?'<span class="st off">已暂停</span>':j.running?'<span class="st running">运行中</span>':'<span class="st on">启用</span>'}
+function cronBad(j){const r=(j.runs||[])[j.runs.length-1],t=(j.tasks||[])[0],st=t&&(tasks.get(t.id)?.status||t.status);return r?.result==='failed'||['failed','blocked','needs_input'].includes(st)}
+let cRaf=0;function renderCron(){if(cRaf)return;cRaf=requestAnimationFrame(()=>{cRaf=0;_renderCron()})}
+function _renderCron(){
+  const list=[...crons.values()].filter(j=>!j.deleted).sort((a,b)=>(a.finished-b.finished)||((a.nextRunAt??Infinity)-(b.nextRunAt??Infinity))||b.createdAt-a.createdAt);
+  $('#cBadge').textContent=list.filter(cronBad).length||'';
+  if(!$('#pane-cron')||$('#pane-cron').style.display==='none')return;
+  if(!cronLoaded)return;
+  const hint='<div class="chint">新建：在对话里告诉前台「每天 9 点帮我…」「每 2 小时检查…」「30 分钟后…」，或在终端用 <code>quick cron add</code>。</div>';
+  $('#clist').innerHTML=hint+(list.map(j=>{
+    const runs=[...(j.runs||[])].reverse().slice(0,6).map(r=>{const t=r.taskId&&(tasks.get(r.taskId)||j.tasks?.find(x=>x.id===r.taskId));
+      if(r.taskId)return '<span title="'+esc(clock(r.at)+' '+r.trigger+(r.reason?' · '+r.reason:''))+'">'+tidHtml(r.taskId)+(t?.status?' '+stPill(t.status):'')+'</span>';
+      return '<span class="cmark'+(r.result==='failed'?' bad':'')+'" title="'+esc(clock(r.at)+(r.reason?' · '+r.reason:''))+'">['+(RUNRES[r.result]||r.result.toUpperCase())+'] '+clock(r.at)+'</span>'}).join('');
+    const next=j.nextRunAt?'下次 '+clock(j.nextRunAt)+'（'+whenIn(j.nextRunAt)+'）':j.finished?'已结束':j.enabled?'':'暂停中';
+    const opts=[j.silent?'静默':'',j.overlap!=='skip'?'重叠:'+j.overlap:'',j.catchUp==='skip'?'不补跑':'',j.machine?'@'+j.machine:'',j.requires?.length?'需 '+j.requires.join(','):''].filter(Boolean).join(' · ');
+    return '<div class="cjob'+(j.enabled&&!j.finished?'':' off')+(cronBad(j)?' bad':'')+'" data-id="'+esc(j.id)+'"><div class="trow"><span class="ttitle" title="'+esc(j.brief)+'">'+esc(j.title)+'</span>'+cronState(j)+'</div>'+
+      '<div class="trow"><span class="tidm">'+esc(j.id)+'</span>'+(j.hub&&j.hub!==selfId?'<span class="mach">@'+esc(j.hub)+'</span>':'')+'<span class="crule" title="'+esc(j.describe||'')+'">'+esc(ruleText(j))+'</span></div>'+
+      '<div class="trow"><span class="tsub">'+esc(next)+(opts?' · '+esc(opts):'')+'</span><span class="tago">'+(j.runCount?j.runCount+' 次':'')+'</span></div>'+
+      (runs?'<div class="cruns">'+runs+'</div>':'')+
+      '<div class="acts">'+(j.finished?'':'<button class="btn" data-c="'+(j.enabled?'pause':'resume')+'">'+(j.enabled?'暂停':'恢复')+'</button>')+'<button class="btn" data-c="run">立即运行</button><button class="btn danger" data-c="delete">删除</button></div></div>'}).join('')||'<div class="blank"><span class="lbl">空</span>还没有定时计划。</div>');
+  $('#clist').querySelectorAll('[data-c]').forEach(b=>b.onclick=async()=>{const id=b.closest('.cjob').dataset.id,a=b.dataset.c,j=crons.get(id);
+    if(a==='delete'&&!confirm('删除定时计划「'+(j?.title||id)+'」？已派出的任务不受影响。'))return;
+    b.disabled=true;try{const r=await api('POST','/api/hub/cron/'+encodeURIComponent(id)+'/'+a,{});if(r.job){if(r.job.deleted)crons.delete(id);else crons.set(id,r.job)}
+      if(a==='run')toast(r.run?.result==='dispatched'?'已派出 '+r.run.taskId:'运行失败：'+(r.run?.reason||''),r.run?.result==='dispatched'?'info':'error');renderCron()}catch(e){toast(e.message,'error');b.disabled=false}});
+}
+async function loadCron(){try{const r=await api('GET','/api/hub/cron');crons.clear();for(const j of r.jobs||[])crons.set(j.id,j);cronLoaded=true;renderCron()}catch(e){if(!cronLoaded){cronLoaded=true;$('#clist').innerHTML='<div class="blank"><span class="lbl">不可用</span>'+esc(e.message)+'</div>'}}}
+
 /* ---------- hub ---------- */
 function setHub(ok){hubOk=ok;$('#hubDot').className='dot '+(ok?'on':'off');$('#hubText').textContent=ok?'hub 已连接':'hub 离线'}
 async function loadHub(){
   try{const [tr,mr,ir]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/intake')]);
     tasks.clear();for(const t of tr.tasks)tasks.set(t.id,t);selfId=mr.self||'';machines=mr.machines||[];intakes.clear();for(const i of ir.intake||[])intakes.set(i.id,i);
-    hubLoaded=true;renderMachines();renderTasks();renderIntakes();for(let i=0;i<nodes.length;i++)renderMsg(i);
+    hubLoaded=true;renderMachines();renderTasks();renderIntakes();for(let i=0;i<nodes.length;i++)renderMsg(i);loadCron();
   }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off;$('#ilist').innerHTML=off}}
 }
 function onHub(e){
-  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.id===selTask&&(e.event||prev?.status!==e.task.status))refreshDetailSoon();
+  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask&&(e.event||prev?.status!==e.task.status))refreshDetailSoon();
     if(prev&&prev.status!==e.task.status){for(const [id,i] of toolOwner){const r=toolRes.get(id);if(r?.result?.details?.task?.id===e.task.id)schedule(i)}}}
   else if(e.type==='machines'){machines=e.machines;renderMachines()}
+  else if(e.type==='cron'){if(e.job.deleted)crons.delete(e.job.id);else{const prev=crons.get(e.job.id);crons.set(e.job.id,{...prev,...e.job,describe:e.job.describe||prev?.describe,tasks:e.job.tasks||prev?.tasks||[],running:e.job.running??prev?.running})}renderCron();clearTimeout(cronTimer);cronTimer=setTimeout(loadCron,800)}
   else if(e.type==='intake'){const isNew=!intakes.has(e.intake.id);intakes.set(e.intake.id,e.intake);renderIntakes();if(isNew&&e.intake.status==='pending')toast('新的浏览器评论：'+e.intake.comment.slice(0,80))}
 }
 
@@ -727,7 +774,7 @@ function connect(){
       case 'ui.dialog.close':{const c=openDialogs.get(e.id);if(c)c();break}
     }};
 }
-applySendKey();connect();setInterval(renderTasks,60000);input.focus();
+let cronTimer=0;applySendKey();connect();setInterval(()=>{renderTasks();renderCron()},30000);input.focus();
 </script>
 </body>
 </html>

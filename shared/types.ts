@@ -1,5 +1,6 @@
 // Data model shared by hub, CLI and extensions.
 import type { TaskPeople } from "./team.ts";
+import type { CronJob } from "./cron.ts";
 
 export type TaskStatus =
 	| "starting" // tmux window spawned, worker not yet connected
@@ -19,9 +20,15 @@ export const ACTIVE_STATUSES: TaskStatus[] = ["starting", "running"];
 export const CLOSED_STATUSES: TaskStatus[] = ["cancelled"];
 
 export interface TaskSource {
-	kind: "tui" | "browser" | "cli" | "api";
+	kind: "tui" | "browser" | "cli" | "api" | "cron";
 	intakeId?: string;
 	url?: string;
+	/** Scheduled job (shared/cron.ts) that dispatched this task. */
+	cronId?: string;
+	/** Hub that owns that job. */
+	cronHub?: string;
+	/** Successful runs of the job are archived right away (no 待扫 entry). */
+	silent?: boolean;
 }
 
 /** Team fields (requester, assignee, reviewer, watchers, pings, comments) come from TaskPeople (shared/team.ts). */
@@ -149,4 +156,5 @@ export type HubEvent =
 	| { type: "machines"; machines: MachineView[] }
 	| { type: "update"; machine: string; from: string; to: string; ts: number }
 	/** Team roster changed (members are listed without token hashes). */
-	| { type: "team"; members: import("./team.ts").PublicMember[]; ts: number };
+	| { type: "team"; members: import("./team.ts").PublicMember[]; ts: number }
+	| { type: "cron"; job: CronJob };

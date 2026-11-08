@@ -27,6 +27,7 @@ import { autoUpdate, readState, readVersion, runUpgrade, type UpgradeResult } fr
 import { createHandoff } from "./handoff.ts";
 import { createTeam } from "./team.ts";
 import { AGENT, can, type Viewer } from "../shared/team.ts";
+import { createCron } from "./cron.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -171,6 +172,7 @@ const mesh = new Mesh({
 			...[...tasks.values(), ...mirrorTasks.values()].filter(recent).map((task) => ({ kind: "task", data: { task } })),
 			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => recent(i)).map((intake) => ({ kind: "intake", data: { intake } })),
 			...team.snapshot(),
+			...cron.snapshot(),
 		];
 	},
 	onEvent: (kind, data) => {
@@ -190,6 +192,7 @@ const mesh = new Mesh({
 			broadcast({ type: "task", task: t, event: data.event });
 			return true;
 		}
+		if (kind === "cron") return cron.onReplica(data.job);
 		if (kind === "intake") {
 			const i = data.intake as Intake;
 			if (!i || i.machine === SELF) return false;
@@ -236,6 +239,8 @@ function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "task
 	Object.assign(t, patch, { updatedAt: Date.now(), rev: (t.rev ?? 0) + 1 });
 	if (patch.status && patch.status !== prev && ATTENTION_STATUSES.includes(patch.status)) t.unread = true;
 	if (patch.status && ACTIVE_STATUSES.includes(patch.status)) t.unread = false;
+	// Silent scheduled jobs: a successful run is archived right away instead of waiting in 待扫.
+	if (patch.status === "done" && t.source?.kind === "cron" && t.source.silent) t.unread = false;
 	saveTask(t);
 	const full = ev ? recordEvent(t, ev) : undefined;
 	broadcast({ type: "task", task: t, event: full });
@@ -417,6 +422,33 @@ async function createTaskLocal(body: any): Promise<Task> {
 		update(t, { status: "failed", summary: `spawn failed: ${(err as Error).message}` }, { kind: "status", status: "failed", text: (err as Error).message });
 	}
 	return t;
+}
+
+/** A scheduled run that could not be dispatched: keep a failed task here so it reaches 需要你. */
+function recordFailedTask(body: any, reason: string): Task {
+	const id = newId("t", (x) => tasks.has(x) || mirrorTasks.has(x));
+	const t: Task = {
+		id,
+		machine: SELF,
+		rev: 0,
+		title: String(body.title ?? "untitled"),
+		brief: String(body.brief ?? ""),
+		cwd: String(body.cwd || cfg.defaultCwd),
+		status: "failed",
+		createdAt: Date.now(),
+		updatedAt: Date.now(),
+		source: body.source ?? { kind: "api" },
+		attachments: [],
+		unread: true,
+		messages: 0,
+		summary: `派单失败：${reason}\n\n（定时计划 ${body.source?.cronId ?? ""} 到点后没能派出任务；检查机器/资源/目录后可以用 quick cron run ${body.source?.cronId ?? "<id>"} 重试）`,
+	};
+	tasks.set(id, t);
+	mkdirSync(taskDir(id), { recursive: true });
+	writeFileSync(join(taskDir(id), "brief.md"), `# 任务 ${id}: ${t.title}\n\n${t.brief}\n`);
+	saveTask(t);
+	recordEvent(t, { kind: "created", text: t.title });
+	return update(t, {}, { kind: "status", status: "failed", text: reason });
 }
 
 async function deliverMessage(t: Task, text: string) {
@@ -629,6 +661,20 @@ const team = createTeam({
 	httpError: (status, msg) => new HttpError(status, msg),
 });
 Object.assign(methods, team.methods);
+const cron = createCron({
+	self: SELF,
+	file: paths.cron,
+	log,
+	findTask: (id) => tasks.get(id) ?? mirrorTasks.get(id),
+	dispatch: (body) => apiCreateTask(body),
+	recordFailed: recordFailedTask,
+	broadcast,
+	flood: (kind, data) => mesh.flood(kind, data),
+	call,
+	reachable: (m) => mesh.reachable(m),
+	httpError: (status, msg) => new HttpError(status, msg),
+});
+Object.assign(methods, cron.methods);
 
 // ---------------------------------------------------------------- global (mesh-wide) views
 
@@ -900,7 +946,7 @@ function cors() {
 	return {
 		"access-control-allow-origin": "*",
 		"access-control-allow-headers": "authorization, content-type",
-		"access-control-allow-methods": "GET, POST, OPTIONS",
+		"access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
 	};
 }
 async function readJson(req: IncomingMessage): Promise<any> {
@@ -1065,6 +1111,36 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return send(res, 200, { task });
 	}
 
+	// Scheduled jobs: list/create here; per-job mutations are routed to the owning hub.
+	if (p === "/api/cron" && m === "GET") return send(res, 200, { jobs: cron.list(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, self: SELF });
+	if (p === "/api/cron" && m === "POST") {
+		const body = await readJson(req);
+		const target = String(body.hub || SELF);
+		if (!mesh.reachable(target)) throw new HttpError(400, `hub ${target} is not reachable (see /api/machines)`);
+		const params = { ...body };
+		delete params.hub;
+		// Runs are dispatched for whoever created the plan (only the machine token may set someone else).
+		if (!viewer.root || !params.requester) params.requester = viewer.user;
+		if (!params.requester) delete params.requester;
+		const job = await call(target, "cron.create", params);
+		return send(res, 200, { job: cron.view(job) });
+	}
+	mt = /^\/api\/cron\/([\w-]+)(?:\/(\w+))?$/.exec(p);
+	if (mt) {
+		const id = mt[1]!;
+		const action = mt[2] ?? (m === "DELETE" ? "delete" : m === "POST" ? "update" : "");
+		if (!action && m === "GET") return send(res, 200, { job: cron.get(id) });
+		if (m !== "POST" && m !== "DELETE") throw new HttpError(405, "method not allowed");
+		if (!["update", "run", "pause", "resume", "delete"].includes(action)) throw new HttpError(404, "unknown action");
+		const body = m === "POST" ? await readJson(req) : {};
+		const job = cron.get(id);
+		if (job.requester && job.requester !== viewer.user && !viewer.root && viewer.role !== "owner") throw new HttpError(403, `forbidden: plan ${id} belongs to ${job.requester}`);
+		delete body.requester;
+		const r = await cron.routed(`cron.${action}`, id, body);
+		if (action === "run") return send(res, 200, { job: cron.view(r.job), run: r.run });
+		return send(res, 200, { job: r.deleted ? r : cron.view(r) });
+	}
+
 	if (p === "/api/intake" && m === "POST") return send(res, 200, { intake: createIntake(await readJson(req)) });
 	if (p === "/api/intake" && m === "GET") {
 		const status = url.searchParams.get("status");
@@ -1107,6 +1183,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 // ---------------------------------------------------------------- main
 
 loadAll();
+cron.load();
 const server = createServer((req, res) => {
 	handle(req, res).catch((err) => {
 		const status = err instanceof HttpError ? err.status : 500;
@@ -1120,6 +1197,7 @@ server.listen(cfg.port, cfg.host, () => {
 	log(`[quick-agent hub] v${VERSION} machine "${SELF}" listening on http://${cfg.host}:${cfg.port} (pid ${process.pid}, mesh ${mesh.enabled ? `on, ${cfg.mesh.peers.length} peer(s)` : "off"})`);
 	log(`[quick-agent hub] web ui: run \`quick ui\` → http://127.0.0.1:${cfg.uiPort}/`);
 	mesh.start();
+	cron.start();
 	// Background version check: never blocks startup, throttled by update.intervalHours, silent on failure.
 	setTimeout(backgroundUpdate, 10_000).unref();
 });

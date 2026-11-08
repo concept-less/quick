@@ -1,6 +1,8 @@
 // Minimal HTTP + SSE client for the quick-agent hub (uses global fetch).
 import { hubToken, hubUrl, loadConfig, type QaConfig } from "./config.ts";
 import type { UpgradeResult } from "./update.ts";
+import type { CronRun } from "./cron.ts";
+import type { CronView } from "../hub/cron.ts";
 import type { HubEvent, Intake, MachineInfo, MachineView, Task, TaskEvent } from "./types.ts";
 import type { PublicMember, Role, TaskComment, Viewer } from "./team.ts";
 
@@ -10,6 +12,26 @@ export class HubError extends Error {
 		super(message);
 		this.status = status;
 	}
+}
+
+export interface CronInput {
+	title: string;
+	brief: string;
+	cron?: string;
+	every?: string | number;
+	at?: string | number;
+	in?: string | number;
+	tz?: string;
+	machine?: string;
+	requires?: string[];
+	cwd?: string;
+	overlap?: "skip" | "queue" | "parallel";
+	catchUp?: "latest" | "skip";
+	silent?: boolean;
+	enabled?: boolean;
+	createdBy?: string;
+	/** Hub that owns (fires) the job; default the hub receiving the request. */
+	hub?: string;
 }
 
 export class HubClient {
@@ -138,6 +160,26 @@ export class HubClient {
 	}
 	fs(body: { machine?: string; op: "ls" | "read" | "grep"; path: string; pattern?: string; offset?: number; limit?: number }) {
 		return this.request<any>("POST", "/api/fs", body);
+	}
+	/** Scheduled jobs of the whole mesh. */
+	listCron() {
+		return this.request<{ jobs: CronView[]; tz: string; self: string }>("GET", "/api/cron");
+	}
+	getCron(id: string) {
+		return this.request<{ job: CronView }>("GET", `/api/cron/${enc(id)}`).then((r) => r.job);
+	}
+	/** Create a scheduled job: exactly one of cron / every / at / in; tz defaults to the hub's local zone. */
+	createCron(input: CronInput) {
+		return this.request<{ job: CronView }>("POST", "/api/cron", input).then((r) => r.job);
+	}
+	updateCron(id: string, patch: Partial<CronInput> & { enabled?: boolean }) {
+		return this.request<{ job: CronView }>("POST", `/api/cron/${enc(id)}`, patch).then((r) => r.job);
+	}
+	cronAction(id: string, action: "pause" | "resume" | "delete") {
+		return this.request<{ job: CronView }>("POST", `/api/cron/${enc(id)}/${action}`, {}).then((r) => r.job);
+	}
+	runCron(id: string) {
+		return this.request<{ job: CronView; run: CronRun }>("POST", `/api/cron/${enc(id)}/run`, {});
 	}
 	pendingIntake() {
 		return this.request<{ intake: Intake[] }>("GET", "/api/intake?status=pending").then((r) => r.intake);

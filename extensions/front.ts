@@ -15,8 +15,10 @@ import { autoUpdate, compareVersions, readState, readVersion } from "../shared/u
 import { priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
 import { createTeamFront, TEAM_TOOLS } from "./team-tools.ts";
+import { formatWall } from "../shared/cron.ts";
+import type { CronView } from "../hub/cron.ts";
 
-const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
+const QA_TOOLS = ["qa_dispatch", "qa_cron", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
 const FRONT_TOOLS = ["read", "grep", "find", "ls", ...QA_TOOLS];
 
 const ICON: Record<string, string> = {
@@ -44,6 +46,12 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
    - 资源不满足或机器离线时 qa_dispatch 会报错：不要换到不满足条件的机器硬派；拿不准该用哪台机器、或资源声明不清楚时，先问人类。
 
 12. 人类要求把某个任务"挪到/交接到/换到"另一台机器继续时，用 qa_handoff（会话、任务元数据、未提交的代码改动都会带过去，任务 id 不变）。worker 正在运行时默认等它这一轮结束；人类说"马上/立刻"才设 abort=true。目标目录有冲突时 qa_handoff 会失败并给出选项，把选项转述给人类，不要自己替他选 stash/backup。
+
+13. 定时/周期性的事（"每天早上 9 点帮我…"、"每周一…"、"30 分钟后…"、"每 2 小时检查…"、"明天下午 3 点提醒/执行…"）用 qa_cron 建计划，不要用 qa_dispatch 立刻派单：
+   - 触发规则四选一：cron（标准 5 段"分 时 日 月 周"，如每天 9 点 "0 9 * * *"、工作日 18:30 "30 18 * * 1-5"、每周一 10 点 "0 10 * * 1"）、every（固定间隔，如 "2h"、"30m"）、at（一次性时间点 "YYYY-MM-DD HH:MM"）、in（多久之后一次，如 "30m"）。时区默认 hub 所在机器的本地时区（${Intl.DateTimeFormat().resolvedOptions().timeZone}），不要自己猜时区；只有人类明确说了时区（或说的是别处的时间）才传 tz。
+   - brief 是每次运行时派给 worker 的简报，要和 qa_dispatch 一样自包含（worker 看不到对话）；可用 {{date}} {{time}} {{n}} 占位符。机器/资源/cwd 的选择规则同上，到点时才选机器。
+   - 只是定期汇报、成功了不用看的（如"每小时检查一下，有问题再告诉我"），设 silent=true：成功直接归档，失败或需要人类决定时照样进入「需要你」。
+   - 建完用一两句话复述：计划 ID、规则、下次运行时间。人类要求查看/暂停/恢复/删除/立即运行计划时用 qa_cron 的 list/pause/resume/delete/run。
 
 本机: ${machines.split("\n")[0]}
 mesh 中的机器（qa_machines 查看最新状态）:
@@ -258,6 +266,68 @@ export function setupFront(pi: ExtensionAPI) {
 				content: [{ type: "text", text: `Dispatched ${task.id} "${task.title}" on machine ${task.machine} in ${task.cwd} (status ${task.status}${task.summary ? `: ${task.summary}` : ""}).` }],
 				details: { task },
 			};
+		},
+	});
+
+	const cronLine = (j: CronView) =>
+		`${j.id} [${j.finished ? "done" : j.enabled ? (j.running ? "running" : "on") : "paused"}] ${j.title} — ${j.describe}${j.nextRunAt ? `; next ${formatWall(j.nextRunAt, j.tz)} ${j.tz}` : ""}${j.hub !== selfId() ? `; hub ${j.hub}` : ""}${j.silent ? "; silent" : ""}${j.tasks[0] ? `; last ${j.tasks[0].id} ${j.tasks[0].status ?? "?"}` : ""}`;
+
+	pi.registerTool({
+		name: "qa_cron",
+		label: "Scheduled tasks",
+		defaultActive: false,
+		description:
+			"Scheduled (cron) tasks: when a plan is due the hub dispatches a new worker task with its brief. action=create needs title, brief and exactly one of cron (5-field 'm h dom mon dow'), every ('2h'), at ('YYYY-MM-DD HH:MM' in tz) or in ('30m'). Other actions: list, delete, pause, resume, run (run once now; need id).",
+		promptSnippet: "Create / list / pause / resume / delete / run scheduled worker tasks (cron, every, at, in)",
+		promptGuidelines: ["Use qa_cron (not qa_dispatch) when the human asks for something recurring or at a later time (每天/每周/每隔/…分钟后/明天…点)."],
+		parameters: Type.Object({
+			action: StringEnum(["create", "list", "delete", "pause", "resume", "run"] as const),
+			id: Type.Optional(Type.String({ description: "Plan id (s1234) for delete/pause/resume/run" })),
+			title: Type.Optional(Type.String({ description: "Short plan title" })),
+			brief: Type.Optional(Type.String({ description: "Self-contained brief for each run's worker; {{date}} {{time}} {{n}} are substituted" })),
+			cron: Type.Optional(Type.String({ description: 'Standard 5-field cron, e.g. "0 9 * * *" (daily 09:00), "30 18 * * 1-5"' })),
+			every: Type.Optional(Type.String({ description: 'Fixed interval, e.g. "2h", "30m"' })),
+			at: Type.Optional(Type.String({ description: 'One-off wall time "YYYY-MM-DD HH:MM" in tz' })),
+			in: Type.Optional(Type.String({ description: 'One-off delay from now, e.g. "30m"' })),
+			tz: Type.Optional(Type.String({ description: "IANA time zone (default: the hub machine's local zone)" })),
+			machine: Type.Optional(Type.String({ description: "Machine to run on (default: chosen at fire time)" })),
+			requires: Type.Optional(Type.Array(Type.String(), { description: "Resource tags each run needs" })),
+			cwd: Type.Optional(Type.String({ description: "Working directory on the target machine" })),
+			silent: Type.Optional(Type.Boolean({ description: "Archive successful runs right away (failures still need the human)" })),
+			overlap: Type.Optional(StringEnum(["skip", "queue", "parallel"] as const, { description: "When the previous run is still going (default skip)" })),
+		}),
+		async execute(_id, p) {
+			if (p.action === "list") {
+				const r = await hub.listCron();
+				const text = r.jobs.length ? r.jobs.map(cronLine).join("\n") : "No scheduled tasks.";
+				return { content: [{ type: "text", text }], details: { count: r.jobs.length } };
+			}
+			if (p.action === "create") {
+				if (!p.title || !p.brief) throw new Error("create needs title and brief");
+				const job = await hub.createCron({
+					title: p.title,
+					brief: p.brief,
+					cron: p.cron,
+					every: p.every,
+					at: p.at,
+					in: p.in,
+					tz: p.tz,
+					machine: p.machine,
+					requires: p.requires,
+					cwd: p.cwd,
+					silent: p.silent,
+					overlap: p.overlap,
+					createdBy: "tui",
+				});
+				return { content: [{ type: "text", text: `Created ${cronLine(job)}` }], details: { job } };
+			}
+			if (!p.id) throw new Error(`${p.action} needs id`);
+			if (p.action === "run") {
+				const r = await hub.runCron(p.id);
+				return { content: [{ type: "text", text: r.run.result === "dispatched" ? `Ran ${p.id} now: task ${r.run.taskId} on ${r.run.machine}.` : `Run of ${p.id} failed: ${r.run.reason}` }], details: r };
+			}
+			const job = await hub.cronAction(p.id, p.action);
+			return { content: [{ type: "text", text: p.action === "delete" ? `Deleted ${p.id} "${job.title}".` : cronLine(job as CronView) }], details: { job } };
 		},
 	});
 
@@ -657,6 +727,8 @@ export function setupFront(pi: ExtensionAPI) {
 					const newsworthy = ev && (ev.kind === "report" || ev.kind === "status") && ATTENTION_STATUSES.includes(t.status) && (prev?.status !== t.status || ev.kind === "report");
 					if (!newsworthy) return;
 					const mine = t.owner === owner;
+					// Scheduled runs that went fine do not interrupt (they wait in 待扫 / the digest, or are archived).
+					if (t.source?.kind === "cron" && (t.status === "done" || !t.unread)) return;
 					if (mine || !t.owner) current?.hasUI && current.ui.notify(`${ICON[t.status]} ${t.id} ${t.title}: ${t.status}`, t.status === "done" ? "info" : "warning");
 					// Reports enter the conversation only of the pi that dispatched the task.
 					if (mine) {

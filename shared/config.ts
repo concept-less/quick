@@ -117,6 +117,8 @@ export const paths = {
 	home: QA_HOME,
 	tasks: join(QA_HOME, "tasks"),
 	intake: join(QA_HOME, "intake"),
+	/** Scheduled jobs owned by this hub (hub/cron.ts). */
+	cron: join(QA_HOME, "cron.json"),
 	log: join(QA_HOME, "hub.log"),
 	pid: join(QA_HOME, "hub.pid"),
 	uiLog: join(QA_HOME, "ui.log"),

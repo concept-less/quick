@@ -6,6 +6,7 @@
 - **worker agent**：每个任务都有一个独立的负责人，是一个完整的 pi 会话，跑在 tmux 窗口 `qa:<id>` 里，从头到尾把任务做完。它不是 subagent，你随时可以观看或接管。
 - **hub**：本地常驻服务，pi 启动时会自动拉起它。负责任务注册表、注意力收件箱、worker 生命周期、入口接入、SSE 事件流，还有一个网页面板（能看 worker 的实时终端）。
 - **入口**：pi 本身、浏览器插件（框选元素后写评论）、`quick` CLI，以及任何能发 HTTP 请求的程序。
+- **定时任务**：「每天 9 点…」「每周一…」「30 分钟后…」「每 2 小时…」这类计划由 hub 保存，到点自动派一个 worker 任务（见「定时任务（cron）」）。
 
 ```
  入口                         前台层                      后台层
@@ -120,8 +121,47 @@ quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
 quick hub start|stop|restart|status|logs
 quick upgrade [--check] [--all]  # 升级（见「升级」）
 quick ui                       # 浏览器里的前台 agent + 任务面板（见下文 Web UI）
+quick cron add --cron "0 9 * * *" "日报" "整理昨天的提交…"   # 定时计划（见「定时任务」）
 quick dashboard | quick tunnel | quick token
 ```
+
+## 定时任务（cron）
+
+人类可以设定「每天 9 点…」「每周一…」「30 分钟后…」「每 2 小时…」这样的计划。到点后 hub 走和 `POST /api/tasks` 相同的派单路径（包括按资源和优先级选机器）创建一个 worker 任务，任务的 `source` 是 `{kind: "cron", cronId}`。汇报按注意力机制处理：
+
+- 正常完成的运行只进入「待扫」（桌面端会合批成摘要），前台 pi 不会弹通知，也不会打断你；
+- 失败、受阻或需要你决定的运行进入「需要你」。到点时派不出任务（比如指定的机器离线、没有满足 requires 的机器），hub 会留下一个 `failed` 任务，同样进入「需要你」；
+- `--silent`（静默）：成功的运行直接归档（标记已读、进入「回顾」），失败时照样找你。
+
+在 pi 或 Web UI 里直接对前台说「每个工作日早上 9 点半帮我检查…，没问题就别打扰我」，前台会用 `qa_cron` 工具建计划，并复述计划 ID、规则和下次运行时间。也可以用 CLI：
+
+```bash
+quick cron add --cron "0 9 * * *" "日报" "整理昨天 ~/proj 的提交，写一段日报"          # 每天 9:00（hub 本地时区）
+quick cron add --cron "30 18 * * 1-5" --tz Asia/Shanghai "周报提醒" "…"                # 工作日 18:30，指定时区
+quick cron add --every 2h --silent --requires docker "巡检" "检查线上错误日志，有异常再汇报"
+quick cron add --at "2026-11-09 09:00" "发布" "…"     # 一次性时间点（按 --tz / 本地时区解释）
+quick cron add --in 30m --machine mac-laptop "提醒" "…"   # 30 分钟后执行一次
+quick cron ls [-a]             # 列表：[ON]/[OFF]/[RUN]/[DONE]、规则、下次运行时间、最近一次任务
+quick cron show <id>           # 详情与最近运行（[DISPATCHED] [SKIPPED] [MISSED] [FAILED] …）
+quick cron pause|resume|run|rm <id>
+```
+
+其他选项：`--cwd DIR`（默认当前目录；指定了 `--machine`/`--requires` 时用选中机器的默认目录）、`--overlap skip|queue|parallel`、`--catch-up latest|skip`、`--paused`。简报里可以写 `{{date}}`、`{{time}}`、`{{datetime}}`、`{{n}}`（第几次运行），每次运行时替换；hub 还会在简报末尾附上计划 ID、触发时间和上一次运行的任务 ID。Web UI 的侧栏有「定时」视图：列出计划、规则、下次运行时间和最近几次的结果，可以暂停/恢复、立即运行、删除。
+
+**规则与时区**（`shared/cron.ts`，零依赖）：
+
+- 三选一：标准 5 段 cron（分 时 日 月 周，支持 `*` `,` `-` `/`、月份和星期的英文缩写、`@daily`/`@hourly` 等别名；日和周都受限时按标准 cron 取「或」）、固定间隔（`--every`，从创建时刻起算，不受 DST 影响）、一次性时间点（`--at` / `--in`）。
+- 每个计划带时区，默认是 hub 所在机器的本地时区。DST 处理：不存在的时刻（春季拨快）在跳变后立即运行，例如 02:30 → 03:30；重复出现的时刻（秋季拨慢）只运行一次，取第一次；每小时都运行的计划按真实时间走，重复的那个小时也会运行。
+
+**重叠与错过**：
+
+- 重叠策略（上一次运行还在 starting/running/handoff 时到点）：`skip`（默认，记一条 [SKIPPED]）、`queue`（最多排队一次，上一次结束后马上运行）、`parallel`（照常再派一个）。
+- 错过补跑：hub 停机期间错过的触发，默认（`latest`）在 hub 启动后补跑一次（只跑最近那一次，记录错过了几次）；`skip` 只记录 [MISSED]，等下一个时间点。hub 运行中短暂的延迟（90 秒内）不算错过。暂停期间的时间点不补跑；恢复后从当前时间算下一次。
+- 计划会在派单 **之前** 先把这次运行写盘（`lastRunAt`/`nextRunAt`），所以 hub 在派单途中崩溃，最多丢这一次，不会重复派单。
+
+**多机 mesh 下谁来触发**：每个计划只属于一个 hub，就是创建它的那台（`job.hub`）。只有这个 hub 保存权威副本，也只有它的定时器会触发，所以不需要选主，也不依赖各机器时钟一致，不会重复派单。其他 hub 通过 mesh 复制拿到只读副本（和任务一样按 rev 排序，删除用墓碑同步），任何 hub 上的 REST/CLI/工具调用都会被路由到所属 hub 执行。派出的任务可以跑在 mesh 里任何一台机器上（`--machine`/`--requires`/`--cwd` 在触发时才选机器）。所属 hub 离线期间它的计划不会触发，恢复后按补跑策略处理。想让计划在某台常开的机器上触发，就在那台机器的 pi/CLI 上创建，或者在 `POST /api/cron` 里传 `hub`。
+
+数据存放在 `~/.quick-agent/cron.json`（原子写入），hub 重启后自动恢复。测试：`npm test` 覆盖解析器、下次运行时间（含时区和 DST）、重叠与补跑决策；`test/cron-e2e.sh` 用隔离的 hub（`/tmp/qa-cron`、端口 17795、tmux 会话 `qa-cronT`，worker 是 PATH 里的假 `pi`，不花模型费用）验证 `--in 5s` 派单、`--every 10s` 重叠跳过、静默归档、暂停后不再触发、hub 重启后恢复和补跑。
 
 ## Web UI（在浏览器里用前台 agent）
 
@@ -387,14 +427,16 @@ cli/quick.ts                    CLI
 hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/handoff.ts               任务跨机器交接：编排、分块传输、目标端应用/回滚
+hub/cron.ts                  定时任务：持久化、触发定时器、mesh 复制、cron.* 方法（只由所属 hub 触发）
 hub/workspace.ts             交接用的工作区快照（git bundle/diff/untracked 或 tar）、manifest 校验、撤销
 hub/dashboard.ts             网页面板（任务视图）
 ui/server.ts                 Web UI：用 pi SDK 托管前台会话 + 代理 hub API + SSE（quick ui）
-ui/app.html                  Web UI 前端（对话、任务面板、浏览器评论）
+ui/app.html                  Web UI 前端（对话、任务面板、浏览器评论、定时）
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
 shared/update.ts             自动升级：版本来源、安装方式识别、安装、节流与锁
 shared/schedule.ts           机器资源探测与派单选机器（资源 + 优先级）
-test/                        npm test（升级逻辑、多机升级模拟、调度选择、两机派单）
+shared/cron.ts               定时规则：5 段 cron 解析、下次运行时间（时区/DST）、间隔/一次性、重叠与补跑决策
+test/                        npm test（升级逻辑、多机升级模拟、调度选择、两机派单、定时规则）；*-e2e.sh 端到端测试
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
 extensions/front.ts          前台角色
 extensions/worker.ts         worker 角色
@@ -403,7 +445,7 @@ docs/browser-extension/      插件隐私政策与上架材料
 scripts/pack-extension.sh    打包上架用 zip（dist/）
 ```
 
-运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`hub.log`。worker 的会话是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`，可以用 `pi --session <file>` 打开。
+运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`cron.json`（本机 hub 所属的定时计划）、`hub.log`。worker 的会话是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`，可以用 `pi --session <file>` 打开。
 
 ## Hub API（Bearer token）
 
@@ -421,6 +463,10 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/upgrade` | `{all?, machines?, check?}` 升级或检查指定机器，返回每台的结果 |
 | POST | `/api/fs` | `{machine, op: ls/read/grep, path, pattern?}` 远程只读文件访问 |
 | GET/POST | `/mesh/link`、`/mesh/send` | hub 之间的链路（mesh secret） |
+| GET | `/api/cron`、`/api/cron/:id` | 定时计划列表（整个 mesh）/ 详情，含规则描述、下次运行、最近任务及其状态 |
+| POST | `/api/cron` | `{title, brief, cron? \| every? \| at? \| in?, tz?, machine?, requires?, cwd?, overlap?, catchUp?, silent?, enabled?, hub?}` 创建计划（四选一） |
+| POST | `/api/cron/:id` | 修改（同上字段，`null` 清除 machine/requires/cwd） |
+| POST | `/api/cron/:id/run`、`/pause`、`/resume`、`/delete`（或 `DELETE /api/cron/:id`） | 立即运行一次 / 暂停 / 恢复 / 删除；会路由到计划所属的 hub |
 | GET | `/api/events` | SSE 事件流（`?task=<id>` 用于 worker 接收指令） |
 | POST/GET | `/api/intake` | 入口提交（浏览器评论等）/ 列表 |
 | GET | `/api/pages?url=` | 某个页面上的评论及其任务状态（插件角标用） |
