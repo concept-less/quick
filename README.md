@@ -20,12 +20,15 @@
 
 ## 安装
 
+需要 Node ≥ 22.18、[pi](https://github.com/earendil-works/pi)，以及 tmux（worker 跑在 tmux 窗口里）。
+
 ```bash
-pi install /home/simon/quick-agent     # 写入 ~/.pi/agent/settings.json 的 packages（加载本地目录，不拷贝）
-ln -sf /home/simon/quick-agent/bin/qa ~/.local/bin/qa   # 可选：命令行工具
+git clone git@github.com:concept-less/quick.git ~/quick-agent
+pi install ~/quick-agent                # 写入 ~/.pi/agent/settings.json 的 packages（加载本地目录，不拷贝）
+ln -sf ~/quick-agent/bin/qa ~/.local/bin/qa   # 命令行工具（确保 ~/.local/bin 在 PATH 中）
 ```
 
-卸载用 `pi remove /home/simon/quick-agent`。改了代码以后，在 pi 里执行 `/reload`，或者新开一个 pi，就能生效。
+更新用 `cd ~/quick-agent && git pull`，然后在 pi 里 `/reload` 并运行 `qa hub restart`。卸载用 `pi remove ~/quick-agent`。改了代码以后，在 pi 里执行 `/reload`，或者新开一个 pi，就能生效。
 
 ## pi 如何选择角色（`extensions/quick-agent.ts`）
 
