@@ -265,6 +265,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .send .acts .hintk{font:11px var(--mono);color:var(--fg-3);flex:1}
 .ev{font-size:12px;padding:6px 0;border-bottom:var(--bw) solid var(--line);word-break:break-word;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}
 .ev:last-child{border-bottom:0}
+.dbg>summary{opacity:.6;border-bottom:0}.dbg h4{margin-top:10px}
 .ev .k{font:600 11px/1.6 var(--mono);color:var(--fg)}.ev time{font:11px/1.6 var(--mono);color:var(--fg-3);white-space:nowrap}
 .ev .x{grid-column:2;color:var(--fg-2)}
 .icard{padding:14px var(--s4);border-bottom:var(--bw) solid var(--line)}
@@ -612,16 +613,15 @@ async function openTask(id){
   let r;try{r=await api('GET','/api/hub/tasks/'+encodeURIComponent(id)+'?events=100')}catch(e){if(seq===detailSeq)d.innerHTML='<div class="dhead"><button class="btn icon" data-back>←</button><h3>'+esc(id)+'</h3></div><div class="blank">'+esc(e.message)+'</div>';d.querySelector('[data-back]').onclick=closeTask;return}
   if(seq!==detailSeq)return;
   const t=r.task,ev=r.events||[];tasks.set(t.id,t);
-  const keep=d.querySelector('#tmsg')?.value||'';const briefOpen=d.querySelector('#briefSec')?.open;
+  const keep=d.querySelector('#tmsg')?.value||'';const briefOpen=d.querySelector('#briefSec')?.open,dbgOpen=d.querySelector('#dbgSec')?.open;
   d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(t.title)+'</h3>'+stPill(t.status)+'</div><div class="dbody">'+
     '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd><dt>更新</dt><dd>'+ago(t.updatedAt)+'</dd>'+(t.activity&&ACTIVE.includes(t.status)?'<dt>当前</dt><dd class="mono">'+esc(t.activity)+'</dd>':'')+'</dl>'+
     '<div class="acts"><button class="btn" data-a="ack"'+(t.unread?'':' disabled')+'>✓ 标记已读</button><button class="btn danger" data-a="cancel"'+(ACTIVE.includes(t.status)?'':' disabled')+'>⊘ 中止</button><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>✕ 关闭窗口</button></div>'+
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
     '<div class="dsec send"><h4>追加指令</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；窗口已关闭会自动恢复会话"></textarea><div class="acts"><span class="hintk">⌘/Ctrl+Enter 发送</span><button class="btn primary" data-a="send">发送</button></div></div>'+
-    '<div class="dsec"><h4>实时终端 <span class="chip" id="scrState"></span></h4><pre id="screen" class="pre">…</pre></div>'+
     '<details class="dsec" id="briefSec"><summary>任务简报</summary><pre class="pre">'+esc(t.brief)+'</pre></details>'+
-    '<div class="dsec"><h4>事件</h4>'+(ev.slice().reverse().map(e=>'<div class="ev"><time>'+new Date(e.ts).toLocaleString()+'</time><span class="k">'+esc(e.kind)+(e.status?' → '+esc(ST[e.status]||e.status):'')+'</span>'+(e.text?'<span class="x">'+esc(e.text.slice(0,600))+'</span>':'')+'</div>').join('')||'<div class="blank">暂无事件</div>')+'</div></div>';
-  const ta=d.querySelector('#tmsg');ta.value=keep;if(briefOpen)d.querySelector('#briefSec').open=true;
+    '<details class="dsec dbg" id="dbgSec"><summary>调试信息</summary><h4>终端 <span class="chip" id="scrState"></span></h4><pre id="screen" class="pre">…</pre><h4>事件</h4>'+(ev.slice().reverse().map(e=>'<div class="ev"><time>'+new Date(e.ts).toLocaleString()+'</time><span class="k">'+esc(e.kind)+(e.status?' → '+esc(ST[e.status]||e.status):'')+'</span>'+(e.text?'<span class="x">'+esc(e.text.slice(0,600))+'</span>':'')+'</div>').join('')||'<div class="blank">暂无事件</div>')+'</details></div>';
+  const ta=d.querySelector('#tmsg');ta.value=keep;if(briefOpen)d.querySelector('#briefSec').open=true;const dbg=d.querySelector('#dbgSec');dbg.ontoggle=()=>{if(dbg.open)pollScreen(t.id);else clearTimeout(screenTimer)};if(dbgOpen)dbg.open=true;
   ta.onkeydown=e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();d.querySelector('[data-a=send]').click()}};
   d.querySelector('[data-back]').onclick=closeTask;
   d.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{const a=b.dataset.a;
@@ -630,11 +630,11 @@ async function openTask(id){
     try{if(a==='send'){const text=ta.value.trim();if(!text)return;await api('POST','/api/hub/tasks/'+t.id+'/message',{text});ta.value='';toast('已发送给 '+t.id)}
       else await api('POST','/api/hub/tasks/'+t.id+'/'+a,{});openTask(t.id)}catch(e){toast(e.message,'error')}});
   if(t.unread)api('POST','/api/hub/tasks/'+t.id+'/ack',{}).catch(()=>{});
-  pollScreen(t.id);
+  clearTimeout(screenTimer);
 }
 function closeTask(){const was=selTask;selTask=null;detailSeq++;clearTimeout(screenTimer);const d=$('#detail');const hadFocus=d.contains(document.activeElement);d.classList.remove('on');d.dataset.id='';_renderTasks();if(hadFocus&&was)document.querySelector('.titem[data-id="'+CSS.escape(was)+'"]')?.focus()}
-async function pollScreen(id){clearTimeout(screenTimer);if(selTask!==id)return;let r;try{r=await api('GET','/api/hub/tasks/'+encodeURIComponent(id)+'/screen')}catch{r={alive:false,text:''}}
-  if(selTask!==id)return;const el=$('#screen');if(!el)return;const atB=el.scrollTop+el.clientHeight>=el.scrollHeight-8;
+async function pollScreen(id){clearTimeout(screenTimer);if(selTask!==id||!$('#dbgSec')?.open)return;let r;try{r=await api('GET','/api/hub/tasks/'+encodeURIComponent(id)+'/screen')}catch{r={alive:false,text:''}}
+  if(selTask!==id||!$('#dbgSec')?.open)return;const el=$('#screen');if(!el)return;const atB=el.scrollTop+el.clientHeight>=el.scrollHeight-8;
   el.textContent=r.alive?(r.text||'(空)'):'(worker 窗口已关闭)';$('#scrState').innerHTML=r.alive?'<span class="dot live"></span> LIVE':'';if(atB)el.scrollTop=el.scrollHeight;
   if(r.alive)screenTimer=setTimeout(()=>pollScreen(id),1500)}
 let detailTimer=0;function refreshDetailSoon(){clearTimeout(detailTimer);detailTimer=setTimeout(()=>{if(selTask&&!document.activeElement?.closest?.('#detail'))openTask(selTask)},400)}
