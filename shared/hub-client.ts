@@ -65,6 +65,8 @@ export class HubClient {
 		owner?: string;
 		/** Machine to run the worker on (default: this hub's machine). */
 		machine?: string;
+		/** Dispatch even if an open task looks like the same job (the hub otherwise answers 409). */
+		force?: boolean;
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}

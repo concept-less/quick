@@ -1,9 +1,13 @@
-// quick-agent Web UI: hosts a front-agent pi session in-process (pi SDK) and serves a browser GUI
-// with chat, task panel and browser comments. Listens on 127.0.0.1 only; protected by the hub token.
+// quick-agent Web UI: hosts the front agent in-process (pi SDK) and serves an attention-first browser GUI
+// (what needs you / what is in flight / what to skim + a hand-off desk). Listens on 127.0.0.1 only;
+// protected by the hub token. See docs/attention.md.
 //
-// Run: node ui/server.ts [--cwd DIR] [--new]   (normally via `quick ui`)
+// There are no user-visible sessions: the front is ONE continuous stream. It is persisted in
+// ~/.quick-agent/ui-sessions/ and resumed on every start; pi compacts its context automatically.
+//
+// Run: node ui/server.ts [--cwd DIR] [--new]   (normally via `quick ui`; --new is a maintenance escape hatch)
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -141,7 +145,23 @@ const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent 
 	return { ...(await sdk.createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model })), services, diagnostics: services.diagnostics };
 };
 
-const initialManager = argv.includes("--new") ? sdk.SessionManager.create(CWD, SESSION_DIR) : sdk.SessionManager.continueRecent(CWD, SESSION_DIR);
+/** Messages shown on load; older ones are fetched on demand (GET /api/history). */
+const RECENT = 80;
+const visibleMessages = () => runtime.session.messages.filter((m: any) => m.role !== "system");
+
+/** The single front stream: the most recently written session file, whatever cwd it started in. */
+function latestStream(): string | undefined {
+	let best: { f: string; t: number } | undefined;
+	for (const name of readdirSync(SESSION_DIR)) {
+		if (!name.endsWith(".jsonl")) continue;
+		const f = join(SESSION_DIR, name);
+		const t = statSync(f).mtimeMs;
+		if (!best || t > best.t) best = { f, t };
+	}
+	return best?.f;
+}
+const streamFile = argv.includes("--new") ? undefined : latestStream();
+const initialManager = streamFile ? sdk.SessionManager.open(streamFile, SESSION_DIR, CWD) : sdk.SessionManager.create(CWD, SESSION_DIR);
 const runtime: any = await sdk.createAgentSessionRuntime(createRuntime, { cwd: CWD, agentDir: sdk.getAgentDir(), sessionManager: initialManager });
 let unsubscribe: (() => void) | undefined;
 let lastError: string | undefined;
@@ -205,18 +225,25 @@ async function bind(session: any) {
 }
 runtime.setRebindSession(bind);
 await bind(runtime.session);
+// Persistence and context size are the system's job, not the user's.
+try {
+	runtime.session.setAutoCompactionEnabled(true);
+} catch {}
 
 function state() {
 	const s = runtime.session;
 	return {
 		cwd: runtime.cwd,
+		// Kept for diagnostics / API stability; the UI does not expose sessions.
 		sessionFile: s.sessionFile,
 		sessionId: s.sessionId,
-		sessionName: s.sessionName,
 		model: s.model ? { provider: s.model.provider, id: s.model.id, name: s.model.name } : undefined,
 		thinkingLevel: s.thinkingLevel,
 		isStreaming: s.isStreaming,
-		messages: s.messages.filter((m: any) => m.role !== "system"),
+		...(() => {
+			const all = visibleMessages();
+			return { messages: all.slice(-RECENT), messagesTotal: all.length };
+		})(),
 		queue: { steering: s.getSteeringMessages(), followUp: s.getFollowUpMessages() },
 		statuses: Object.fromEntries(statuses),
 		widgets: Object.fromEntries(widgets),
@@ -236,13 +263,6 @@ async function prompt(body: any) {
 		: [];
 	if (!text && !images.length) throw new HttpError(400, "text is required");
 	const s = runtime.session;
-	// A few TUI built-ins the browser offers as buttons, accepted as text too.
-	if (text === "/new") return void (await runtime.newSession());
-	if (text.startsWith("/name ")) {
-		s.setSessionName(text.slice(6).trim());
-		broadcast({ type: "session", state: state() });
-		return;
-	}
 	lastError = undefined;
 	const opts: any = { images: images.length ? images : undefined, source: "rpc" };
 	if (s.isStreaming) opts.streamingBehavior = body.mode === "steer" ? "steer" : "followUp";
@@ -379,15 +399,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	if (p === "/api/state" && m === "GET") return send(res, 200, state());
 	if (p.startsWith("/api/hub/")) return proxyHub(req, res, `/api/${p.slice("/api/hub/".length)}${url.search}`);
 
-	if (m === "GET" && p === "/api/sessions") {
-		const list = await sdk.SessionManager.list(runtime.cwd, SESSION_DIR);
-		return send(res, 200, {
-			current: runtime.session.sessionFile,
-			sessions: list
-				.sort((a: any, b: any) => +new Date(b.modified) - +new Date(a.modified))
-				.slice(0, 100)
-				.map((s: any) => ({ path: s.path, id: s.id, name: s.name, modified: s.modified, messageCount: s.messageCount, firstMessage: String(s.firstMessage ?? "").slice(0, 120) })),
-		});
+	if (m === "GET" && p === "/api/history") {
+		// Older part of the continuous front stream: messages [max(0, before - limit), before).
+		const all = visibleMessages();
+		const before = Math.min(all.length, Math.max(0, Number(url.searchParams.get("before") ?? all.length) || 0));
+		const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 100) || 100));
+		const from = Math.max(0, before - limit);
+		return send(res, 200, { from, messages: all.slice(from, before), total: all.length });
 	}
 	if (m === "GET" && p === "/api/models") {
 		const list = await runtime.session.modelRuntime.getAvailable();
@@ -401,19 +419,6 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			return send(res, 200, { ok: true });
 		case "/api/abort":
 			await runtime.session.abort();
-			return send(res, 200, { ok: true });
-		case "/api/sessions/new":
-			await runtime.newSession();
-			return send(res, 200, { ok: true });
-		case "/api/sessions/switch": {
-			const file = String(body.path ?? "");
-			if (!file || !existsSync(file)) throw new HttpError(400, "no such session file");
-			await runtime.switchSession(file);
-			return send(res, 200, { ok: true });
-		}
-		case "/api/sessions/name":
-			runtime.session.setSessionName(String(body.name ?? "").trim());
-			broadcast({ type: "session", state: state() });
 			return send(res, 200, { ok: true });
 		case "/api/model": {
 			const s = runtime.session;

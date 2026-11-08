@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import { hubUrl, loadConfig, paths, REPO_ROOT, sanitizeId, saveConfigPatch, type PeerConfig } from "../shared/config.ts";
 import { ensureHub, hubAlive as alive } from "../shared/hub-process.ts";
-import { HubClient } from "../shared/hub-client.ts";
+import { HubClient, type HubError } from "../shared/hub-client.ts";
 import { ACTIVE_STATUSES, type Task } from "../shared/types.ts";
 import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
@@ -84,12 +84,12 @@ async function attach(id: string) {
 const HELP = `quick — quick-agent
 
   pi                        直接打开 pi 就是前台 agent（quick front 是它的别名）；pi --qa-off 为普通 pi
-  quick ui [--cwd DIR] [--new] [--no-open]   在浏览器里打开 Web UI（对话前台 agent + 任务面板）
+  quick ui [--cwd DIR] [--no-open]   在浏览器里打开 Web UI（注意力面板：需要你 / 进行中 / 待扫，并把事交给前台）
   quick ui stop|restart|status|url|logs
   quick hub start|stop|restart|status|logs
   quick ls [-a]             列出任务（-a 包含已关闭）
   quick show <id>           查看任务汇报、事件、简报
-  quick new [--machine M] [--cwd DIR] <title> <brief...>   不经前台直接派单
+  quick new [--force] [--machine M] [--cwd DIR] <title> <brief...>   不经前台直接派单（与未结束任务重复时拒绝，--force 强制）
   quick send <id> <message> 给 worker 追加指令（窗口已关会自动恢复会话）
   quick attach <id>         进入 worker 的 tmux 窗口（远程任务经 ssh；C-b d 返回）
   quick cancel <id>         中止 worker 当前运行
@@ -407,9 +407,13 @@ async function main() {
 				args.splice(mi, 2);
 				if (i < 0) cwd = ""; // remote: use that machine's default cwd unless --cwd is given
 			}
+			const fi = args.indexOf("--force");
+			if (fi >= 0) args.splice(fi, 1);
 			const [title, ...brief] = args;
-			if (!title || !brief.length) die("usage: quick new [--machine M] [--cwd DIR] <title> <brief...>");
-			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, source: { kind: "cli" } });
+			if (!title || !brief.length) die("usage: quick new [--force] [--machine M] [--cwd DIR] <title> <brief...>");
+			const t = await hub
+				.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, force: fi >= 0, source: { kind: "cli" } })
+				.catch((e: unknown): never => die((e as HubError).status === 409 ? `${(e as Error).message}\n（确实是另一件事就加 --force）` : (e as Error).message));
 			return console.log(line(t));
 		}
 		case "send": {

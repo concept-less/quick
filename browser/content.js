@@ -15,12 +15,35 @@
 		}
 	};
 
-	const STATUS_COLOR = {
-		// monochrome + one accent: grey = queued/working, red = needs you / failed, white = done
-		pending: "#6b6b66", claimed: "#a3a39c", dispatched: "#a3a39c",
-		starting: "#a3a39c", running: "#a3a39c", idle: "#ff3b30", needs_input: "#ff3b30", blocked: "#ff3b30",
-		done: "#ececE6", failed: "#ff3b30", cancelled: "#6b6b66", exited: "#ff3b30",
+	// Pin look per status, same encoding as the Web UI: fill not hue, one accent for "needs you".
+	//   wait = grey (queued), idle = outlined (in flight), "" = solid ink (done), need/fail = accent
+	const STATUS_CLASS = {
+		pending: "wait", claimed: "idle", dispatched: "idle", starting: "idle", running: "idle",
+		idle: "need", needs_input: "need", blocked: "need", done: "", failed: "fail", cancelled: "wait", exited: "fail",
 	};
+	const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+	/** "mod+shift+enter" -> <kbd>⌘</kbd><kbd>⇧</kbd><kbd>↵</kbd> on Mac, Ctrl/Shift/Enter elsewhere. */
+	const keys = (combo) =>
+		combo
+			.split("+")
+			.map((k) => {
+				const m = { mod: IS_MAC ? "⌘" : "Ctrl", shift: IS_MAC ? "⇧" : "Shift", alt: IS_MAC ? "⌥" : "Alt", enter: IS_MAC ? "↵" : "Enter", esc: "Esc" }[k];
+				return `<kbd>${m || k.toUpperCase()}</kbd>`;
+			})
+			.join("");
+	const pageKey = globalThis.__qaPageKey || ((u) => String(u).split("#")[0]);
+	// Send-key mode, shared with the popup setting (chrome.storage.local.sendMode):
+	//   "enter": Enter sends, Shift+Enter newline   |   "mod": ⌘/Ctrl+Enter sends, Enter newline
+	let sendMode = "enter";
+	try {
+		chrome.storage.local.get({ sendMode: "enter" }).then((v) => (sendMode = v.sendMode === "mod" ? "mod" : "enter"), () => {});
+		chrome.storage.onChanged.addListener((ch, area) => {
+			if (area === "local" && ch.sendMode) {
+				sendMode = ch.sendMode.newValue === "mod" ? "mod" : "enter";
+				if (box) renderBoxKeys();
+			}
+		});
+	} catch {}
 	const STATUS_TEXT = {
 		pending: "等待前台", claimed: "前台处理中", dispatched: "已派单", starting: "启动中", running: "进行中",
 		idle: "等你查看", needs_input: "需要你回复", blocked: "受阻", done: "已完成", failed: "失败", cancelled: "已取消", exited: "已退出",
@@ -32,36 +55,45 @@
 	// absolute children (pins) use document coordinates.
 	host.style.cssText = "all:initial;position:absolute;left:0;top:0;width:0;height:0;overflow:visible;z-index:2147483647;pointer-events:none;";
 	const root = host.attachShadow({ mode: "closed" });
-	root.innerHTML = `<style>
-		/* tokens shared with ui/app.html + popup.html: ink surface, hairline borders, one signal-red accent, square corners */
+	// Styles live in a CLOSED shadow root: the host page cannot restyle us and we cannot leak into it.
+	// Design tokens + primitives (.btn, kbd, .lbl, .field) come from shared/tokens.css via tokens.js.
+	root.innerHTML = `<style>${globalThis.__qaTokensCss || ""}
 		:host{all:initial}
-		*{box-sizing:border-box;font:13px/1.5 "Inter","Helvetica Neue",ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-		.hl{position:fixed;border:2px solid #ff3b30;background:rgba(255,59,48,.08);pointer-events:none;transition:all .04s}
-		.sel{position:fixed;border:2px solid #0e0e0e;outline:1px solid #ececE6;background:rgba(14,14,14,.08);pointer-events:none}
-		.tag{position:fixed;background:#ff3b30;color:#fff;font:500 11px/1.5 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;padding:1px 6px;pointer-events:none;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
-		.region{position:fixed;border:2px dashed #ff3b30;background:rgba(255,59,48,.06);pointer-events:none}
-		.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;padding:6px;display:flex;gap:6px;align-items:center;pointer-events:auto;box-shadow:4px 4px 0 rgba(0,0,0,.35)}
-		.bar b{display:flex;align-items:center;gap:8px;margin:0 8px 0 6px;font:800 12px/1 "Inter","Helvetica Neue",ui-sans-serif,system-ui,sans-serif;letter-spacing:-.01em;text-transform:uppercase}
-		.bar b::before{content:"";width:10px;height:10px;background:#ff3b30}
-		.bar button,.box button{height:28px;background:transparent;color:#ececE6;border:1px solid #3a3a38;padding:0 10px;cursor:pointer;transition:border-color .12s,background .12s,color .12s}
-		.bar button:hover,.box button:hover{border-color:#ececE6}
-		.bar button.on{background:#ececE6;color:#0e0e0e;border-color:#ececE6}
-		.bar .hint{color:#8c8c85;font:11px/1.4 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;margin:0 6px}
-		.box{position:fixed;width:360px;background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;padding:12px;pointer-events:auto;box-shadow:6px 6px 0 rgba(0,0,0,.35)}
-		.box textarea{width:100%;min-height:90px;resize:vertical;background:#161616;color:#ececE6;border:1px solid #3a3a38;padding:8px 10px;outline:none}
-		.box textarea:focus{border-color:#ececE6}
-		.box .meta{color:#8c8c85;font:11px/1.5 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-		.box .row{display:flex;gap:8px;align-items:center;margin-top:10px}
+		*{box-sizing:border-box;font:var(--fs-md)/1.5 var(--sans);letter-spacing:normal;text-transform:none}
+		.hl{position:fixed;border:2px solid var(--acc);background:var(--acc-soft);pointer-events:none;transition:all .04s}
+		.sel{position:fixed;border:2px solid var(--line-2);outline:1px solid var(--bg);background:color-mix(in srgb,var(--fg) 8%,transparent);pointer-events:none}
+		.tag{position:fixed;background:var(--acc);color:var(--acc-fg);font:500 11px/1.5 var(--mono);padding:1px 6px;pointer-events:none;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
+		.region{position:fixed;border:2px dashed var(--acc);background:var(--acc-soft);pointer-events:none}
+		.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:var(--bg);color:var(--fg);border:var(--bw) solid var(--line-2);padding:6px;display:flex;gap:6px;align-items:center;pointer-events:auto;box-shadow:var(--hard);max-width:calc(100vw - 24px)}
+		.bar b{display:flex;align-items:center;gap:8px;margin:0 8px 0 4px;font:800 12px/1 var(--sans);letter-spacing:-.01em;text-transform:uppercase;white-space:nowrap}
+		.bar .btn{height:28px}
+		.bar .btn.on{background:var(--inv-bg);color:var(--inv-fg);border-color:var(--inv-bg)}
+		.bar .hint{color:var(--fg-3);font:11px/1.4 var(--mono);margin:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+		.bar .hint kbd{margin:0 1px}
+		.box{position:fixed;width:360px;background:var(--bg);color:var(--fg);border:var(--bw) solid var(--line-2);pointer-events:auto;box-shadow:var(--hard-lg)}
+		.box .head{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:var(--bw) solid var(--line)}
+		.box .meta{flex:1;min-width:0;color:var(--fg-3);font:11px/1.5 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+		.box textarea{display:block;width:100%;min-height:96px;resize:vertical;border:0;border-bottom:var(--bw) solid var(--line);background:var(--surface);padding:10px 12px;box-shadow:none}
+		.box textarea:focus{box-shadow:none;border-bottom-color:var(--line-2)}
+		.box .row{display:flex;gap:6px;align-items:center;padding:8px 8px 8px 12px}
 		.box .row .sp{flex:1}
-		.box button.primary{background:#ececE6;color:#0e0e0e;border-color:#ececE6;font-weight:600}
-		.box button.primary:hover{background:#ff3b30;border-color:#ff3b30;color:#fff}
-		.box label{color:#a3a39c;font-size:12px;display:flex;gap:4px;align-items:center}
-		.toast{position:fixed;bottom:18px;right:18px;background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;border-left:4px solid #ececE6;padding:9px 14px;pointer-events:auto;max-width:420px;box-shadow:4px 4px 0 rgba(0,0,0,.35)}
-		.toast.err{border-left-color:#ff3b30}
-		.toast .sub{color:#8c8c85;font-size:12px;margin-top:2px}
-		.pin{position:absolute;width:20px;height:20px;color:#0e0e0e;font:700 11px/1 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;border:2px solid #0e0e0e;box-shadow:2px 2px 0 rgba(0,0,0,.45)}
-		.pop{position:absolute;width:320px;background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;padding:10px 12px;pointer-events:auto;box-shadow:4px 4px 0 rgba(0,0,0,.35);white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
-		.pop .st{font:600 11px/1.5 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;letter-spacing:.04em;margin-bottom:6px}
+		.box label{color:var(--fg-2);font-size:12px;display:flex;gap:5px;align-items:center;cursor:pointer;white-space:nowrap}
+		.box label input{accent-color:var(--fg);margin:0}
+		.box .keys{display:flex;align-items:center;gap:6px;padding:0 12px 8px;color:var(--fg-3);font:11px/1.4 var(--mono)}
+		.box .keys button{border:0;background:none;color:var(--fg-2);cursor:pointer;font:11px/1.4 var(--mono);text-decoration:underline;text-decoration-color:var(--fg-3);text-underline-offset:2px;padding:0}
+		.box .keys button:hover{color:var(--acc)}
+		.toast{position:fixed;bottom:18px;right:18px;background:var(--bg);color:var(--fg);border:var(--bw) solid var(--line-2);border-left:4px solid var(--fg);padding:9px 14px;pointer-events:auto;max-width:420px;box-shadow:var(--hard)}
+		.toast.err{border-left-color:var(--acc)}
+		.toast .sub{color:var(--fg-2);font-size:12px;margin-top:2px}
+		.pin{position:absolute;width:20px;height:20px;color:var(--inv-fg);background:var(--inv-bg);font:700 11px/1 var(--mono);display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;border:2px solid var(--bg);box-shadow:2px 2px 0 var(--hard-c)}
+		.pin.need,.pin.fail{background:var(--acc);color:var(--acc-fg)}
+		.pin.wait{background:var(--fg-3);color:var(--bg)}
+		.pin.idle{background:var(--bg);color:var(--fg);border-color:var(--line-2)}
+		.pop{position:absolute;width:320px;background:var(--bg);color:var(--fg);border:var(--bw) solid var(--line-2);padding:10px 12px;pointer-events:auto;box-shadow:var(--hard);white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
+		.pop .st{font:600 11px/1.5 var(--mono);letter-spacing:.04em;margin-bottom:6px;color:var(--fg-2)}
+		.pop .st.need,.pop .st.fail{color:var(--acc)}
+		.pop hr{border:0;border-top:var(--bw) solid var(--line);margin:8px 0}
+		.pop .sum{color:var(--fg-2)}
 		.pins{position:absolute;left:0;top:0;width:0;height:0}
 	</style><div class="layer"></div><div class="pins"></div>`;
 	const layer = root.querySelector(".layer");
@@ -74,6 +106,7 @@
 				stop();
 			} catch {}
 			clearTimeout(pollTimer);
+			clearInterval(urlTimer);
 			host.remove();
 		},
 	};
@@ -156,6 +189,7 @@
 	let dragStart = null;
 	let regionRect = null;
 	let bar, hl, tag, regionBox, box;
+	let boxUrl = "";
 	const selBoxes = [];
 
 	const isOurs = (e) => e.composedPath().includes(host);
@@ -166,7 +200,7 @@
 		selected = [];
 		regionRect = null;
 		bar = el("bar");
-		bar.innerHTML = `<b>quick-agent</b><button data-m="element">元素</button><button data-m="region">框选区域</button><span class="hint">点击选择 · Shift+点击多选 · Enter 写评论 · Esc 退出</span><button data-x>✕</button>`;
+		bar.innerHTML = `<b><i class="mk"></i>quick-agent</b><button class="btn" data-m="element" title="元素模式 (E)">元素 <kbd>E</kbd></button><button class="btn" data-m="region" title="框选区域 (R)">框选区域 <kbd>R</kbd></button><span class="hint">点击选择 · ${keys("shift")}+点击多选 · ${keys("enter")} 写评论 · ${keys("esc")} 退出</span><button class="btn icon" data-x title="退出 (Esc)">✕</button>`;
 		bar.addEventListener("click", (e) => {
 			const m = e.target.closest("button")?.dataset.m;
 			if (m) setMode(m);
@@ -290,10 +324,15 @@
 		if (isOurs(e)) return;
 		if (e.key === "Escape") {
 			e.preventDefault();
+			e.stopPropagation();
 			stop();
 		} else if (e.key === "Enter" && selected.length && !box) {
 			e.preventDefault();
 			openBox();
+		} else if (!box && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "e" || e.key === "r" || e.key === "E" || e.key === "R")) {
+			e.preventDefault();
+			e.stopPropagation();
+			setMode(e.key.toLowerCase() === "r" ? "region" : "element");
 		}
 	}
 	function contentRect(n) {
@@ -342,10 +381,13 @@
 		const u = unionRect();
 		box = el("box");
 		const what = mode === "region" ? `区域 ${Math.round(regionRect.width)}×${Math.round(regionRect.height)}，含 ${selected.length} 个元素` : selected.map((n) => cssPath(n)).join(" , ");
-		box.innerHTML = `<div class="meta" title="${escapeHtml(what)}">${escapeHtml(what)}</div>
-			<textarea placeholder="写下你的评论/要求…（Ctrl/⌘+Enter 发送）"></textarea>
+		boxUrl = location.href; // the comment belongs to the page it was written on, even if an SPA navigates meanwhile
+		box.innerHTML = `<div class="head"><i class="mk"></i><span class="meta" title="${escapeHtml(what)}">${escapeHtml(what)}</span></div>
+			<textarea class="field" aria-label="评论"></textarea>
 			<div class="row"><label><input type="checkbox" checked data-shot> 附带截图</label><span class="sp"></span>
-			<button data-cancel>取消</button><button class="primary" data-send>发送</button></div>`;
+			<button class="btn" data-cancel title="取消 (Esc)">取消</button><button class="btn primary" data-send>发送</button></div>
+			<div class="keys"></div>`;
+		renderBoxKeys();
 		const left = Math.min(Math.max(8, u.x), innerWidth - 372);
 		const below = u.y + u.height + 10;
 		box.style.left = `${left}px`;
@@ -354,13 +396,41 @@
 		setTimeout(() => ta.focus(), 0);
 		box.addEventListener("keydown", (e) => {
 			e.stopPropagation();
-			if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
-			if (e.key === "Escape") closeBox();
+			if (e.key === "Escape") {
+				e.preventDefault();
+				// Esc: close the box; Esc again (picker bar) exits picking. With nothing typed, exit right away.
+				if (box.querySelector("textarea").value.trim()) closeBox();
+				else stop();
+				return;
+			}
+			if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+			const mod = e.metaKey || e.ctrlKey;
+			if (mod || (sendMode === "enter" && !e.shiftKey && !e.altKey)) {
+				e.preventDefault();
+				send();
+			}
+		});
+		box.querySelector(".keys").addEventListener("click", (e) => {
+			if (!e.target.closest("[data-mode]")) return;
+			sendMode = sendMode === "enter" ? "mod" : "enter";
+			try {
+				chrome.storage.local.set({ sendMode });
+			} catch {}
+			renderBoxKeys();
+			box.querySelector("textarea").focus();
 		});
 		box.addEventListener("keyup", (e) => e.stopPropagation());
 		box.addEventListener("keypress", (e) => e.stopPropagation());
 		box.querySelector("[data-cancel]").onclick = closeBox;
 		box.querySelector("[data-send]").onclick = send;
+	}
+	function renderBoxKeys() {
+		if (!box) return;
+		const sk = sendMode === "mod" ? keys("mod+enter") : keys("enter");
+		const nl = sendMode === "mod" ? keys("enter") : keys("shift+enter");
+		box.querySelector(".keys").innerHTML = `${sk} 发送 · ${nl} 换行 · ${keys("esc")} 取消 <span class="sp" style="flex:1"></span><button data-mode title="切换发送键（与插件弹窗设置同步）">改为 ${sendMode === "mod" ? "Enter" : IS_MAC ? "⌘+Enter" : "Ctrl+Enter"} 发送</button>`;
+		box.querySelector("textarea").placeholder = `写下你的评论/要求…（${sendMode === "mod" ? (IS_MAC ? "⌘+Enter" : "Ctrl+Enter") : "Enter"} 发送）`;
+		box.querySelector("[data-send]").innerHTML = `发送 ${sk}`;
 	}
 	function closeBox() {
 		box?.remove();
@@ -396,7 +466,7 @@
 		const boxes = mode === "region" && regionRect ? [regionRect] : elements.map((e) => e.rect);
 		const payload = {
 			comment,
-			url: location.href,
+			url: boxUrl || location.href,
 			title: document.title,
 			mode,
 			elements,
@@ -423,8 +493,10 @@
 		}
 		stop();
 		toast(`已发送给前台 agent（${res.intake.id}）`);
-		pins.push({ id: res.intake.id, comment, anchor: anchors[0], docAnchor, status: "pending", selector: elements[0]?.selector, region: payload.region });
-		renderPins();
+		if (pageKey(payload.url) === pageKey(location.href)) {
+			pins.push({ id: res.intake.id, comment, anchor: anchors[0], docAnchor, status: "pending", selector: elements[0]?.selector, region: payload.region });
+			renderPins();
+		}
 		schedulePoll(true);
 	}
 
@@ -437,7 +509,12 @@
 	}
 
 	// ------------------------------------------------------------ pins for sent comments
+	// Pins belong to ONE page: pinsKey is the pageKey() they were fetched for. Whenever the page
+	// identity changes (navigation, SPA pushState/replaceState, hash route, back/forward, bfcache
+	// restore) the pins are dropped immediately and refetched; late poll responses for an old page
+	// are discarded.
 	let pins = [];
+	let pinsKey = pageKey(location.href);
 	let openPop = null;
 	function pinPos(p) {
 		const n = p.anchor && p.anchor.isConnected ? p.anchor : p.selector ? safeQuery(p.selector) : null;
@@ -457,6 +534,8 @@
 	}
 	function renderPins() {
 		pinLayer.innerHTML = "";
+		openPop = null;
+		if (pinsKey !== pageKey(location.href)) return; // stale: belongs to another page
 		pins.forEach((p, i) => {
 			const pos = pinPos(p);
 			if (!pos) return;
@@ -464,7 +543,7 @@
 			const d = el("pin", pinLayer);
 			d.style.left = `${pos.x}px`;
 			d.style.top = `${pos.y}px`;
-			d.style.background = STATUS_COLOR[st] || "#6b6b66";
+			d.classList.add(...[STATUS_CLASS[st] ?? "wait"].filter(Boolean));
 			d.textContent = String(i + 1);
 			d.title = `${STATUS_TEXT[st] || st}: ${p.comment}`;
 			d.onclick = (e) => {
@@ -475,7 +554,7 @@
 				pop.dataset.id = p.id;
 				pop.style.left = `${Math.min(pos.x + 24, scrollX + innerWidth - 340)}px`;
 				pop.style.top = `${pos.y}px`;
-				pop.innerHTML = `<div class="st" style="color:${STATUS_COLOR[st] || "#6b6b66"}">■ ${escapeHtml(STATUS_TEXT[st] || st)}${p.taskId ? ` · 任务 ${escapeHtml(p.taskId)}` : ""}${p.taskTitle ? ` · ${escapeHtml(p.taskTitle)}` : ""}</div><div>${escapeHtml(p.comment)}</div>${p.summary ? `<hr style="border:0;border-top:1px solid #3a3a38;margin:8px 0"><div style="color:#a3a39c">${escapeHtml(p.summary)}</div>` : ""}`;
+				pop.innerHTML = `<div class="st ${STATUS_CLASS[st] ?? ""}">■ ${escapeHtml(STATUS_TEXT[st] || st)}${p.taskId ? ` · 任务 ${escapeHtml(p.taskId)}` : ""}${p.taskTitle ? ` · ${escapeHtml(p.taskTitle)}` : ""}</div><div>${escapeHtml(p.comment)}</div>${p.summary ? `<hr><div class="sum">${escapeHtml(p.summary)}</div>` : ""}`;
 				openPop = pop;
 			};
 		});
@@ -485,12 +564,18 @@
 	let hubDown = false;
 	async function poll() {
 		if (!alive()) return;
+		const url = location.href;
+		const key = pageKey(url);
 		try {
-			const res = await chrome.runtime.sendMessage({ type: "qa-page-comments", url: location.href });
+			const res = await chrome.runtime.sendMessage({ type: "qa-page-comments", url });
+			if (pageKey(location.href) !== key) return; // navigated while waiting: this answer is for another page
 			hubDown = !res?.ok;
 			if (res?.ok) {
+				if (pinsKey !== key) pins = [];
+				pinsKey = key;
 				const known = new Map(pins.map((p) => [p.id, p]));
-				pins = res.comments.map((c) => {
+				// Belt and braces: an older hub may match pages more loosely; keep only this page's comments.
+				pins = res.comments.filter((c) => !c.url || pageKey(c.url) === key).map((c) => {
 					const old = known.get(c.id) || {};
 					return {
 						...old, id: c.id, comment: c.comment, status: c.status, taskId: c.taskId, taskStatus: c.taskStatus,
@@ -502,7 +587,7 @@
 			}
 		} catch {}
 	}
-	function schedulePoll(now = false) {
+	function schedulePoll(now = false, delay = 1500) {
 		clearTimeout(pollTimer);
 		const tick = async () => {
 			if (!alive()) return; // extension reloaded/removed: stop quietly
@@ -511,9 +596,36 @@
 			// Back off when the hub is not reachable or not configured.
 			pollTimer = setTimeout(tick, hubDown ? 60000 : busy ? 5000 : 30000);
 		};
-		pollTimer = setTimeout(tick, now ? 1500 : 0);
+		pollTimer = setTimeout(tick, now ? delay : 0);
 	}
 	window.addEventListener("resize", () => renderPins());
+
+	// Page identity changes. The isolated world cannot see the page's history.pushState calls, so
+	// watch every signal we have: Navigation API (SPA routes, Chrome 102+), popstate/hashchange,
+	// bfcache restore, and a cheap href check as the safety net.
+	let lastKey = pageKey(location.href);
+	function checkUrl() {
+		const key = pageKey(location.href);
+		if (key === lastKey) return;
+		lastKey = key;
+		pins = [];
+		pinsKey = key;
+		pinLayer.innerHTML = "";
+		openPop = null;
+		schedulePoll(true, 150);
+	}
+	window.addEventListener("popstate", checkUrl);
+	window.addEventListener("hashchange", checkUrl);
+	window.addEventListener("pageshow", (e) => {
+		if (!e.persisted) return;
+		lastKey = ""; // restored from bfcache: always refetch
+		checkUrl();
+	});
+	try {
+		window.navigation?.addEventListener("navigatesuccess", checkUrl);
+		window.navigation?.addEventListener("currententrychange", () => setTimeout(checkUrl, 0));
+	} catch {}
+	const urlTimer = setInterval(() => (alive() ? checkUrl() : clearInterval(urlTimer)), 500);
 	document.addEventListener("click", () => {
 		if (openPop && !active) {
 			openPop.remove();

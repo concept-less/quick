@@ -96,6 +96,8 @@ quick machines                   # 也会列出每台机器的 hub 版本
 
 在会话中可以随时切换：`/qa off` 切成普通 pi（恢复 bash/edit/write），`/qa on` 切回前台。
 
+**不重复派单**：同一件事只会有一个 worker。前台的系统提示里带着所有未结束的任务（包括别的前台、终端或 Web UI 派出的），同一请求即使换了说法、或在另一个前台里又说了一遍，前台也会指向已有任务，用 `qa_task_send` 补充，而不是再派一个。hub 还有一道硬性查重：同一台机器、同一目录下，如果已有未结束的任务和新任务同标题或简报几乎相同（字符二元组相似度 ≥ 0.75），就拒绝创建（409）。人类明确要另开一个时，前台带 `force=true` 派单，CLI 则用 `quick new --force`。注意：查重只覆盖同一个 hub/mesh 看得到的任务，互不相连的两个 hub（比如独立的测试环境）之间无法互相查重。
+
 ## 在 pi 里使用
 
 直接说要做什么，前台会派单并立即回复任务 ID。worker 完成、提问或受阻时：
@@ -115,7 +117,7 @@ quick show <id>                # 查看汇报、事件、简报
 quick send <id> "追加指令"      # worker 窗口关了也会自动用原会话恢复
 quick attach <id>              # 切换到 worker 的 tmux 窗口
 quick cancel <id> / quick close <id>
-quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
+quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单（与未结束任务重复会被拒绝，--force 强制）
 quick hub start|stop|restart|status|logs
 quick upgrade [--check] [--all]  # 升级（见「升级」）
 quick ui                       # 浏览器里的前台 agent + 任务面板（见下文 Web UI）
@@ -283,7 +285,7 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
-| POST | `/api/tasks` | `{title, brief, cwd, machine?, attachments?, source?}` 在指定机器上创建任务并拉起 worker |
+| POST | `/api/tasks` | `{title, brief, cwd, machine?, attachments?, source?, force?}` 在指定机器上创建任务并拉起 worker；与未结束任务（同目录、同标题或简报几乎相同）重复时返回 409，`force: true` 跳过查重 |
 | POST | `/api/tasks/:id/message` | `{text}` 追加指令（必要时恢复会话） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 标记已读 |
 | POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动 |

@@ -8,7 +8,8 @@ import { Key, truncateToWidth } from "@earendil-works/pi-tui";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { hubUrl, loadConfig, matchProject, REPO_ROOT } from "../shared/config.ts";
-import { HubClient } from "../shared/hub-client.ts";
+import { HubClient, HubError } from "../shared/hub-client.ts";
+import { isOpen } from "../shared/dedupe.ts";
 import { openAttach, planAttach, runForeground, type AttachResult } from "../shared/attach.ts";
 import { ensureHub } from "../shared/hub-process.ts";
 import { autoUpdate, compareVersions, readState, readVersion } from "../shared/update.ts";
@@ -21,13 +22,14 @@ const ICON: Record<string, string> = {
 	starting: "◌", running: "●", idle: "◐", needs_input: "?", blocked: "■", done: "✓", failed: "✗", cancelled: "⊘", exited: "⏏",
 };
 
-function frontRules(cwd: string, defaultCwd: string, projects: string, machines: string): string {
+function frontRules(cwd: string, defaultCwd: string, projects: string, machines: string, openTasks: string): string {
 	return `你是 quick-agent 工作流中的 **前台 agent**：你和人类交互，并且必须 **快**。工作方式类似中断处理的上半部：
 1. 理解任务：只做最少量的澄清。只有在缺少关键信息、无法写出可执行简报时才提问，而且一次问完。
 2. 组装上下文：允许快速读取少量文件、grep/ls 确认工作目录和相关位置，但不要深入调研，不要动手实现。
 3. 派单：调用 qa_dispatch 把任务交给一个独立的负责人 worker。brief 必须自包含：目标、背景、相关文件/位置、约束、验收标准，以及你掌握的全部上下文（含截图路径、元素选择器、页面 URL）。worker 看不到你和人类的对话。
 4. 派完立刻用一两句话回复（任务 ID、标题、工作目录），结束本轮，不要等待 worker。
 5. 一次请求包含多个互相独立的任务时，分别派单。属于已有任务的追加需求，用 qa_task_send 发给对应 worker，不要新建任务。
+   **不重复派单**：派单前先对照下方「未结束的任务」（包括其他前台/终端/Web UI 派出的）。同一件事——哪怕措辞不同、或是人类在另一个前台里也说过一遍——不要再派第二个 worker：告诉人类它已经由哪个任务在处理（ID），有新增或不同的要求就用 qa_task_send 补充给那个 worker。只有人类明确要求另开一个，或确认是不同的工作时，才在 qa_dispatch 里传 force=true。qa_dispatch 被 hub 以"duplicate"拒绝时同样处理。
 6. 人类问进度时用 qa_tasks / qa_task_read；要求中止时用 qa_task_cancel。
 7. 收到 [quick-agent 汇报] 消息时，不需要主动行动；人类问起时再基于它回答。
 8. 纯闲聊或一句话能回答的问题直接回答，不用派单。
@@ -42,7 +44,10 @@ ${machines}
 当前 pi 的工作目录（人类说"这个项目"时默认指它，也是派单的默认 cwd）: ${cwd}
 兜底工作目录: ${defaultCwd}
 浏览器 URL → 工作目录映射（~/.quick-agent/config.json 的 projects）：
-${projects}`;
+${projects}
+
+未结束的任务（派单前用来查重；最新状态用 qa_tasks）：
+${openTasks}`;
 }
 
 export function setupFront(pi: ExtensionAPI) {
@@ -99,6 +104,15 @@ export function setupFront(pi: ExtensionAPI) {
 			pi.setActiveTools(savedTools ?? ["read", "bash", "edit", "write"]);
 		}
 		renderWidget(ctx);
+	};
+
+	/** Stable one-liners (no live activity, so the prompt section only changes when the task set does). */
+	const describeOpenTasks = () => {
+		const open = [...tasks.values()].filter(isOpen).sort((a, b) => b.createdAt - a.createdAt);
+		if (!open.length) return "- （没有）";
+		const line = (t: Task) =>
+			`- ${t.id} [${t.status}] "${t.title}" @${t.machine} ${t.cwd}${t.owner === owner ? "（本前台派出）" : t.owner ? "（其他前台派出）" : ""}: ${t.brief.replace(/\s+/g, " ").slice(0, 160)}`;
+		return open.slice(0, 30).map(line).join("\n") + (open.length > 30 ? `\n- … 还有 ${open.length - 30} 个（qa_tasks）` : "");
 	};
 
 	// ---------------------------------------------------------------- widget / status
@@ -210,23 +224,42 @@ export function setupFront(pi: ExtensionAPI) {
 			attachments: Type.Optional(Type.Array(Type.String(), { description: "Absolute paths of files the worker should look at (e.g. screenshots)" })),
 			intake_id: Type.Optional(Type.String({ description: "Browser comment id when dispatching a [浏览器评论]" })),
 			machine: Type.Optional(Type.String({ description: "Machine id (from qa_machines) to run the worker on; default this machine. cwd must exist there." })),
+			force: Type.Optional(
+				Type.Boolean({ description: "Dispatch even though an open task looks like the same job. Only when the human explicitly wants another worker or it is verifiably different work." }),
+			),
 		}),
 		async execute(_id, p) {
 			const intake = p.intake_id ? await hub.request<{ intake: Intake }>("GET", `/api/intake/${p.intake_id}`).then((r) => r.intake).catch(() => undefined) : undefined;
-			const task = await hub.createTask({
-				title: p.title,
-				brief: p.brief,
-				cwd: p.cwd,
-				attachments: p.attachments,
-				owner,
-				machine: p.machine,
-				source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
-			});
+			let task: Task;
+			try {
+				task = await hub.createTask({
+					title: p.title,
+					brief: p.brief,
+					cwd: p.cwd,
+					attachments: p.attachments,
+					owner,
+					machine: p.machine,
+					force: p.force,
+					source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
+				});
+			} catch (e) {
+				if (!(e instanceof HubError) || e.status !== 409) throw e;
+				// Not an error from the agent's point of view: nothing was dispatched, the work is already owned.
+				return {
+					content: [
+						{
+							type: "text",
+							text: `未派单：hub 判断这和已有的未结束任务是同一件事。\n${e.message}\n\n请告诉人类它已经在由上面的任务处理；有新增要求就用 qa_task_send 发给那个 worker。只有人类明确要另开一个、或确认是不同的工作时，才带 force=true 重新派单。`,
+						},
+					],
+					details: { task: undefined as Task | undefined, duplicate: true },
+				};
+			}
 			tasks.set(task.id, task);
 			renderWidget();
 			return {
 				content: [{ type: "text", text: `Dispatched ${task.id} "${task.title}" on machine ${task.machine} in ${task.cwd} (status ${task.status}${task.summary ? `: ${task.summary}` : ""}).` }],
-				details: { task },
+				details: { task: task as Task | undefined, duplicate: false },
 			};
 		},
 	});
@@ -636,7 +669,13 @@ export function setupFront(pi: ExtensionAPI) {
 			: "- （未配置）";
 		const ms = await loadMachines();
 		const selfLine = describeMachines(ms.filter((m) => m.self));
-		event.systemPromptOptions.sections.quick_agent_front = frontRules(ctx.cwd, cfg.defaultCwd, projects, `${selfLine}\n${describeMachines(ms.filter((m) => !m.self)) || "- （没有其他机器）"}`);
+		event.systemPromptOptions.sections.quick_agent_front = frontRules(
+			ctx.cwd,
+			cfg.defaultCwd,
+			projects,
+			`${selfLine}\n${describeMachines(ms.filter((m) => !m.self)) || "- （没有其他机器）"}`,
+			describeOpenTasks(),
+		);
 	});
 
 	// Defence in depth: in front mode only the front toolset may run.

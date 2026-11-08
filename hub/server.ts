@@ -20,7 +20,9 @@ import {
 	type TaskStatus,
 } from "../shared/types.ts";
 import { dashboardHtml } from "./dashboard.ts";
+import { pageKey } from "../shared/page-url.mjs";
 import { Mesh } from "./mesh.ts";
+import { describeDuplicates, findDuplicates } from "../shared/dedupe.ts";
 import { autoUpdate, readState, readVersion, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 
 const run = promisify(execFile);
@@ -532,8 +534,17 @@ async function apiCreateTask(body: any): Promise<Task> {
 	if (!machine && !body.cwd) machine = matchProject(cfg, body.source?.url)?.machine ?? "";
 	machine ||= SELF;
 	if (!mesh.reachable(machine)) throw new HttpError(400, `machine ${machine} is not reachable (see /api/machines)`);
+	// The same request dispatched twice (two front agents, double submit, retries) must not start two workers.
+	if (!body.force) {
+		const dups = findDuplicates(allTasks(), { title: String(body.title ?? ""), brief: String(body.brief ?? ""), cwd: body.cwd ? String(body.cwd) : undefined, machine });
+		if (dups.length) {
+			log(`[dedupe] refused "${body.title}": duplicate of ${dups.map((d) => d.task.id).join(", ")}`);
+			throw new HttpError(409, `duplicate task: an open task already covers this (pass force=true only if it is really a different job)\n${describeDuplicates(dups)}`);
+		}
+	}
 	const params = { ...body };
 	delete params.machine;
+	delete params.force;
 	if (machine !== SELF && Array.isArray(body.attachments) && body.attachments.length) params.files = readFiles(body.attachments.map(String));
 	const task = await call<Task>(machine, "task.create", params);
 	if (task.machine !== SELF) mirrorTasks.set(task.id, task);
@@ -840,13 +851,15 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	// Browser badges: comments on a page (from any machine) and the status of their tasks.
 	if (p === "/api/pages" && m === "GET") {
 		const pageUrl = url.searchParams.get("url") ?? "";
-		const strip = (u: string) => u.split("#")[0];
+		// Same page = same pageKey (shared/page-url.mjs): ignores anchors, trailing slashes, param order and
+		// tracking params, but keeps hash routes ("#/users") apart so SPA screens don't share pins.
+		const key = pageKey(pageUrl);
 		const list = allIntakes()
-			.filter((i) => i.url && strip(i.url) === strip(pageUrl))
+			.filter((i) => i.url && pageKey(i.url) === key)
 			.sort((a, b) => a.createdAt - b.createdAt)
 			.map((i) => {
 				const t = i.taskId ? (tasks.get(i.taskId) ?? mirrorTasks.get(i.taskId)) : undefined;
-				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine };
+				return { id: i.id, url: i.url, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine };
 			});
 		return send(res, 200, { comments: list });
 	}
