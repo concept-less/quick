@@ -400,6 +400,10 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		});
 		return;
 	}
+	if (p === "/team.js" && m === "GET") {
+		res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+		return res.end(readFileSync(join(REPO_ROOT, "ui", "team.js"), "utf8"));
+	}
 	if (p === "/api/state" && m === "GET") return send(res, 200, state());
 	if (p.startsWith("/api/hub/")) return proxyHub(req, res, `/api/${p.slice("/api/hub/".length)}${url.search}`);
 

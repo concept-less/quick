@@ -1,6 +1,6 @@
 # 团队协作：几个人加几台机器上的 agent，共用一个工作区
 
-> 状态：设计 + MVP 已实现（`hub/team.ts`、`shared/team.ts`、`test/team.test.ts`）。
+> 状态：设计 + MVP 已实现（实现位置见第 6 节）。
 > 前置阅读：[`management-philosophy.md`](management-philosophy.md)（为什么以注意力为中心）。注意力模型本身（`shared/attention.ts`、`/api/attention`、打扰策略）由 td9fa 落地，本文的「按人计算注意力」建在它上面。
 
 ---
@@ -169,14 +169,13 @@ pings?: Ping[];        // 点名：指派、@提及、请验收、验收结果�
 comments?: number; lastComment?: { id; author; text; ts };
 ```
 
-**球在谁手里（holder）**是整个设计的核心概念：
+**球在谁手里（holder）**是整个设计的核心概念（`shared/team.ts` 的 `holderOf`）。负责人（assignee）是人时，worker 的问题先给他；验收人负责「完成了没有、行不行」：
 
 ```
-worker 在跑（starting/running/handoff）        → 球在 agent 手里，所有人「不用管」
-负责人是一个人（assignee）                       → 那个人
-否则，有验收人（reviewer）                       → 验收人
-否则                                            → 发起人（requester）
-都没有（老任务 / root 派的）                     → 团队的 owner（单人版里就是你自己）
+worker 在跑（starting/running/handoff）   → 球在 agent 手里，所有人「不用管」
+worker 交回「完成」（要验收）               → 验收人 ?? 负责人 ?? 发起人
+worker 交回「提问 / 受阻 / 失败 / 停下」     → 负责人 ?? 验收人 ?? 发起人
+都没有（老任务 / root 派的）                → 团队的 owner（单人版里就是你自己）
 ```
 
 操作：
@@ -185,7 +184,7 @@ worker 在跑（starting/running/handoff）        → 球在 agent 手里，所
 |---|---|---|
 | 「让 Alice 验收」 | `POST /api/tasks/:id/assign {reviewer:"alice"}` | 设验收人，点名 Alice（`review`）。worker 已交回时立刻进 Alice 的「需要你」；还在跑就等交回时再进 |
 | 「交给 Bob」（转交给人） | `{assignee:"bob"}` | Bob 成为负责人，点名 Bob（`assign`）；worker 之后的汇报都交给 Bob |
-| 「交回给 agent」 | `{assignee:null}` | 负责人回到 worker；给 worker 发追加指令（`send`）时会自动交回 |
+| 「交回给 agent」 | `{assignee:null}` | 负责人回到 worker（人不再负责，交回的事按验收人、发起人的顺序走） |
 | 「抄送 Carol」 | `{watchers_add:["carol"]}` | Carol 只在「关注」里看到 |
 | 「交给 Bob 的机器做」 | `qa_dispatch {machine:<Bob 的机器>}` | 只是选机器，人不变；机器列表里有所有者 |
 | 派单时直接定好 | `POST /api/tasks {reviewer, assignee, watchers}` | 同上 |
@@ -219,7 +218,7 @@ worker 在跑（starting/running/handoff）        → 球在 agent 手里，所
 - SSE：每个连接带着自己的身份，`attention` 事件按连接的身份逐个计算，`interrupt` 也按人算（Alice 的「需要你」只打断 Alice）。`task` 事件不变（团队视图需要）。
 - 自己的操作不打断自己：点名的发起者就是自己时不生成点名；自己派的任务交回给自己仍然照常（那是你派的事）。
 
-前端：pi 前台、Web UI、Electron 都通过 token 拿到「自己的」队列，渲染逻辑不变；Web UI 增加「团队」视图、任务详情里的评论区和「负责 / 验收 / 关注」行。
+前端：pi 前台、Web UI、Electron 都通过 token 拿到「自己的」队列，渲染逻辑不变；Web UI 顶栏多一个「团队」按钮（团队视图），任务详情里多了「人」（发起 / 负责 / 验收 / 关注，可直接改）和评论区。
 
 ### 3.5 前台 agent 知道团队
 
@@ -273,11 +272,13 @@ worker 在跑（starting/running/handoff）        → 球在 agent 手里，所
 
 | 部分 | 文件 |
 |---|---|
-| 成员、权限、提及解析、按人注意力（纯函数） | `shared/team.ts` |
-| 名册存储与 mesh 复制、身份识别、邀请、评论、指派、点名 | `hub/team.ts`，接入 `hub/server.ts` |
-| 客户端 profile（连远程 hub 的 user token） | `shared/config.ts` 的 `client`，`shared/hub-client.ts` |
-| CLI | `quick team …`、`quick comment`、`quick assign`、`quick inbox`、`quick team board`，`quick machine set --owner` |
-| 前台 | `extensions/front.ts`：团队提示段、`qa_dispatch` 新参数、`qa_task_assign`、`qa_comment`、`qa_tasks scope` |
-| worker | `extensions/worker.ts`：`qa_comment`，brief 里写明发起人和验收人 |
-| Web UI | `ui/app.html`：团队视图、评论区、负责/验收/关注 |
-| 测试 | `test/team.test.ts`（单元 + 两个用户连同一个隔离 hub 的端到端） |
+| 成员、权限、提及解析、球在谁手里、按人注意力、团队视图行（纯函数） | `shared/team.ts` |
+| 名册存储与 mesh 复制、身份识别、邀请、评论、指派、点名、按人确认 | `hub/team.ts`，接入 `hub/server.ts` |
+| 按人的注意力流（每个连接按身份收到自己的 `attention` 事件、打断判定和待扫汇总）、`/api/attention` 按身份、`?scope=team`、`?user=` | `hub/attention.ts`（td9fa 的注意力模型，`personalize` / `teamRow` 接 `shared/team.ts`） |
+| 客户端 profile（连远程 hub 的 user token） | `shared/config.ts` 的 `client`（`hubUrl` / `hubToken` / `remoteHub`），`shared/hub-client.ts` |
+| CLI | `cli/team.ts`：`quick team …`、`quick team board`（团队视图）、`quick assign`、`quick comment`；`quick new --reviewer/--assignee/--watch`、`quick machine set --owner`；`quick ls` 就是你自己的注意力队列 |
+| 前台 | `extensions/team-tools.ts`（`qa_task_assign`、`qa_comment`、`qa_team`、团队提示段），`extensions/front.ts`（`qa_dispatch` 的 `reviewer/assignee/watchers`、`qa_tasks scope=team`、只显示自己的任务） |
+| worker | `extensions/worker.ts`：`qa_comment`，brief 里写明发起人、负责人和验收人 |
+| Web UI | `ui/team.js`（由 `ui/app.html` 加载）：顶栏的身份和「团队」按钮（团队视图）、任务详情里的「人」（可改负责人、验收人、关注）和评论区 |
+| Electron | 连远程 hub 时 hub 请求用个人 token（`electron/src/bootstrap.mjs` 的 `hubToken`），托盘计数和通知因此也按人 |
+| 测试 | `test/team.test.ts`：规则单元测试 + 两个隔离 hub（mesh）、三个人的端到端：邀请、权限、按人的注意力和 SSE 打断、验收、@提及、团队视图、CLI |

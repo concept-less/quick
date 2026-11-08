@@ -120,6 +120,31 @@ async function until<T>(fn: () => Promise<T | undefined | false>, what: string, 
 		await sleep(100);
 	}
 }
+/** Collect SSE events of one person (their own attention stream). */
+function listen(h: H, token: string) {
+	const events: any[] = [];
+	const ac = new AbortController();
+	void (async () => {
+		try {
+			const r = await fetch(`http://127.0.0.1:${h.port}/api/events?role=front&front=test-${token.slice(4, 10)}`, { headers: { authorization: `Bearer ${token}` }, signal: ac.signal });
+			const reader = r.body!.getReader();
+			let buf = "";
+			for (;;) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				buf += new TextDecoder().decode(value);
+				let i: number;
+				while ((i = buf.indexOf("\n\n")) >= 0) {
+					const line = buf.slice(0, i).split("\n").find((l) => l.startsWith("data:"));
+					buf = buf.slice(i + 2);
+					if (line) events.push(JSON.parse(line.slice(5)));
+				}
+			}
+		} catch {}
+	})();
+	return { events, stop: () => ac.abort(), attention: (id: string) => events.filter((e) => e.type === "attention" && e.item.taskId === id) };
+}
+const queue = async (h: H, token: string) => (await ok(h, token, "GET", "/api/attention?archived=0")) as { items: any[]; counts: any; viewer?: string };
 const getTask = async (h: H, token: string, id: string) => (await ok(h, token, "GET", `/api/tasks/${id}`)).task as Task;
 
 before(async () => {
@@ -180,6 +205,16 @@ test("a task records who asked, who verifies, and the hand-back reaches the revi
 	assert.deepEqual(task.watchers, ["simon"]);
 	assert.match(readFileSync(join(A.home, "tasks", tid, "brief.md"), "utf8"), /发起人: alice（Alice）[\s\S]*验收人: bob（Bob）/);
 	assert.equal((await api(A, tok.alice!, "POST", "/api/tasks", { title: "x", brief: "y", reviewer: "nobody" })).status, 400);
+	await until(async () => (await getTask(A, "root-ha", tid)).status === "starting", "spawned");
+	// while the worker runs, nobody needs to look at it
+	for (const who of ["alice", "bob", "simon"]) {
+		const q = await queue(A, tok[who]!);
+		assert.equal(q.counts.need, 0, who);
+	}
+	// alice and bob are connected (bob to the other hub)
+	const sa = listen(A, tok.alice!);
+	const sb = listen(B, tok.bob!);
+	await sleep(300);
 	// the worker finishes (reports with the machine token, like extensions/worker.ts)
 	await ok(A, "root-ha", "POST", `/api/tasks/${tid}/report`, { status: "done", summary: "改好了，加了测试", kind: "report" });
 	const t = await until(async () => {
@@ -187,6 +222,37 @@ test("a task records who asked, who verifies, and the hand-back reaches the revi
 		return x.status === "done" && x.unread && x;
 	}, "replicated done");
 	assert.equal(holderOf(t), "bob");
+	// bob: needs him (review), interrupt now; alice: waits, never interrupted
+	const qb = await queue(B, tok.bob!);
+	const ib = qb.items.find((i) => i.taskId === tid);
+	assert.equal(ib.level, "need");
+	assert.equal(ib.mark, "[REVIEW]");
+	assert.equal(qb.viewer, "bob");
+	const qa = await queue(A, tok.alice!);
+	const ia = qa.items.find((i) => i.taskId === tid);
+	assert.equal(ia.level, "inflight");
+	assert.match(ia.reason, /等 Bob 验收/);
+	assert.equal(qa.counts.need, 0);
+	const eb = await until(async () => sb.attention(tid).find((e) => e.item.level === "need"), "bob's attention event");
+	assert.equal(eb.interrupt, "now");
+	assert.equal(eb.counts.need, 1);
+	await sleep(300);
+	assert.ok(!sa.attention(tid).some((e) => e.item.level === "need" || e.interrupt === "now"), JSON.stringify(sa.attention(tid)));
+	sa.stop();
+	sb.stop();
+	// owners may look at someone's queue; members may not
+	assert.equal((await ok(A, tok.simon!, "GET", "/api/attention?user=bob")).items.find((i: any) => i.taskId === tid).level, "need");
+	assert.equal((await api(A, tok.alice!, "GET", "/api/attention?user=bob")).status, 403);
+	// team view: everything open, by whose ball it is, no interrupts
+	const board = await ok(A, tok.alice!, "GET", "/api/attention?scope=team");
+	const row = board.items.find((i: any) => i.taskId === tid);
+	assert.equal(row.ball, "bob");
+	assert.equal(row.people.requester, "alice");
+	assert.equal(board.items.filter((i: any) => i.ball === "bob").length, 1);
+	// root of a machine without owner = single user: sees the base queue (unchanged behaviour)
+	assert.equal((await queue(B, "root-hb")).viewer, "bob"); // hb belongs to bob (set above)
+	await ok(A, tok.simon!, "POST", "/api/machine", { machine: "hb", owner: null });
+	assert.equal((await queue(B, "root-hb")).items.find((i) => i.taskId === tid).level, "skim");
 });
 
 test("acks are per person: only the holder's ack counts, and the requester learns the verdict", async () => {
@@ -196,8 +262,12 @@ test("acks are per person: only the holder's ack counts, and the requester learn
 	t = (await ok(B, tok.bob!, "POST", `/api/tasks/${tid}/ack`, {})).task as Task;
 	assert.equal(t.unread, false);
 	assert.deepEqual(t.pings?.map((p) => [p.user, p.kind, p.by]), [["alice", "verdict", "bob"]]);
+	assert.equal((await queue(A, tok.alice!)).items.find((i) => i.taskId === tid).mark, "[VERDICT]");
+	assert.equal((await queue(A, tok.alice!)).items.find((i) => i.taskId === tid).level, "skim");
+	assert.equal((await queue(B, tok.bob!)).counts.need, 0);
 	t = (await ok(A, tok.alice!, "POST", `/api/tasks/${tid}/ack`, {})).task as Task;
 	assert.equal(t.pings, undefined);
+	assert.equal((await queue(A, tok.alice!)).items.find((i) => i.taskId === tid)?.level ?? "archived", "archived");
 });
 
 test("comments: @mentions ping people, plain comments ping nobody, workers can @ the requester", async () => {
@@ -206,6 +276,10 @@ test("comments: @mentions ping people, plain comments ping nobody, workers can @
 	assert.equal(r.comment.author, "bob");
 	assert.deepEqual(r.task.watchers, ["simon", "bob"]); // commenters follow the task
 	assert.deepEqual(r.task.pings.map((p: any) => [p.user, p.kind]), [["alice", "mention"]]);
+	const ma = await until(async () => (await queue(A, tok.alice!)).items.find((i) => i.taskId === tid && i.level === "need"), "mention in alice's need");
+	assert.equal(ma.mark, "[@]");
+	assert.match(ma.reason, /Bob @你：@alice 这里的接口要不要兼容旧版/);
+	assert.equal((await queue(B, tok.bob!)).counts.need, 0); // the author is not pinged
 	r = await ok(A, tok.alice!, "POST", `/api/tasks/${tid}/comments`, { text: "不用兼容" });
 	assert.deepEqual(r.comment.mentions, []);
 	assert.equal(r.task.pings, undefined); // alice replying handled her mention
@@ -233,6 +307,9 @@ test("assign: hand to a person, ask for a review, watchers; CLI", async () => {
 	let c = q(tok.alice!, "assign", tid, "--reviewer", "bob");
 	assert.equal(c.status, 0, c.stderr);
 	assert.match(c.stdout, /验收 bob/);
+	c = q(tok.bob!, "team", "board"); // a settled task with a review request is open again: bob's ball
+	assert.equal(c.status, 0, c.stderr);
+	assert.match(c.stdout, new RegExp(`球在 Bob（1）  ← 你\\n\\s+\\[(REVIEW|@)\\]\\s+${tid}`));
 	c = q(tok.bob!, "comment", tid, "@alice", "收到");
 	assert.equal(c.status, 0, c.stderr);
 	assert.match(c.stdout, /点名 alice/);

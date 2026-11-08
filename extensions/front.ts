@@ -141,7 +141,7 @@ export function setupFront(pi: ExtensionAPI) {
 		const tui = ctx.mode === "tui";
 		const th = { fg: (c: string, s: string) => (tui ? ctx.ui.theme.fg(c as any, s) : s) };
 		const list = [...tasks.values()]
-			.filter((t) => !t.closed || t.unread || ACTIVE_STATUSES.includes(t.status))
+			.filter((t) => (!t.closed || t.unread || ACTIVE_STATUSES.includes(t.status)) && team.mine(t))
 			.sort((a, b) => b.updatedAt - a.updatedAt);
 		if (!list.length) ctx.ui.setWidget("qa-tasks", undefined);
 		else {
@@ -164,7 +164,7 @@ export function setupFront(pi: ExtensionAPI) {
 
 	const refresh = async () => {
 		try {
-			const [list, q] = await Promise.all([hub.listTasks(), hub.attention(0)]);
+			const [list, q] = await Promise.all([hub.listTasks(), hub.attention(0), team.load()]);
 			for (const t of list) tasks.set(t.id, t);
 			counts = q.counts;
 			focus = q.focus;
@@ -433,7 +433,8 @@ export function setupFront(pi: ExtensionAPI) {
 				? `${head}\n${shown
 						.map((i) => {
 							const t = byId.get(i.taskId);
-							return `${LEVEL_LABEL[i.level]} ${itemLine(i)}${t ? `\n    ${t.machine}:${t.cwd}${team.people(t)}` : ""}${i.options?.length ? `\n    选项: ${i.options.join(" / ")}` : ""}`;
+							const ball = (i as { ball?: string }).ball;
+							return `${p.scope === "team" && ball ? `[${ball === "agent" ? "worker 在做" : `球在 ${ball}`}] ` : `${LEVEL_LABEL[i.level]} `}${itemLine(i)}${t ? `\n    ${t.machine}:${t.cwd}${team.people(t)}` : ""}${i.options?.length ? `\n    选项: ${i.options.join(" / ")}` : ""}`;
 						})
 						.join("\n")}`
 				: "No tasks.";
@@ -730,11 +731,11 @@ export function setupFront(pi: ExtensionAPI) {
 		description: "quick-agent 注意力队列：需要你 / 待扫 / 稍后 / 不用管；查看、回答、知道了、稍后提醒、接管、中止",
 		handler: async (_args, ctx) => {
 			await refresh();
-			const order = { need: 0, skim: 1, snoozed: 2, inflight: 3, archived: 4 } as const;
-			const list = [...tasks.values()]
-				.map((t) => ({ t, a: attentionOf(t) }))
-				.filter(({ a }) => a.level !== "archived")
-				.sort((x, y) => order[x.a.level] - order[y.a.level] || y.t.updatedAt - x.t.updatedAt);
+			// The hub's queue is already per person (team) and sorted by priority.
+			const q = await hub.attention(0).catch(() => undefined);
+			const list = (q?.items ?? [...tasks.values()].map((t) => attentionOf(t)))
+				.filter((a) => a.level !== "archived" && tasks.has(a.taskId))
+				.map((a) => ({ t: tasks.get(a.taskId)!, a }));
 			if (!list.length) return ctx.ui.notify("没有需要你的事，也没有进行中的任务", "info");
 			if (ctx.mode !== "tui") {
 				// RPC clients may not implement dialogs: show the queue as a message instead.

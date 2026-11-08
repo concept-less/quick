@@ -20,12 +20,14 @@ const imp = (p) => import(pathToFileURL(join(repo, p)).href);
 const out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 
 try {
-	const { loadConfig, hubUrl, paths } = await imp("shared/config.ts");
+	const { loadConfig, hubUrl, hubToken, paths } = await imp("shared/config.ts");
 	const cfg = loadConfig();
 	const info = (extra = {}) => ({
 		ok: true,
 		repo,
 		token: cfg.token,
+		// Team member using someone else's hub: hub calls carry the personal token (per-person attention).
+		hubToken: hubToken(cfg),
 		uiPort: cfg.uiPort,
 		uiUrl: `http://127.0.0.1:${cfg.uiPort}`,
 		hubUrl: hubUrl(cfg),

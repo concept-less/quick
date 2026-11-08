@@ -98,7 +98,7 @@ const HELP = `quick — quick-agent
   quick attention [-a]      注意力队列：需要你 / 待扫 / 稍后 / 不用管（别名 quick a；-a 含已归档）
   quick ls [-a]             同上，按任务一行一个（-a 含已归档）
   quick show <id>           查看任务的注意力、汇报、简报
-  quick new [--machine M] [--requires a,b] [--cwd DIR] <title> <brief...>
+  quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] <title> <brief...>
                             不经前台直接派单（不指定机器时按资源+优先级自动选机器）
   quick send <id> <message> 回答 worker 的问题或追加指令（窗口已关会带着完整上下文重新拉起）
   quick retry <id>          让停下/失败的 worker 从中断处重试
@@ -532,10 +532,14 @@ async function main() {
 				args.splice(mi, 2);
 				if (i < 0) cwd = ""; // remote: use that machine's default cwd unless --cwd is given
 			}
+			// team: --reviewer 验收人, --assignee 负责人, --watch a,b 关注者
+			const reviewer = flag(args, "--reviewer");
+			const assignee = flag(args, "--assignee");
+			const watchers = flags(args, "--watch").flatMap((x) => x.split(",")).map((x) => x.trim()).filter(Boolean);
 			const [title, ...brief] = args;
-			if (!title || !brief.length) die("usage: quick new [--machine M] [--requires a,b] [--cwd DIR] <title> <brief...>");
+			if (!title || !brief.length) die("usage: quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] <title> <brief...>");
 			// cwd defaults to the current directory: the hub picks the best machine on which it exists.
-			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, source: { kind: "cli" } });
+			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, reviewer, assignee, watchers: watchers.length ? watchers : undefined, source: { kind: "cli" } });
 			return console.log(attnLine(attentionOf(t)));
 		}
 		case "send": {

@@ -751,6 +751,7 @@ async function openTask(id){
     if(a==='close'&&!confirm('关闭 '+t.id+' 的 worker 窗口？'))return;
     try{if(a==='send'){const text=ta.value.trim();if(!text)return;await api('POST','/api/hub/tasks/'+t.id+'/message',{text});ta.value='';toast('已发送给 '+t.id)}
       else await api('POST','/api/hub/tasks/'+t.id+'/'+a,{});openTask(t.id)}catch(e){toast(e.message,'error')}});
+  window.qaTeamDetail?.(d,t,r); // team: people + comments (ui/team.js)
   // Viewing a finished task settles 待扫; a question keeps waiting until it is answered or put aside.
   if(i?.level==='skim')hubPost('tasks/'+t.id+'/ack').catch(()=>{});
 }
@@ -809,6 +810,7 @@ async function loadHub(){
   }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off;$('#ilist').innerHTML=off}}
 }
 function onHub(e){
+  window.qaTeamOnHub?.(e);
   if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask&&(e.event||prev?.status!==e.task.status))refreshDetailSoon();
     if(prev&&prev.status!==e.task.status){for(const [id,i] of toolOwner){const r=toolRes.get(id);if(r?.result?.details?.task?.id===e.task.id)schedule(i)}}}
   else if(e.type==='attention'){const i=e.item;attn.set(i.taskId,i);counts=e.counts;focus=e.focus||focus;renderTasks();if(i.taskId===selTask)refreshDetailSoon();
@@ -842,5 +844,6 @@ function connect(){
 }
 let cronTimer=0;applySendKey();connect();setInterval(()=>{renderTasks();renderCron()},30000);input.focus();
 </script>
+<script src="/team.js"></script>
 </body>
 </html>

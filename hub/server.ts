@@ -1262,7 +1262,7 @@ attention = createAttention({
 	file: paths.attention,
 	allTasks: () => allTasks(),
 	personalize: (t, base, v) => personalAttention(t, base, v, team.roster()),
-	teamRow: (t, base) => teamRow(t, base),
+	teamRow: (t, base) => teamRow(t, base, team.roster()),
 	viewers: () => [...clients].filter((c) => !c.taskId && c.viewer).map((c) => c.viewer!),
 	broadcastTo: (key, e) => broadcast(e, (c) => !c.taskId && keyOf(c.viewer) === key),
 	pickFront,

@@ -267,8 +267,11 @@ export function isHolderFor(t: Task & TaskPeople, viewer: Viewer): boolean {
 }
 
 /** Team view row: every task with who holds the ball now ("agent" while the worker is on it). */
-export function teamRow<I extends BaseItem>(t: Task & TaskPeople, base: I): I & { people: People; ball: string } {
+export function teamRow<I extends BaseItem>(t: Task & TaskPeople, base: I, members: Pick<Member, "id" | "name">[] = []): I & { people: People; ball: string } {
 	const people = peopleOf(t);
+	// Someone explicitly called on a settled task (asked to review, @mentioned) holds the ball again.
+	const ping = base.level === "archived" ? (t.pings ?? []).filter((p) => NEED_PINGS.includes(p.kind)).sort((a, b) => a.at - b.at)[0] : undefined;
+	if (ping) return { ...base, level: "need", mark: PING_MARK[ping.kind], reason: `${displayName(ping.by, members)} 点名 ${displayName(ping.user, members)}${ping.text ? `：${oneLine(ping.text, 100)}` : ""}`, since: ping.at, people, ball: ping.user };
 	const ball = base.level === "inflight" ? (t.assignee ?? AGENT) : (people.holder ?? "owner");
 	return { ...base, people, ball };
 }

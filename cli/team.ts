@@ -2,7 +2,8 @@
 // (docs/team-collaboration.md).
 import { hubUrl, saveConfigPatch, type QaConfig } from "../shared/config.ts";
 import { HubClient } from "../shared/hub-client.ts";
-import { displayName, type Role } from "../shared/team.ts";
+import { displayName, type People, type Role } from "../shared/team.ts";
+import type { AttentionItem } from "../shared/attention.ts";
 
 function die(msg: string): never {
 	console.error(`quick: ${msg}`);
@@ -24,6 +25,7 @@ const list = (s: string | undefined) => (s ?? "").split(",").map((x) => x.trim()
 
 export const TEAM_HELP = `团队（docs/team-collaboration.md）:
   quick team                              成员、角色、各自的机器；你是谁
+  quick team board                        团队视图：所有进行中的事，按「球在谁手里」分组（不打扰任何人）
   quick team init <id> [--name 名字]       第一位 owner，并把本机设为他的机器（机器 token 即代表他）
   quick team invite [--role member|owner] [--hours 168]   一次性邀请码
   quick team join <hub-url> <邀请码> <id> [--name 名字]     加入别人的 hub：保存个人 token，之后 pi/quick/Web UI 都以你的身份连它
@@ -46,6 +48,20 @@ export async function teamCmd(args: string[], hub: HubClient, cfg: QaConfig) {
 			for (const m of r.members) console.log(`${m.id === r.me?.id ? "*" : " "} ${m.id.padEnd(14)} ${m.role.padEnd(7)} ${m.name}${m.machines.length ? `  \x1b[2m机器: ${m.machines.join(", ")}\x1b[0m` : ""}`);
 			console.log(`\x1b[2m你: ${r.me ? `${r.me.id}（${r.me.role}）` : r.root ? "本机 root（机器没有设置所有者）" : "?"} · hub ${hubUrl(cfg)}${cfg.client ? "（团队连接）" : ""}\x1b[0m`);
 			if (r.invites?.length) console.log(`\x1b[2m未用的邀请: ${r.invites.map((i) => `${i.id}(${i.role}, ${new Date(i.expiresAt).toLocaleDateString()} 过期)`).join(" ")}\x1b[0m`);
+			return;
+		}
+		case "board": {
+			// The quiet team view: every open task, grouped by whose ball it is (never interrupts anyone).
+			const [b, r] = await Promise.all([hub.attention(0, "team"), hub.team()]);
+			const rows = b.items as (AttentionItem & { ball: string; people: People })[];
+			if (!rows.length) return console.log("团队没有进行中的任务。");
+			const groups = new Map<string, typeof rows>();
+			for (const i of rows) groups.set(i.ball, [...(groups.get(i.ball) ?? []), i]);
+			const nm = (id?: string) => displayName(id, r.members);
+			for (const [ball, items] of groups) {
+				console.log(`${ball === "agent" ? "worker 在做" : ball === "owner" ? "无人认领" : `球在 ${nm(ball)}`}（${items.length}）${ball === r.me?.id ? "  ← 你" : ""}`);
+				for (const i of items) console.log(`  ${i.mark.padEnd(10)} ${i.taskId}  ${i.title}  \x1b[2m${i.reason.slice(0, 80)} · 发起 ${nm(i.people.requester)}\x1b[0m`);
+			}
 			return;
 		}
 		case "init": {

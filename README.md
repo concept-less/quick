@@ -417,6 +417,54 @@ quick handoff <id> <机器> [--cwd 目标目录] [--no-workspace] [--abort] [--w
 
 `test/handoff-env.sh up|restart|down` 可以单独搭建这套环境，用 `source test/handoff-env.sh vars` 之后就能用 `A quick …`、`B quick …`。
 
+## 团队协作
+
+几个人加几台机器上的 agent，共用一个工作区（一个 mesh 就是一个团队）。设计和取舍见 [`docs/team-collaboration.md`](docs/team-collaboration.md)。原则不变：**每个人只看到需要自己的事**，没有信息流，没有会话。
+
+**成员和身份**
+
+```bash
+quick team init simon --name Simon      # 第一位 owner；本机归 simon 所有，本机 token 即代表 simon
+quick team invite                       # 一次性邀请码（默认 member，7 天过期）
+# 队友在自己电脑上（hub 地址要能访问到，例如 ssh -L 转发）：
+quick team join http://127.0.0.1:7788 <邀请码> alice --name Alice
+#   个人 token 保存到 config.json 的 client 段；之后 pi 前台、quick、quick ui 都以 alice 的身份连这个 hub
+quick team                              # 成员、角色、各自的机器，以及你是谁
+quick team add bob --name Bob           # owner 直接加人（打印给对方的 quick team connect 命令）
+quick team role bob owner | quick team remove bob | quick team token --reset | quick team leave
+quick machine set --owner alice         # 自己也在 mesh 里跑 hub 的成员：把机器标给自己，机器 token 即代表她
+```
+
+- 角色只有 `owner` 和 `member`。日常协作（派单、评论、转交、请人验收）对所有成员开放；邀请、改角色、移除成员、配置机器、全网升级需要 owner。最后一名 owner 不能被降级或移除。
+- user token（`qau_…`）只在创建时显示一次，hub 只存哈希。名册经 mesh 复制，所以成员的 token 在团队里任何一台 hub 上都有效。
+- 没有建团队时，一切和单人版一样（机器 token = 你）。
+
+**任务上的人**
+
+| | 含义 |
+|---|---|
+| 发起人 requester | 派单的人（由 token 决定，不能冒充别人） |
+| 负责人 assignee | 默认是任务的 agent worker；可以转给一个人，worker 的提问和汇报就交给他 |
+| 验收人 reviewer | 被请来验收、拍板的人：worker 交回时进他的「需要你」，不进发起人的 |
+| 关注者 watchers | 只在团队视图里看，永不打扰；评论过的人自动关注 |
+
+```bash
+quick new --reviewer alice "登录页修复" "…"      # 派单时就定好验收人（也有 --assignee、--watch a,b）
+quick assign t1a2b --reviewer alice              # 让 Alice 验收 / 拍板
+quick assign t1a2b --to bob                      # 转给 Bob 负责；--to agent 交回 worker
+quick comment t1a2b "@alice 接口要兼容旧版吗？"   # @id 点名（进她的「需要你」），@all 全体，@worker 转给 worker
+quick comment t1a2b                               # 看评论
+quick ls                                         # 你自己的注意力队列
+quick team board                                 # 团队视图：所有进行中的事，按「球在谁手里」分组
+```
+
+- **球在谁手里**：worker 在做时谁都不用管；交回时，完成的给验收人（没有就给负责人、发起人），提问和受阻给负责人（没有就给验收人、发起人）。
+- **确认按人算**：只有球在自己手里的人点「知道了」才算数；验收人对完成的任务点「知道了」= 验收通过，发起人收到一条安静的「待扫」（`[VERDICT]`）。别人点「知道了」只清掉自己的点名。
+- **@提及**：被 @ 的人这件事进「需要你」（`[@]`），回复、评论或「知道了」后清除；自己的操作不会打扰自己。不带 @ 的评论只是留言，不打扰任何人，也不打扰 worker。worker 也能用 `qa_comment` 在任务下 @人。
+- **按人的注意力**：`/api/attention` 和 SSE 的 `attention` 事件按 token 的身份逐人计算（打断判定也按人）；Web UI、Electron、pi 前台只显示自己的队列。`?scope=team` 是团队视图，`?user=<id>` 供 owner 排查。
+
+**前台和 Web UI**：前台知道团队名册和机器所有者，能理解「让 Alice 验收」「转给 Bob」「交给 Bob 的机器做」「问问 Carol」（工具 `qa_task_assign`、`qa_comment`、`qa_team`，`qa_dispatch` 的 `reviewer/assignee/watchers`，`qa_tasks scope=team`）。Web UI 顶栏显示你是谁，「团队」按钮打开团队视图；Electron 连团队 hub 时也用个人 token，托盘只数你的「需要你」。任务详情里有「人」（可改负责人、验收人、关注）和评论区。
+
 ## 浏览器插件（在本地电脑上用）
 
 1. 在本地电脑上开端口转发，保持开启：`ssh -N -L 7788:127.0.0.1:7788 <user>@<server>`（完整命令和 token 可以在服务器上运行 `quick tunnel` 查看）。
@@ -471,6 +519,8 @@ quick handoff <id> <机器> [--cwd 目标目录] [--no-workspace] [--abort] [--w
   "model": "tokenjoy/claude-opus-5-5",   // 前台和 worker 共用；也可以用 frontModel / workerModel 分开设置
   "tmuxSession": "qa",
   "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work", "priority": 10, "resources": ["claude"], "resourceNotes": "无 GUI，网络稳定" },   // 见「机器资源与调度」
+  //   machine.owner: 团队成员 id，机器 token 即代表他（见「团队协作」）
+  // "client": { "hub": "http://127.0.0.1:7788", "token": "qau_…", "user": "alice" },   // quick team join 写入：用别人的 hub（worker 不受影响）
   "mesh": { "secret": "…quick mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
   "update": { "enabled": true, "autoInstall": true, "intervalHours": 6 },   // 见「升级」
   "defaultCwd": "/home/simon",
@@ -488,24 +538,29 @@ quick handoff <id> <机器> [--cwd 目标目录] [--no-workspace] [--abort] [--w
 ```
 bin/quick                       CLI 入口
 cli/quick.ts                    CLI
+cli/team.ts                     CLI：quick team / assign / comment
 hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/handoff.ts               任务跨机器交接：编排、分块传输、目标端应用/回滚
 hub/cron.ts                  定时任务：持久化、触发定时器、mesh 复制、cron.* 方法（只由所属 hub 触发）
 hub/workspace.ts             交接用的工作区快照（git bundle/diff/untracked 或 tar）、manifest 校验、撤销
-hub/attention.ts             注意力：计算变化、决定打扰、合批待扫摘要、持久化专注模式
+hub/attention.ts             注意力：计算变化、决定打扰、合批待扫摘要、持久化专注模式（团队模式下按人）
+hub/team.ts                  团队：成员名册（mesh 复制）、身份、邀请、任务上的人、评论、点名
 hub/dashboard.ts             网页面板（任务视图）
 ui/server.ts                 Web UI：用 pi SDK 托管唯一的前台 agent + 代理 hub API + SSE（quick ui）
 ui/app.html                  Web UI 前端（注意力队列、前台对话、浏览器评论、定时）
+ui/team.js                   Web UI 团队部分（身份、团队视图、任务的人和评论）
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
 shared/attention.ts          注意力模型：状态、原因、动作、排序、打扰策略（纯函数，所有前端共用）
 shared/update.ts             自动升级：版本来源、安装方式识别、安装、节流与锁
 shared/schedule.ts           机器资源探测与派单选机器（资源 + 优先级）
+shared/team.ts               团队规则：角色权限、@提及解析、球在谁手里、按人的注意力（纯函数）
 shared/cron.ts               定时规则：5 段 cron 解析、下次运行时间（时区/DST）、间隔/一次性、重叠与补跑决策
-test/                        npm test（升级逻辑、多机升级模拟、调度选择、两机派单、定时规则）；*-e2e.sh 端到端测试
+test/                        npm test（团队协作端到端、升级逻辑、多机升级模拟、调度选择、两机派单、定时规则）；*-e2e.sh 端到端测试
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
 extensions/front.ts          前台角色
 extensions/worker.ts         worker 角色
+extensions/team-tools.ts     前台的团队工具与提示（qa_task_assign / qa_comment / qa_team）
 browser/                     Chrome MV3 插件
 docs/browser-extension/      插件隐私政策与上架材料
 scripts/pack-extension.sh    打包上架用 zip（dist/）
@@ -518,11 +573,16 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
-| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, attachments?, source?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器 |
+| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, attachments?, source?, reviewer?, assignee?, watchers?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器；发起人取自 token |
 | POST | `/api/tasks/:id/message` | `{text}` 回答或追加指令（worker 窗口关了会带着完整上下文重新拉起） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 知道了 |
 | POST | `/api/tasks/:id/snooze`、`/retry` | 稍后提醒 `{minutes}` / 重试 |
-| GET | `/api/attention` | 注意力队列与计数（见「注意力模型」）；`POST /api/attention/focus`、`/api/attention/settings` |
+| GET | `/api/attention` | 注意力队列与计数（见「注意力模型」），**按 token 的身份计算**；`?scope=team` 团队视图，`?user=<id>`（owner）看某人的队列；`POST /api/attention/focus`、`/api/attention/settings` |
+| POST | `/api/tasks/:id/assign` | `{assignee?, reviewer?, watchersAdd?, watchersRemove?, note?}` 转交 / 请人验收 / 关注（null 清除） |
+| GET/POST | `/api/tasks/:id/comments` | 评论列表 / `{text, toWorker?}` 发评论（@id 点名，@all，@worker 转给 worker） |
+| GET | `/api/me`、`/api/team` | 你是谁；成员名册（含各自的机器，owner 还能看到未用的邀请） |
+| POST | `/api/team/members`、`/api/team/members/:id` | 加人（返回一次性 token）/ `{role, name, resetToken, remove}` |
+| POST | `/api/team/invites`、`/api/team/join` | 生成邀请码（owner）/ 用邀请码加入（不需要 token） |
 | POST | `/api/tasks/:id/handoff` | `{to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}` 把任务交接到另一台机器（异步） |
 | POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定 |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |

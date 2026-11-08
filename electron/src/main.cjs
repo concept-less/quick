@@ -359,7 +359,7 @@ let hubConnected = false;
 async function hubFetch(p, init = {}) {
 	const r = await fetch(conn.hubUrl + p, {
 		...init,
-		headers: { authorization: `Bearer ${conn.token}`, ...(init.body ? { "content-type": "application/json" } : {}), ...(init.headers || {}) },
+		headers: { authorization: `Bearer ${conn.hubToken || conn.token}`, ...(init.body ? { "content-type": "application/json" } : {}), ...(init.headers || {}) },
 		signal: init.signal || AbortSignal.timeout(10000),
 	});
 	const data = await r.json().catch(() => ({}));
@@ -407,7 +407,7 @@ function startHubStream() {
 		let delay = 1000;
 		while (!signal.aborted) {
 			try {
-				const res = await fetch(`${conn.hubUrl}/api/events?role=desktop`, { headers: { authorization: `Bearer ${conn.token}`, accept: "text/event-stream" }, signal });
+				const res = await fetch(`${conn.hubUrl}/api/events?role=desktop`, { headers: { authorization: `Bearer ${conn.hubToken || conn.token}`, accept: "text/event-stream" }, signal });
 				if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 				hubConnected = true;
 				delay = 1000;
