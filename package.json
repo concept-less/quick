@@ -1,19 +1,41 @@
 {
   "name": "quick-agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Front/worker agent workflow for pi: your interactive pi becomes a quick front agent that delegates tasks to independent worker agents.",
-  "keywords": ["pi-package"],
-  "repository": { "type": "git", "url": "git+ssh://git@github.com/concept-less/quick.git" },
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/concept-less/quick.git"
+  },
   "homepage": "https://github.com/concept-less/quick#readme",
-  "bugs": { "url": "https://github.com/concept-less/quick/issues" },
-  "bin": { "quick": "bin/quick" },
-  "files": ["bin/", "cli/", "hub/", "shared/", "extensions/", "browser/", "ui/", "install.sh", "CHANGELOG.md", "README.md"],
+  "bugs": {
+    "url": "https://github.com/concept-less/quick/issues"
+  },
+  "bin": {
+    "quick": "bin/quick"
+  },
+  "files": [
+    "bin/",
+    "cli/",
+    "hub/",
+    "shared/",
+    "extensions/",
+    "browser/",
+    "ui/",
+    "install.sh",
+    "CHANGELOG.md",
+    "README.md"
+  ],
   "scripts": {
     "test": "NODE_NO_WARNINGS=1 node --test test/*.test.ts electron/test/updater.test.cjs",
     "release": "scripts/release.sh"
   },
-  "engines": { "node": ">=22.18" },
+  "engines": {
+    "node": ">=22.18"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-ai": "*",
@@ -21,6 +43,8 @@
     "typebox": "*"
   },
   "pi": {
-    "extensions": ["./extensions/quick-agent.ts"]
+    "extensions": [
+      "./extensions/quick-agent.ts"
+    ]
   }
 }
