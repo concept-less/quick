@@ -223,3 +223,21 @@ test("mesh: rules replicate as a last-writer-wins set (learned rules from every 
 	const p = structuredClone(removed);
 	assert.equal(learn(p, { url: "http://127.0.0.1:7790/x" }, [p]), false);
 });
+
+test("project order is stable (manual order, then creation) and reorder keeps the rest in place", async () => {
+	const { compareProjects, reorderProjects, newProject } = await import("../shared/projects.ts");
+	const a = newProject("a", "a", 3);
+	const b = newProject("b", "b", 1);
+	const c = newProject("c", "c", 2);
+	const gone = { ...newProject("d", "d", 0), mergedInto: "a" };
+	const all = [a, b, c, gone];
+	assert.deepEqual([a, b, c].sort(compareProjects).map((p) => p.id), ["b", "c", "a"]);
+	const changed = reorderProjects(all, ["a"], 10);
+	assert.deepEqual([a, b, c].sort(compareProjects).map((p) => p.id), ["a", "b", "c"]);
+	assert.deepEqual(changed.map((p) => p.id).sort(), ["a", "b", "c"]);
+	assert.equal(gone.order, undefined);
+	// an alias resolves to its live project; unchanged positions are not touched
+	assert.deepEqual(reorderProjects(all, ["d", "b"], 20).map((p) => p.id), []);
+	assert.deepEqual(reorderProjects(all, ["c"], 30).map((p) => [p.id, p.order]), [["c", 0], ["a", 1], ["b", 2]]);
+	assert.equal(b.updatedAt, 30);
+});

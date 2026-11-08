@@ -1,7 +1,9 @@
 // Data model shared by hub, CLI and extensions.
 import type { TaskPeople } from "./team.ts";
 import type { CronJob } from "./cron.ts";
+import type { TaskProgress } from "./progress.ts";
 import type { AttentionCounts, AttentionItem, AttentionLevel, FocusState, Interrupt } from "./attention.ts";
+import type { TaskClock, TaskExpect, TaskWatch } from "./watchdog.ts";
 
 export type TaskStatus =
 	| "starting" // tmux window spawned, worker not yet connected
@@ -51,8 +53,10 @@ export interface Task extends TaskPeople {
 	attachments: string[];
 	/** Latest summary / question / final answer from the worker. */
 	summary?: string;
-	/** Short description of what the worker is doing right now. */
+	/** Short description of what the worker is doing right now (raw tool line, e.g. "bash git push"). */
 	activity?: string;
+	/** Human-readable progress: the worker's plan / note, plus the activity in plain words (shared/progress.ts). */
+	progress?: TaskProgress;
 	/** True when there is news the human has not acknowledged yet (cleared by task.ack, "知道了"). */
 	unread: boolean;
 	/** When the status last changed (attention "since"). */
@@ -85,12 +89,18 @@ export interface Task extends TaskPeople {
 	project?: string;
 	/** How the project was determined ("manual" / "explicit" are never reclassified); absent = not classified yet. */
 	projectVia?: string;
+	/** Expected active time (shared/watchdog.ts): dispatch estimate, default by kind, one worker revision, watchdog updates. */
+	expect?: TaskExpect;
+	/** Active-time clock kept by the owning hub (time starting/running, not waiting on a human). */
+	clock?: TaskClock;
+	/** Watchdog reviews of this task (巡检) and its state. */
+	watch?: TaskWatch;
 }
 
 export interface TaskEvent {
 	ts: number;
 	taskId: string;
-	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment" | "project";
+	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment" | "project" | "progress" | "expect" | "watch";
 	text?: string;
 	/** Team member (or "agent") who caused the event, when known. */
 	by?: string;
@@ -113,7 +123,14 @@ export interface Intake {
 	machine: string;
 	rev: number;
 	createdAt: number;
-	status: "pending" | "claimed" | "dispatched" | "dismissed";
+	/**
+	 * One-shot: "pending" until a front agent claims it; claiming consumes it ("consumed", never delivered
+	 * again, also across hub restarts). "dispatched" = consumed and linked to a task (new or existing).
+	 * "claimed" is the legacy name of "consumed" (older hubs).
+	 */
+	status: "pending" | "consumed" | "claimed" | "dispatched" | "dismissed";
+	/** When a front agent claimed (consumed) it; consumed intakes are pruned after the retention period. */
+	consumedAt?: number;
 	kind: "browser-comment";
 	comment: string;
 	url?: string;
@@ -184,4 +201,6 @@ export type HubEvent =
 	| { type: "update.available"; machine: string; version: string; ts: number }
 	| { type: "update.job"; machine: string; job: { step: string; from: string; to?: string; error?: string; message?: string; received?: number; total?: number } }
 
-	| { type: "projects"; projects: import("./projects.ts").Project[] };
+	| { type: "projects"; projects: import("./projects.ts").Project[] }
+	/** Worker default model of this machine changed (config.json workerModel). */
+	| { type: "workerModel"; info: Record<string, unknown> };

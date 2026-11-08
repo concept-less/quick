@@ -90,7 +90,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .md table{border-collapse:collapse;margin:.7em 0;font-size:13px;display:block;overflow-x:auto}.md td,.md th{border:var(--bw) solid var(--line);padding:5px 10px;text-align:left}.md th{background:var(--bg-2);font-weight:600}
 .md a{word-break:break-all}
 .md hr{border:0;border-top:var(--bw) solid var(--line);margin:1em 0}
-.tid{font:500 11.5px/1 var(--mono);padding:2px 5px;border:var(--bw) solid var(--fg);color:var(--fg);cursor:pointer;white-space:nowrap;display:inline-block;vertical-align:1px;transition:background var(--t),color var(--t)}
+.tid{font:500 12px/1.4 var(--sans);padding:2px 5px;border:var(--bw) solid var(--fg);background:transparent;color:var(--fg);cursor:pointer;white-space:normal;overflow-wrap:anywhere;text-align:inherit;max-width:100%;display:inline-block;vertical-align:baseline;transition:background var(--t),color var(--t)}
 .tid:hover{background:var(--fg);color:var(--bg)}
 .think{margin:var(--s1) 0 var(--s2);color:var(--fg-2);font-size:13px}
 .think summary{cursor:pointer;list-style:none;user-select:none;display:inline-flex;align-items:center;gap:6px;font:500 10.5px/1.8 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3)}
@@ -168,7 +168,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .filters .grow{display:none}.fchip{white-space:nowrap;padding:0 12px!important}#tcount{white-space:nowrap;margin-left:8px}
 @media (max-width:1100px){#tcount{display:none}}
 @media (max-width:900px){.tab kbd{display:none}}
-#tsearch{height:26px;width:auto;min-width:60px;flex:1 1 auto;margin-left:8px;padding:0 8px;border:var(--bw) solid var(--line);background:var(--surface);font:12px var(--mono);outline:0;transition:border-color var(--t)}
+#tsearch{height:26px;width:auto;min-width:60px;flex:1 1 auto;margin:0 0 0 8px;padding:0 8px;border:var(--bw) solid var(--line);background:var(--surface);font:12px var(--mono);outline:0;transition:border-color var(--t)}
 #tsearch:focus{border-color:var(--line-2)}
 #tsearch::placeholder{color:var(--fg-3)}
 .keys-t{width:100%;border-collapse:collapse;font-size:13px}.keys-t td{padding:7px 0;border-bottom:var(--bw) solid var(--line)}.keys-t td:last-child{text-align:right;white-space:nowrap}.keys-t kbd{margin-left:3px}
@@ -210,6 +210,39 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .phead .pc{font-weight:400;color:var(--fg-3)}
 .phead .pmenu{margin-left:auto;border:0;background:none;color:var(--fg-3);cursor:pointer;padding:0 4px;font:600 12px/1 var(--mono)}
 .phead .pmenu:hover{color:var(--fg)}
+/* list view switch (注意力 | 项目) and project blocks (按项目 view) */
+#vbar{display:flex;align-items:center;gap:10px;height:30px;padding:0 var(--s3);border-bottom:var(--bw) solid var(--line);font:11px/1 var(--mono);color:var(--fg-3);flex:0 0 auto}
+.vsw{display:inline-flex;border:var(--bw) solid var(--line-2);height:22px}
+.vsw button{border:0;background:none;padding:0 10px;cursor:pointer;font:600 11px/1 var(--mono);letter-spacing:.06em;color:var(--fg-3)}
+.vsw button+button{border-left:var(--bw) solid var(--line-2)}
+.vsw button:hover{color:var(--fg)}
+.vsw button.on{background:var(--inv-bg);color:var(--inv-fg)}
+.vact{border:0;background:none;padding:0 2px;cursor:pointer;font:11px/1 var(--mono);color:var(--fg-3)}.vact:hover{color:var(--fg)}
+.pblk{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:10px;min-width:0;height:34px;padding:0 var(--s3) 0 var(--s4);background:var(--bg-2);border-top:var(--bw) solid var(--line-2);border-bottom:var(--bw) solid var(--line);cursor:pointer;font:600 12.5px/1 var(--mono);color:var(--fg)}
+.pblk:first-child{border-top:0}
+.pblk:hover{background:var(--bg-3)}
+.pblk .pcar{width:10px;color:var(--fg-3);flex:0 0 auto}
+.pblk .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.pblk .pname.none{color:var(--fg-3)}
+.pblk .pcs{display:flex;gap:8px;flex:0 0 auto;font-weight:400;font-size:11px;color:var(--fg-3)}
+.pblk .pcs .you{font-weight:700;color:var(--acc-fg);background:var(--acc);padding:2px 5px}
+.pblk .pmenu{margin-left:auto;border:0;background:none;color:var(--fg-3);cursor:pointer;padding:0 4px;font:600 12px/1 var(--mono)}
+.pblk .pmenu:hover{color:var(--fg)}
+.titem.cmp{height:78px;padding-top:12px;padding-bottom:0}
+.titem.cmp .trow:first-child{height:24px}
+.titem.cmp .pbar{margin:9px 0 0}
+.pbar.none{visibility:hidden}
+.titem .tago{min-width:7.5ch;text-align:right;font-variant-numeric:tabular-nums}
+.titem.flash{animation:flash 1.8s ease-out}
+@keyframes flash{0%,40%{box-shadow:inset 0 0 0 2px var(--acc);background:var(--acc-soft)}100%{box-shadow:inset 0 0 0 2px transparent}}
+@media (prefers-reduced-motion:reduce){.titem.flash{animation:none;box-shadow:inset 0 0 0 2px var(--acc)}}
+.pblk.dragging{opacity:.5}
+.pblk.dropb{box-shadow:inset 0 3px 0 var(--fg)}
+.pblk.dropa{box-shadow:inset 0 -3px 0 var(--fg)}
+.plv{padding:6px var(--s4) 4px;font:600 10px/1 var(--mono);letter-spacing:.1em;color:var(--fg-3);border-bottom:var(--bw) solid var(--line)}
+.plv.need{color:var(--acc)}
+.pfold{padding:6px var(--s4);font:11px/1.4 var(--mono);color:var(--fg-3);border-bottom:var(--bw) solid var(--line);cursor:pointer}
+.pfold:hover{color:var(--fg)}
 .dmeta select{font:12px var(--mono);max-width:100%;background:var(--bg);color:var(--fg);border:var(--bw) solid var(--line);border-radius:var(--r);height:24px}
 .titem{min-width:0;overflow:hidden;padding:12px var(--s3) 12px var(--s4);border-bottom:var(--bw) solid var(--line);cursor:pointer;position:relative;transition:background var(--t)}
 .titem:hover{background:var(--bg-2)}
@@ -224,10 +257,17 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .tsub{font-size:12px;color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 .tago{font-size:11px;line-height:1;color:var(--fg-3);flex:0 0 auto}
 .tidm{font:11px/1 var(--mono);color:var(--fg-3);flex:0 0 auto}
+.tdur{font:11px/1 var(--mono);color:var(--fg-3);flex:0 0 auto;white-space:nowrap}
+.tdur.over{color:var(--fg);font-weight:600}
+.watch{margin:0;padding:0;list-style:none;font-size:12px}
+.watch li{padding:6px 0;border-top:var(--bw) solid var(--line)}
+.watch li:first-child{border-top:0}
+.watch .wh{display:flex;gap:8px;align-items:baseline;font:11px/1.5 var(--mono);color:var(--fg-2)}
+.watch .wv{font-weight:600;color:var(--fg)}
+.watch .wt{color:var(--fg-2);margin-top:2px}
 /* finished cards: one-line conclusion, one-click 知道了, full report folded */
 .ackb{flex:0 0 auto;height:24px;padding:0 10px;border:var(--bw) solid var(--inv-bg);background:var(--inv-bg);color:var(--inv-fg);font:600 12px/1 var(--sans);cursor:pointer;white-space:nowrap;transition:background var(--t),border-color var(--t)}
 .ackb:hover,.ackb:focus-visible{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
-.tsub.tline{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.5}
 .tmore{border:0;background:none;padding:2px 0;margin-top:4px;color:var(--fg-3);font:11px/1.4 var(--mono);cursor:pointer}.tmore:hover{color:var(--fg)}
 .tfull{margin-top:6px;padding-top:8px;border-top:var(--bw) solid var(--line);font-size:12.5px;max-height:360px;overflow:auto;cursor:auto}
 .titem.leaving{transition:opacity .16s ease,max-height .2s ease .1s,padding .2s ease .1s;opacity:0;max-height:0!important;padding-top:0;padding-bottom:0;pointer-events:none}
@@ -304,7 +344,6 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .lifecycle label{display:block;margin:14px 0 6px;font-size:13px}
 .lifecycle .btn{height:auto;min-height:32px;white-space:normal}
 @media(max-width:600px){.lifecycle .btn{min-height:44px}.lifecycle textarea{font-size:14px}}
-.icard{padding:14px var(--s4);border-bottom:var(--bw) solid var(--line)}
 /* ---------- scheduled jobs (定时) ---------- */
 .cjob{padding:12px var(--s3) 12px var(--s4);border-bottom:var(--bw) solid var(--line);position:relative}
 .cjob.off .ttitle{color:var(--fg-3)}
@@ -316,8 +355,8 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .cjob .acts{margin-top:8px}.cjob .acts .btn{height:26px;padding:0 10px;font-size:12px}
 .st.on{color:var(--fg);border-color:var(--fg)}.st.off{color:var(--fg-3);border-style:dashed}.st.off::before{display:none}.st.fin{color:var(--fg-3)}
 .chint{padding:10px var(--s4);font-size:12px;color:var(--fg-3);border-bottom:var(--bw) solid var(--line);background:var(--bg-2)}
-.icard .ctext{font-size:13.5px;white-space:pre-wrap;word-break:break-word;margin:8px 0;font-weight:500}
-.icard img{max-width:100%;max-height:150px;border:var(--bw) solid var(--line);cursor:zoom-in}
+.dshots{display:flex;flex-wrap:wrap;gap:8px}
+.dshots img{max-width:100%;max-height:150px;border:var(--bw) solid var(--line);cursor:zoom-in}
 /* ---------- overlays ---------- */
 #toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(420px,calc(100vw - 32px))}
 .toast{background:var(--bg);border:var(--bw) solid var(--line-2);border-left:4px solid var(--fg);box-shadow:var(--hard);padding:10px 14px;font-size:13px;white-space:pre-wrap;word-break:break-word;animation:tin .16s ease-out;cursor:pointer}
@@ -341,6 +380,58 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .sitem .s1{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sitem .s2{font:11px/1.6 var(--mono);color:var(--fg-3)}
 #zoom{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:60;cursor:zoom-out}
 #zoom img{max-width:94vw;max-height:94vh;border:var(--bw) solid #fff}
+/* ---------- progress (steps + plain words) ---------- */
+.prog{margin-top:8px;font-size:13px}
+.prog .steps{list-style:none;margin:0 0 8px;padding:0;font:12.5px/1.75 var(--mono)}
+.prog .steps li{display:flex;gap:8px;min-width:0}
+.prog .steps li i{font-style:normal;flex:0 0 auto;width:12px}
+.prog .steps li.todo{color:var(--fg-3)}
+.prog .steps li.active{font-weight:700}
+.prog .steps li .em{margin-left:auto;color:var(--fg-3);font-weight:400;flex:0 0 auto}
+.prog .pnow{white-space:pre-wrap;word-break:break-word}
+.prog .pnow2,.prog .pmeta,.prog .precent{font:11.5px/1.6 var(--mono);color:var(--fg-3);margin-top:4px;word-break:break-word}
+.prog .praw summary{cursor:pointer;list-style:none;font:500 10.5px/1.8 var(--mono);letter-spacing:.1em;color:var(--fg-3);margin-top:4px}
+.prog .praw summary::-webkit-details-marker{display:none}
+.prog .praw summary::before{content:"+ "}.prog .praw[open] summary::before{content:"- "}
+.prog .praw pre{font-size:11.5px;padding:6px 8px;margin-top:4px}
+.pbar{height:3px;background:var(--bg-3);margin:0 0 8px}.pbar i{display:block;height:100%;background:var(--fg)}
+.titem .pbar{margin:7px 0 0;height:2px}
+/* ---------- 工作记录 ---------- */
+#tlogSec>summary .grow{flex:1}
+#tlogSec>summary .tlc{font-weight:500;letter-spacing:0;text-transform:none}
+#tlog{max-height:max(320px,calc(100vh - 260px));overflow-y:auto;border:var(--bw) solid var(--line);background:var(--surface);font:12px/1.5 var(--mono)}
+#tlog .tlmore{display:block;width:100%;border:0;border-bottom:var(--bw) solid var(--line);background:var(--bg-2);color:var(--fg-2);font:11px/26px var(--mono);cursor:pointer}
+#tlog .tlmore:hover{color:var(--fg)}
+.le{padding:5px 8px;border-bottom:var(--bw) solid var(--line);min-width:0}
+.le:last-child{border-bottom:0}
+.le>.lh,.le>details>summary{display:flex;gap:8px;align-items:baseline;min-width:0;list-style:none}
+.le>details>summary{cursor:pointer}.le>details>summary::-webkit-details-marker{display:none}
+.le .k{flex:0 0 auto;font:600 10px/1.6 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3);min-width:44px}
+.le .a{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-2)}
+.le .w{flex:0 0 auto;color:var(--fg-3);font-size:10.5px}
+.le .x{white-space:pre-wrap;word-break:break-word;margin:4px 0 2px;color:var(--fg)}
+.le .x.md{font:13px/1.6 var(--sans,inherit)}
+.le pre{white-space:pre-wrap;word-break:break-word;margin:4px 0 2px;padding:6px 8px;background:var(--bg);border:var(--bw) solid var(--line);font-size:11.5px;max-height:360px;overflow:auto}
+.le pre .dp{color:var(--fg);background:var(--bg-3)}.le pre .dm{color:var(--fg-3);text-decoration:line-through}
+.le .full{border:0;background:none;color:var(--fg-2);font:11px var(--mono);cursor:pointer;padding:2px 0;text-decoration:underline}
+.le.text .x{color:var(--fg)}
+.le.thinking .a,.le.thinking .x{color:var(--fg-3);font-style:italic}
+.le.instruction{border-left:3px solid var(--fg);background:var(--bg-2)}
+.le.instruction .k{color:var(--fg)}
+.le.local{opacity:.6}
+.le.report{border-left:3px solid var(--fg)}
+.le.report.needs_input,.le.report.blocked{border-left-color:var(--acc)}
+.le.err .k,.le.err .a{color:var(--acc)}
+.le.run .k::after{content:" ..."}
+.le.note{text-align:center;color:var(--fg-3);font-size:11px}
+.tlempty{padding:16px;color:var(--fg-3);text-align:center}
+/* pinned composer under the detail */
+.dfoot{border-top:var(--bw) solid var(--line-2);padding:8px var(--s4) 10px;background:var(--bg)}
+.dfoot .dfl{display:flex;align-items:center;gap:8px;font:500 10.5px/1 var(--mono);letter-spacing:.1em;color:var(--fg-3);margin-bottom:6px}
+.dfoot textarea{width:100%;min-height:44px;max-height:180px;border:var(--bw) solid var(--line);padding:8px 10px;background:var(--surface);resize:none;outline:0;display:block;font:inherit;font-size:13px}
+.dfoot textarea:focus{border-color:var(--line-2);box-shadow:var(--hard)}
+.dfoot .acts{margin-top:6px;align-items:center}
+.dfoot .acts .hintk{font:11px var(--mono);color:var(--fg-3);flex:1}
 </style>
 </head>
 <body>
@@ -350,8 +441,9 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
   <button class="btn" id="focusBtn" title="专注模式：只有「需要你」会打扰，完成汇总留到结束">专注</button>
   <div class="grow"></div>
   <span class="chip hide-m" id="hubChip"><span class="dot" id="hubDot"></span><span id="hubText">hub</span></span>
-  <select class="btn hide-m" id="modelSel" title="模型"></select>
+  <select class="btn hide-m" id="modelSel" title="前台对话模型（只影响这里的对话，不影响 worker）"></select>
   <select class="btn hide-m" id="thinkSel" title="思考级别" style="max-width:140px"></select>
+  <button class="btn icon hide-m" id="modelRefresh" title="刷新前台模型列表（重新读取 models.json 和各 provider 的实时模型目录）">↻</button>
   <div id="mobtabs" role="tablist" aria-label="视图"><button data-v="side" role="tab">注意力</button><button data-v="chat" role="tab">对话</button><button id="mobToggle" hidden></button></div>
   <button class="btn icon hide-m" id="keysBtn" title="快捷键 (?)">?</button>
   <button class="btn icon" id="themeBtn" title="主题：跟随系统">◐</button>
@@ -373,13 +465,13 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
     </div></div>
   </section>
   <aside id="side">
-    <div class="tabs"><button class="tab on" data-tab="tasks">注意力<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span><kbd class="mk2"></kbd></button><button class="tab" data-tab="cron">定时<span class="badge" id="cBadge"></span><kbd class="mk3"></kbd></button></div>
+    <div class="tabs"><button class="tab on" data-tab="tasks">注意力<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="cron">定时<span class="badge" id="cBadge"></span><kbd class="mk2"></kbd></button></div>
     <div id="pane-tasks" style="display:flex;flex-direction:column;flex:1;min-height:0">
-      <div class="filters"><span id="lvls" style="display:contents"></span><input id="tsearch" type="search" aria-label="搜索任务" autocomplete="off"><span class="grow"></span><span class="chip" id="tcount"></span></div>
+      <div class="filters"><span id="lvls" style="display:contents"></span><input id="tsearch" type="search" aria-label="搜索任务" autocomplete="off"></div>
+      <div id="vbar"><span class="vsw" role="group" aria-label="列表视图"><button data-view="attn" title="按注意力：需要你 / 待扫 / 稍后 / 不用管，内部再按项目分组">注意力</button><button data-view="proj" title="按项目：每个项目一块，块内需要你在最前">项目</button></span><span class="grow"></span><span id="vacts"></span><span class="chip" id="tcount"></span></div>
       <div id="projbar" style="display:none"></div><div id="machines"></div>
       <div class="scroll" id="tlist" role="list"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
     </div>
-    <div id="pane-intake" style="display:none;flex-direction:column;flex:1;min-height:0"><div class="scroll" id="ilist"><div class="skel"><i></i><i></i></div></div></div>
     <div id="pane-cron" style="display:none;flex-direction:column;flex:1;min-height:0"><div class="scroll" id="clist"><div class="skel"><i></i><i></i></div></div></div>
     <div id="detail"></div>
   </aside>
@@ -394,6 +486,13 @@ const api=async(m,p,b)=>{const r=await fetch(p,{method:m,headers:b?{'content-typ
 const ago=t=>{const s=(Date.now()-t)/1000;return s<60?'刚刚':s<3600?Math.floor(s/60)+' 分钟前':s<86400?Math.floor(s/3600)+' 小时前':Math.floor(s/86400)+' 天前'};
 const ST={starting:'启动中',running:'运行中',idle:'空闲',needs_input:'需要输入',blocked:'受阻',done:'完成',failed:'失败',cancelled:'已取消',exited:'已退出',pending:'待处理',claimed:'已认领',dispatched:'已派单',dismissed:'已忽略'};
 const ACTIVE=['starting','running'],ATTN=['idle','needs_input','blocked','done','failed','exited'];
+/* expected time (shared/watchdog.ts): active time used vs expected; [OVER] is a quiet mark, never a notification */
+function fmtMin(m){if(!isFinite(m))return '?';if(m<1)return Math.max(0,Math.round(m*60))+'s';if(m<10&&Math.abs(m-Math.round(m))*60>=5)return Math.floor(m)+'m'+String(Math.round(m%1*60)).padStart(2,'0')+'s';m=Math.round(m);return m<60?m+'m':Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')+'m'}
+function timing(t){if(!t||!t.expect)return null;const c=t.clock,now=Date.now();const ms=c?c.activeMs+(c.activeSince!=null?Math.max(0,now-c.activeSince):0):(ACTIVE.includes(t.status)?now-(t.statusSince||t.createdAt):0);
+  const used=ms/60000,exp=t.expect.minutes;return {used,exp,over:used>exp,label:fmtMin(used)+' / '+fmtMin(exp)}}
+const EXP_SRC={dispatch:'派单预估',default:'按类型默认',worker:'worker 修正',watchdog:'巡检更新'};
+const WTRIG={overtime:'超时',stalled:'无进展',repeat:'重复模式',followup:'纠偏后复查',manual:'手动'};
+const WACT={silent:'静默更新预期',corrected:'已把建议发给 worker',escalated:'已交给你决定',error:'巡检失败'};
 const stPill=s=>'<span class="st '+esc(s)+'">'+esc(ST[s]||s)+'</span>';
 
 /* ---------- theme ---------- */
@@ -412,16 +511,27 @@ function modal(html,onMount,onClose){const m=document.createElement('div');m.cla
 
 /* ---------- markdown (small, escape-first) ---------- */
 function inline(s){
-  s=esc(s);
-  const codes=[];s=s.replace(/`([^`\n]+)`/g,(_,c)=>{codes.push(c);return '\u0000'+(codes.length-1)+'\u0000'});
-  s=s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
-  s=s.replace(/(^|[\s(（])(https?:\/\/[^\s<)）]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  s=esc(String(s).replace(/\u0000/g,''));
+  // Protect code and links before task recognition; never rewrite their text or attributes.
+  const tokens=[],hold=html=>{tokens.push(html);return '\u0000'+(tokens.length-1)+'\u0000'};
+  s=s.replace(/`([^`\n]+)`/g,(_,c)=>hold('<code>'+c+'</code>'));
+  s=s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,(_,label,url)=>hold('<a href="'+url+'" target="_blank" rel="noopener">'+label+'</a>'));
+  s=s.replace(/(^|[\s(（])(https?:\/\/[^\s<)）]+)/g,(_,p,url)=>p+hold('<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>'));
   s=s.replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>').replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<i>$2</i>');
   s=linkTasks(s);
-  return s.replace(/\u0000(\d+)\u0000/g,(_,i)=>{const c=codes[+i];return tasks.has(c)?tidHtml(c):'<code>'+c+'</code>'});
+  return s.replace(/\u0000(\d+)\u0000/g,(_,i)=>tokens[+i]||'');
 }
-function linkTasks(html){return html.replace(/(^|[^\w\/#.-])(t[0-9a-f]{4})(?![\w-])/g,(m,p,id)=>tasks.has(id)?p+tidHtml(id):m)}
-const tidHtml=id=>'<span class="tid" data-task="'+esc(id)+'">'+esc(id)+'</span>';
+function linkTasks(html){
+  // Input is escaped text (or our inline formatting). Skip URLs even outside Markdown.
+  return html.replace(/(?:https?:\/\/|www\.)[^\s<>]+|(^|[^\w\/#.@-])(t[0-9a-f]{4})(?![\w-]|[./]\w)/g,(m,p,id)=>id?p+tidHtml(id):m);
+}
+function taskRefTitle(id){const title=tasks.get(id)?.title;return typeof title==='string'&&title.trim()?title.trim():'查看任务'}
+function shortTaskTitle(title){const chars=Array.from(title);return chars.length>32?chars.slice(0,32).join('')+'…':title}
+function tidHtml(id){const title=taskRefTitle(id);return '<button type="button" class="tid" data-task="'+esc(id)+'" title="'+esc(title)+'" aria-label="'+esc(title)+'">'+esc(shortTaskTitle(title))+'</button>'}
+function refreshTaskRefs(){
+  // Patch only labels: no message re-render, lost selection/details state, or per-reference requests.
+  document.querySelectorAll('.tid[data-task]').forEach(el=>{const title=taskRefTitle(el.dataset.task),label=shortTaskTitle(title);if(el.textContent!==label)el.textContent=label;if(el.title!==title)el.title=title;if(el.getAttribute('aria-label')!==title)el.setAttribute('aria-label',title)});
+}
 function md(src){
   const lines=String(src??'').replace(/\r/g,'').split('\n');let out='',i=0;
   const isTable=k=>/^\s*\|.*\|\s*$/.test(lines[k]||'')&&/^\s*\|[\s:|-]+\|\s*$/.test(lines[k+1]||'');
@@ -453,10 +563,10 @@ let toolRes=new Map();    // toolCallId -> {result,isError,running}
 let toolOwner=new Map();  // toolCallId -> message index
 let cur=-1;               // index of streaming message
 let streaming=false;
-const tasks=new Map(),intakes=new Map();let hubLoaded=false,machines=[],selfId='',selTask=null,hubOk=false;
+const tasks=new Map();let hubLoaded=false,machines=[],selfId='',selTask=null,hubOk=false;
 // attention model from the hub (shared/attention.ts): the only source of "what needs you"
 const attn=new Map();let counts={need:0,skim:0,snoozed:0,inflight:0,archived:0},focus={on:false},showArchived=false;
-let projects=[],projFilter=localStorage.qaProj||'';const pCollapsed=new Set(JSON.parse(localStorage.qaProjCollapsed||'[]'));
+let projects=[],projFilter=localStorage.qaProj||'';let listView=localStorage.qaListView==='attn'?'attn':'proj';const pbCollapsed=new Set(JSON.parse(localStorage.qaProjBlkCollapsed||'[]'));const pCollapsed=new Set(JSON.parse(localStorage.qaProjCollapsed||'[]'));
 
 /* ---------- chat rendering ---------- */
 const TOOL={qa_dispatch:['↗','派单'],qa_tasks:['≡','任务'],qa_task_read:['▤','读任务'],qa_task_send:['→','追加'],qa_task_cancel:['⊘','中止'],qa_machines:['▣','机器'],qa_remote_fs:['⇄','远程'],read:['▤','读取'],grep:['/','搜索'],find:['?','查找'],ls:['▦','列目录'],bash:['$','bash'],edit:['✎','编辑'],write:['+','写入']};
@@ -591,7 +701,7 @@ function autosize(){input.style.height='auto';input.style.height=Math.min(input.
 input.addEventListener('input',autosize);
 input.addEventListener('keydown',e=>{if(isSendKey(e)){e.preventDefault();if(!sending)send(e.altKey?'steer':'followUp')}
   else if(e.key==='Escape'&&streaming&&!input.value&&!selTask){e.preventDefault();e.stopPropagation();$('#stopBtn').click()}});
-// global keys: ⌘/Ctrl+K composer ⇄ task search, ⌘/Ctrl+1/2 side panel tabs, "/" composer, "?" shortcuts,
+// global keys: ⌘/Ctrl+K composer ⇄ task search, ⌘/Ctrl+1/2 side panel tabs (注意力 / 定时), "/" composer, "?" shortcuts,
 // Esc closes image zoom / task detail / search
 const showSide=on=>{if(innerWidth<=900&&document.body.classList.contains('show-side')!==on)$('#mobToggle').click()};
 function switchTab(name){document.querySelector('.tab[data-tab="'+name+'"]')?.click();showSide(true)}
@@ -601,7 +711,7 @@ document.addEventListener('keydown',e=>{
   const mod=IS_MAC?e.metaKey&&!e.ctrlKey:e.ctrlKey&&!e.metaKey;
   if(mod&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='k'){e.preventDefault();document.querySelector('.modal')?.querySelector('[data-x]')?.click();if(document.activeElement===input)focusSearch();else focusComposer();return}
   if(document.querySelector('.modal'))return;
-  if(mod&&!e.altKey&&!e.shiftKey&&(e.key==='1'||e.key==='2'||e.key==='3')){e.preventDefault();switchTab({1:'tasks',2:'intake',3:'cron'}[e.key]);return}
+  if(mod&&!e.altKey&&!e.shiftKey&&(e.key==='1'||e.key==='2')){e.preventDefault();switchTab({1:'tasks',2:'cron'}[e.key]);return}
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||'');
   if(e.key==='Escape'){if($('#zoom').style.display==='flex'){$('#zoom').style.display='none';return}if(selTask){closeTask();return}if(document.activeElement===$('#tsearch')){e.preventDefault();if($('#tsearch').value){$('#tsearch').value='';renderTasks()}else focusComposer();return}}
   if(typing||e.metaKey||e.ctrlKey||e.altKey)return;
@@ -609,14 +719,14 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='?'){e.preventDefault();showKeys()}
 });
 function showKeys(){
-  const rows=[['聚焦输入框 / 再按一次搜索任务',kbd(MOD,'K')],['任务面板 / 浏览器评论 / 定时',kbd(MOD,'1')+' '+kbd(MOD,'2')+' '+kbd(MOD,'3')],['发送消息',kbd(...SEND_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['换行',kbd(...NEWLINE_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['插入当前轮（steer）',kbd(ALT)+' + 发送键'],['停止回复（输入框为空时）',kbd('Esc')],['关闭任务详情 / 大图 / 清空搜索',kbd('Esc')],['任务列表上下移动 / 打开',kbd('↑')+kbd('↓')+' '+kbd('Enter')],['聚焦输入框',kbd('/')],['显示快捷键',kbd('?')]];
-  modal('<h3>快捷键</h3><div class="dc"><table class="keys-t">'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+r[1]+'</td></tr>').join('')+'</table><p class="lbl" style="margin-top:14px">发送键当前：'+esc(SEND_COMBO())+' 发送 · '+esc(NEWLINE_COMBO())+' 换行</p></div><div class="df"><button class="btn" data-sk>切换发送键</button><span class="grow"></span><button class="btn primary" data-x>关闭</button></div>',(dlg,close)=>{dlg.querySelector('[data-x]').onclick=close;dlg.querySelector('[data-sk]').onclick=()=>{close();toggleSendKey()};dlg.querySelector('[data-x]').focus()});
+  const rows=[['聚焦输入框 / 再按一次搜索任务',kbd(MOD,'K')],['注意力 / 定时',kbd(MOD,'1')+' '+kbd(MOD,'2')],['发送消息',kbd(...SEND_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['换行',kbd(...NEWLINE_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['插入当前轮（steer）',kbd(ALT)+' + 发送键'],['停止回复（输入框为空时）',kbd('Esc')],['关闭任务详情 / 大图 / 清空搜索',kbd('Esc')],['任务列表上下移动 / 打开',kbd('↑')+kbd('↓')+' '+kbd('Enter')],['聚焦输入框',kbd('/')],['显示快捷键',kbd('?')]];
+  modal('<h3>快捷键</h3><div class="dc"><table class="keys-t">'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+r[1]+'</td></tr>').join('')+'</table><p class="lbl" style="margin-top:14px">发送键当前：'+esc(SEND_COMBO())+' 发送 · '+esc(NEWLINE_COMBO())+' 换行</p><p style="margin-top:8px;color:var(--fg-2);font-size:12px">浏览器插件：在网页上按 '+kbd(MOD,SHIFT,'E')+' 框选元素写评论，发送后交给前台 agent 处理，页面上不留标记。</p></div><div class="df"><button class="btn" data-sk>切换发送键</button><a class="btn" href="'+esc((S.hub||'')+'/extension.zip')+'">下载浏览器插件</a><span class="grow"></span><button class="btn primary" data-x>关闭</button></div>',(dlg,close)=>{dlg.querySelector('[data-x]').onclick=close;dlg.querySelector('[data-sk]').onclick=()=>{close();toggleSendKey()};dlg.querySelector('[data-x]').focus()});
 }
 $('#keysBtn').onclick=showKeys;$('#skBtn').onclick=()=>{toggleSendKey();input.focus()};
 $('#tsearch').placeholder='搜索任务  '+combo(MOD,'K');
 $('#tsearch').addEventListener('input',()=>renderTasks());
 $('#tsearch').addEventListener('keydown',e=>{if(e.key==='ArrowDown'||e.key==='Enter'){const f=$('#tlist .titem');if(f){e.preventDefault();e.key==='Enter'?openTask(f.dataset.id):f.focus()}}});
-document.querySelector('.mk1').textContent=combo(MOD,'1');document.querySelector('.mk2').textContent=combo(MOD,'2');document.querySelector('.mk3').textContent=combo(MOD,'3');
+document.querySelector('.mk1').textContent=combo(MOD,'1');document.querySelector('.mk2').textContent=combo(MOD,'2');
 $('#keysBtn').title='快捷键（?）';
 document.addEventListener('click',e=>{const b=e.target.closest('.copy');if(!b)return;const code=b.closest('.code')?.querySelector('pre')?.textContent||'';navigator.clipboard?.writeText(code).then(()=>{b.textContent='已复制';setTimeout(()=>b.textContent='复制',1200)},()=>toast('复制失败','error'))});
 input.addEventListener('paste',e=>{for(const it of e.clipboardData?.items||[]){if(it.type.startsWith('image/')){e.preventDefault();const f=it.getAsFile();const r=new FileReader();r.onload=()=>{const [h,d]=String(r.result).split(',');pending.push({mimeType:h.slice(5,h.indexOf(';')),data:d});renderThumbs()};r.readAsDataURL(f)}}});
@@ -638,9 +748,21 @@ function renderHeader(){
   if(S.model){const v=S.model.provider+'/'+S.model.id;const sel=$('#modelSel');if(![...sel.options].some(o=>o.value===v))sel.insertAdjacentHTML('afterbegin','<option value="'+esc(v)+'">'+esc(S.model.name||S.model.id)+'</option>');sel.value=v}
   const ts=$('#thinkSel');if(S.thinkingLevel){if(![...ts.options].some(o=>o.value===S.thinkingLevel))ts.insertAdjacentHTML('beforeend','<option value="'+esc(S.thinkingLevel)+'">思考 '+esc(S.thinkingLevel)+'</option>');ts.value=S.thinkingLevel}
 }
-let modelsLoaded=false;
-async function loadModels(){if(modelsLoaded)return;modelsLoaded=true;try{const r=await api('GET','/api/models');const sel=$('#modelSel');sel.innerHTML=r.models.map(m=>'<option value="'+esc(m.provider+'/'+m.id)+'">'+esc(m.name||m.id)+'</option>').join('');$('#thinkSel').innerHTML=(r.levels||[]).map(l=>'<option value="'+esc(l)+'">思考 '+esc(l)+'</option>').join('');renderHeader()}catch{}}
+let modelsLoaded=false,modelsBusy=false;
+const fmtTok=n=>!n?'?':n>=1e6?(+(n/1e6).toFixed(1))+'M':Math.round(n/1e3)+'K';
+/** Front chat models of this machine, grouped by provider; force = pi catalog refresh first (failures keep the old list). */
+async function loadModels(force){if((modelsLoaded&&!force)||modelsBusy)return;modelsLoaded=true;modelsBusy=true;const rb=$('#modelRefresh');if(rb)rb.disabled=true;
+  try{const r=await api('GET','/api/models'+(force?'?refresh=1':''));const sel=$('#modelSel');const by={};for(const m of r.models)(by[m.provider]??=[]).push(m);
+    const cur=S.model?.provider||r.current?.provider||'';const provs=Object.keys(by).sort((a,b)=>(b===cur)-(a===cur)||a.localeCompare(b));
+    const meta=m=>[m.name&&m.name!==m.id?m.name:'',fmtTok(m.contextWindow)+' 上下文',fmtTok(m.maxTokens)+' 输出',m.reasoning?'可思考':'不思考',(m.input||[]).includes('image')?'图片':''].filter(Boolean).join(' · ');
+    sel.innerHTML=provs.map(p=>'<optgroup label="'+esc(p+' · '+by[p].length)+'">'+by[p].sort((a,b)=>a.id.localeCompare(b.id)).map(m=>'<option value="'+esc(m.provider+'/'+m.id)+'" title="'+esc(meta(m))+'">'+esc(m.id)+'</option>').join('')+'</optgroup>').join('');
+    const sum=provs.map(p=>p+' '+by[p].length).join(' · ');
+    sel.title='前台对话模型（只影响这里的对话，不影响 worker）\n本机 pi 可用 '+r.models.length+' 个：'+sum+(r.refresh?'\n上次刷新 '+new Date(r.refresh.at).toLocaleTimeString():'');
+    $('#thinkSel').innerHTML=(r.levels||[]).map(l=>'<option value="'+esc(l)+'">思考 '+esc(l)+'</option>').join('');renderHeader();
+    if(force){const errs=Object.entries(r.refresh?.errors||{});if(errs.length||r.refresh?.aborted)toast('模型列表刷新未完全成功，失败的 provider 仍显示上次的列表：'+errs.map(([k,v])=>k+': '+v).join('；')+(r.refresh?.aborted?'（超时）':''),'error',9000);else toast('前台模型列表已刷新：'+r.models.length+' 个（'+sum+'）')}
+  }catch(x){modelsLoaded=false;if(force)toast('刷新模型列表失败，仍显示上次的列表：'+x.message,'error')}finally{modelsBusy=false;if(rb)rb.disabled=false}}
 $('#modelSel').onchange=e=>{const v=e.target.value;const i=v.indexOf('/');api('POST','/api/model',{provider:v.slice(0,i),id:v.slice(i+1)}).then(()=>toast('已切换模型 '+v)).catch(x=>toast(x.message,'error'))};
+$('#modelRefresh').onclick=()=>loadModels(true);
 $('#thinkSel').onchange=e=>api('POST','/api/model',{thinkingLevel:e.target.value}).catch(x=>toast(x.message,'error'));
 // narrow screens: one column with a [任务 | 对话] switch (tasks first, like the wide layout)
 function setMob(side){document.body.classList.toggle('show-side',side);document.querySelectorAll('#mobtabs [data-v]').forEach(b=>{const on=(b.dataset.v==='side')===side;b.classList.toggle('on',on);b.setAttribute('aria-selected',on)})}
@@ -740,15 +862,25 @@ function ackCard(el){const id=el.dataset.id;if(el.classList.contains('leaving'))
   const done=()=>{expanded.delete(id);const prev=attn.get(id);if(prev)attn.set(id,{...prev,level:'archived'});_renderTasks();if(next?.dataset?.id)document.querySelector('.titem[data-id="'+CSS.escape(next.dataset.id)+'"]')?.focus({preventScroll:true});
     hubPost('tasks/'+encodeURIComponent(id)+'/ack').catch(e=>{if(prev)attn.set(id,prev);renderTasks();toast('确认失败：'+e.message,'error')})};
   setTimeout(done,matchMedia('(prefers-reduced-motion:reduce)').matches?0:300)}
-let tRaf=0;function renderTasks(){if(tRaf)return;tRaf=requestAnimationFrame(()=>{tRaf=0;_renderTasks()})}
+let tRaf=0;function renderTasks(){if(tRaf)return;tRaf=requestAnimationFrame(()=>{tRaf=0;_renderTasks();refreshTaskRefs()})}
 const ACT_BTN={reply:'回答',retry:'重试',ack:'知道了',snooze:'稍后',unsnooze:'现在处理',cancel:'中止',attach:'接管'};
+// compact (项目 view): fixed height — mark + title, one ellipsized line, a progress slot that is always there
+function cardHtml(i){const t=tasks.get(i.taskId)||{id:i.taskId,title:i.title,machine:i.machine,status:i.status};
+  const line=i.level==='skim'?firstSentence(t.summary||'')||i.reason:i.reason,when=i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since),bar=t.progress?.steps?.length&&ACTIVE.includes(t.status);
+  const tm=(i.level==='inflight'||i.level==='need')&&ACTIVE.includes(t.status)?timing(t):null,mark=i.level==='inflight'&&i.mark!=='[MOVE]'?(tm?.over?'[OVER]':'[RUN]'):i.mark;
+  return '<div class="titem cmp '+i.level+(i.taskId===selTask?' sel':'')+'" data-key="t:'+esc(i.taskId)+'" data-id="'+esc(i.taskId)+'" tabindex="0" role="listitem" aria-label="'+esc(LVL[i.level]+' '+i.title+' '+i.reason)+'">'+
+    '<div class="trow"><span class="mark">'+esc(mark)+'</span><span class="ttitle" title="'+esc(i.title)+'">'+esc(i.title)+'</span>'+(i.level==='skim'?'<button class="ackb" data-act="ack" title="知道了：确认并归档">知道了</button>':'')+'</div>'+
+    '<div class="trow"><span class="tidm">'+esc(i.taskId)+'</span>'+mtag(t)+(tm?'<span class="tdur'+(tm.over?' over':'')+'" title="已用 / 预期">'+esc(tm.label)+'</span>':'')+'<span class="tsub" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+esc(when)+'</span></div>'+
+    (bar?cardBar(t):'<div class="pbar none"></div>')+'</div>'}
 function itemHtml(i){const t=tasks.get(i.taskId)||{id:i.taskId,title:i.title,machine:i.machine,status:i.status};
   const sum=t.summary||'',line=i.level==='skim'?firstSentence(sum)||i.reason:i.reason,more=(i.level==='skim'||i.level==='need')&&sum&&sum.trim()!==line,open=more&&expanded.has(i.taskId);
   const when=i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since);
   const acts=(i.actions||[]).filter(a=>i.level!=='inflight'||a.id!=='attach').slice(0,i.level==='need'?4:3);
-  return '<div class="titem '+i.level+(i.taskId===selTask?' sel':'')+'" data-id="'+esc(i.taskId)+'" tabindex="0" role="listitem" aria-label="'+esc(LVL[i.level]+' '+i.title+' '+i.reason)+'">'+
-    '<div class="trow"><span class="mark">'+esc(i.mark)+'</span><span class="ttitle">'+esc(i.title)+'</span>'+(i.level==='skim'?'<button class="ackb" data-act="ack" title="知道了：确认并归档">知道了</button>':'')+'</div>'+
-    '<div class="trow"><span class="tidm">'+esc(i.taskId)+'</span>'+mtag(t)+'<span class="tsub'+(i.level==='need'||i.level==='skim'?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+esc(when)+'</span></div>'+
+  const tm=(i.level==='inflight'||i.level==='need')&&ACTIVE.includes(t.status)?timing(t):null,mark=i.level==='inflight'&&i.mark!=='[MOVE]'?(tm?.over?'[OVER]':'[RUN]'):i.mark;
+  return '<div class="titem '+i.level+(i.taskId===selTask?' sel':'')+'" data-key="t:'+esc(i.taskId)+'" data-id="'+esc(i.taskId)+'" tabindex="0" role="listitem" aria-label="'+esc(LVL[i.level]+' '+i.title+' '+i.reason)+'">'+
+    '<div class="trow"><span class="mark">'+esc(mark)+'</span><span class="ttitle">'+esc(i.title)+'</span>'+(i.level==='skim'?'<button class="ackb" data-act="ack" title="知道了：确认并归档">知道了</button>':'')+'</div>'+
+    '<div class="trow"><span class="tidm">'+esc(i.taskId)+'</span>'+mtag(t)+(tm?'<span class="tdur'+(tm.over?' over':'')+'" title="已用 / 预期">'+esc(tm.label)+'</span>':'')+'<span class="tsub" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+esc(when)+'</span></div>'+
+    (i.level==='inflight'&&t.progress?.steps?.length?cardBar(t):'')+
     (t.lifecycle?'<div class="tsub" title="'+esc(t.lifecycle.policy.reason)+'">'+esc((LC_PHASE[t.lifecycle.phase]||t.lifecycle.phase)+' · 模板 '+t.lifecycle.policy.template+' · '+t.lifecycle.policy.workspace+' / '+t.lifecycle.policy.review)+'</div>':'')+
     (i.level==='need'&&i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+
     (!humanApproval(t)&&i.level==='need'&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'" title="把这个回答发给 worker">'+esc(o)+'</button>').join('')+'</div>':'')+
@@ -759,10 +891,16 @@ function liveProject(id){let p=projects.find(x=>x.id===id);for(let k=0;p&&p.merg
 const projOf=t=>liveProject(t?.project)?.id||'';
 const projName=id=>id?(liveProject(id)?.name||id):'未归类';
 const itemProj=i=>projOf(tasks.get(i.taskId)||{project:i.project});
-const taskCreatedAt=i=>tasks.get(i.taskId)?.createdAt||0;
-const taskCreationOrder=(a,b)=>taskCreatedAt(b)-taskCreatedAt(a)||a.taskId.localeCompare(b.taskId);
-function projCounts(){const m=new Map();for(const i of attn.values()){if(i.level==='archived')continue;const id=itemProj(i);if(!m.has(id))m.set(id,{id,need:0,inflight:0,open:0,latest:0});const c=m.get(id);c.open++;if(i.level==='need')c.need++;if(i.level==='inflight')c.inflight++;c.latest=Math.max(c.latest,taskCreatedAt(i))}
-  return [...m.values()].sort((a,b)=>(!a.id)-(!b.id)||b.latest-a.latest||a.id.localeCompare(b.id))}
+// Stable project order (shared/projects.ts compareProjects): manual drag order, then creation time, then name.
+// Never depends on activity, so the list does not jump around. 未归类 is always last.
+function cmpProj(a,b){const ao=a.order??Infinity,bo=b.order??Infinity;return ao!==bo?(ao<bo?-1:1):((a.createdAt||0)-(b.createdAt||0)||a.name.localeCompare(b.name)||(a.id<b.id?-1:a.id>b.id?1:0))}
+const liveProjects=()=>projects.filter(p=>!p.mergedInto).sort(cmpProj);
+function projRank(id){if(!id)return 1e9;const i=liveProjects().findIndex(p=>p.id===id);return i<0?1e8:i}
+// tasks keep their place: newest created first, whatever their status or activity
+const created=i=>tasks.get(i.taskId)?.createdAt||i.since||0;
+const byCreated=(a,b)=>created(b)-created(a)||(a.taskId<b.taskId?-1:1);
+function projCounts(){const m=new Map();for(const i of attn.values()){if(i.level==='archived')continue;const id=itemProj(i);if(!m.has(id))m.set(id,{id,need:0,inflight:0,open:0,latest:0});const c=m.get(id);c.open++;if(i.level==='need')c.need++;if(i.level==='inflight')c.inflight++;c.latest=Math.max(c.latest,i.updatedAt||i.since||0)}
+  return [...m.values()].sort((a,b)=>projRank(a.id)-projRank(b.id))}
 function renderProjFilter(){const sel=$('#pfilter');if(!sel)return;const live=projects.filter(p=>!p.mergedInto).sort((a,b)=>a.name.localeCompare(b.name));
   if(projFilter&&projFilter!=='~none'&&!liveProject(projFilter))projFilter='';const cs=new Map(projCounts().map(c=>[c.id,c]));
   const lab=(id,name)=>{const c=cs.get(id);return esc(name)+(c&&(c.need||c.inflight)?' ('+[c.need?'需要你 '+c.need:'',c.inflight?'运行 '+c.inflight:''].filter(Boolean).join(' · ')+')':'')};
@@ -789,28 +927,77 @@ async function loadProjects(){try{const r=await api('GET','/api/hub/projects');p
 // it in every level except 需要你, which always shows.
 function levelHtml(l,list){if(projFilter)return list.map(itemHtml).join('');
   const m=new Map();for(const i of list){const id=itemProj(i);if(!m.has(id))m.set(id,[]);m.get(id).push(i)}
-  if(m.size<2&&!pCollapsed.has([...m.keys()][0]||'~none'))return list.map(itemHtml).join('');
-  const ids=[...m.keys()].sort((a,b)=>taskCreationOrder(m.get(a)[0],m.get(b)[0]));
+  const ids=[...m.keys()].sort((a,b)=>projRank(a)-projRank(b));
   return ids.map(id=>{const its=m.get(id),closed=l!=='need'&&pCollapsed.has(id||'~none');
-    return '<div class="phead'+(closed?' closed':'')+'" data-pid="'+esc(id)+'" role="button" tabindex="0" aria-expanded="'+!closed+'" title="'+(closed?'展开这个项目':'折叠这个项目（需要你的任务仍然显示）')+'"><span class="pcar">'+(closed?'+':'-')+'</span><span class="pname'+(id?'':' none')+'">'+esc(projName(id))+'</span><span class="pc">'+its.length+'</span>'+(id?'<button class="pmenu" data-pmenu title="重命名 / 合并项目">...</button>':'')+'</div>'+(closed?'':its.map(itemHtml).join(''))}).join('')}
+    return '<div class="phead'+(closed?' closed':'')+'" data-key="ph:'+l+':'+esc(id)+'" data-pid="'+esc(id)+'" role="button" tabindex="0" aria-expanded="'+!closed+'" title="'+(closed?'展开这个项目':'折叠这个项目（需要你的任务仍然显示）')+'"><span class="pcar">'+(closed?'+':'-')+'</span><span class="pname'+(id?'':' none')+'">'+esc(projName(id))+'</span><span class="pc">'+its.length+'</span>'+(id?'<button class="pmenu" data-pmenu title="重命名 / 合并项目">...</button>':'')+'</div>'+(closed?'':its.map(itemHtml).join(''))}).join('')}
+/* 按项目 view: projects are the first dimension, in a fixed order (drag a title to reorder; stored on the hub, same on
+   every device). Inside a block tasks stay in creation order (newest first): a status change only changes the mark and
+   the counts, never the position. A collapsed block still shows its 需要你 cards. */
+function projBlocks(items){const m=new Map();
+  for(const i of items){const id=itemProj(i);if(!m.has(id))m.set(id,{id,items:[],need:0,inflight:0,skim:0,snoozed:0,archived:0});const b=m.get(id);b.items.push(i);b[i.level]=(b[i.level]||0)+1}
+  return [...m.values()].sort((a,b)=>projRank(a.id)-projRank(b.id))}
+function projCountsHtml(b){const c=[b.need?'<span class="you">需要你 '+b.need+'</span>':'',b.inflight?'<span>运行中 '+b.inflight+'</span>':'',b.skim?'<span>待扫 '+b.skim+'</span>':'',b.snoozed?'<span>稍后 '+b.snoozed+'</span>':''].filter(Boolean);
+  return c.length?c.join(''):'<span>'+(b.items.length-b.archived?b.items.length-b.archived+' 件':'已归档 '+b.archived)+'</span>'}
+function projViewHtml(items,withArchived){
+  return projBlocks(items).filter(b=>withArchived||b.items.length>b.archived).map(b=>{const key=b.id||'~none',closed=pbCollapsed.has(key);
+    const live=b.items.filter(i=>i.level!=='archived').sort(byCreated),arch=withArchived?b.items.filter(i=>i.level==='archived').sort(byCreated).slice(0,30):[];
+    let h='<div class="pblk'+(closed?' closed':'')+'" data-key="pb:'+esc(key)+'" data-pb="'+esc(key)+'" data-pid="'+esc(b.id)+'"'+(b.id?' draggable="true"':'')+' role="button" tabindex="0" aria-expanded="'+!closed+'" title="'+(closed?'展开这个项目':'折叠这个项目（需要你的任务仍然显示）')+(b.id?'；拖动或 Alt+↑/↓ 调整项目顺序':'')+'"><span class="pcar">'+(closed?'+':'-')+'</span><span class="pname'+(b.id?'':' none')+'">'+esc(projName(b.id))+'</span><span class="pcs">'+projCountsHtml(b)+'</span>'+(b.id?'<button class="pmenu" data-pmenu title="重命名 / 合并项目">...</button>':'<span class="pmenu" style="cursor:default"></span>')+'</div>';
+    if(closed){const need=live.filter(i=>i.level==='need');h+=need.map(cardHtml).join('');const rest=live.length+arch.length-need.length;if(rest)h+='<div class="pfold" data-key="pf:'+esc(key)+'" data-pb="'+esc(key)+'">+ 已折叠 '+rest+' 件</div>';return h}
+    return h+live.map(cardHtml).join('')+(arch.length?'<div class="plv" data-key="pa:'+esc(key)+'">已归档 '+b.archived+'</div>'+arch.map(cardHtml).join(''):'')}).join('')}
+/* Manual project order: optimistic locally, persisted on the hub (POST /api/projects/order, replicated over the mesh). */
+async function moveProject(id,targetId,after){const ids=liveProjects().map(p=>p.id).filter(x=>x!==id);let k=targetId?ids.indexOf(targetId):-1;if(k<0)return;ids.splice(after?k+1:k,0,id);
+  ids.forEach((x,n)=>{const p=projects.find(q=>q.id===x);if(p)p.order=n});_renderTasks();
+  try{const r=await api('POST','/api/hub/projects/order',{ids});projects=r.projects||projects;renderTasks()}catch(e){toast('保存项目顺序失败：'+e.message,'error');loadProjects()}}
+function stepProject(id,dir){const ids=[...document.querySelectorAll('#tlist .pblk')].map(e=>e.dataset.pid).filter(Boolean);const k=ids.indexOf(id),t=ids[k+dir];if(k<0||!t)return;
+  moveProject(id,t,dir>0).then(()=>document.querySelector('#tlist .pblk[data-pid="'+CSS.escape(id)+'"]')?.focus())}
+let dragPid='';
+// In-place list update: keep unchanged nodes (scroll position, focus, running animations), replace changed ones, move
+// only what really moved. Every top-level node of #tlist carries a data-key.
+function patchList(root,html){const tpl=document.createElement('template');tpl.innerHTML=html;
+  const active=document.activeElement,activeKey=root.contains(active)?active.closest('[data-key]')?.dataset.key:null;
+  const old=new Map();for(const el of [...root.children]){if(el.dataset.key&&el._html!==undefined&&!old.has(el.dataset.key))old.set(el.dataset.key,el);else el.remove()}
+  let prev=null;
+  for(const n of [...tpl.content.children]){const key=n.dataset.key,html=n.outerHTML;let el=key?old.get(key):null;
+    if(el&&el._html===html)old.delete(key);else{n._html=html;if(el){old.delete(key);el.replaceWith(n)}el=n}
+    const want=prev?prev.nextSibling:root.firstChild;if(el!==want)root.insertBefore(el,want);prev=el}
+  for(const el of old.values())el.remove();
+  if(activeKey&&!root.contains(active))root.querySelector('[data-key="'+CSS.escape(activeKey)+'"]')?.focus({preventScroll:true})}
+function setListView(v){listView=v==='attn'?'attn':'proj';localStorage.qaListView=listView;_renderTasks();$('#tlist').scrollTop=0}
+document.querySelectorAll('#vbar [data-view]').forEach(b=>b.onclick=()=>setListView(b.dataset.view));
+function renderViewBar(){document.querySelectorAll('#vbar [data-view]').forEach(b=>{const on=b.dataset.view===listView;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)});
+  const va=$('#vacts');if(listView!=='proj'){va.innerHTML='';return}
+  const keys=[...document.querySelectorAll('#tlist .pblk')].map(e=>e.dataset.pb);const allClosed=keys.length&&keys.every(k=>pbCollapsed.has(k));
+  const want=keys.length>1?(allClosed?'全部展开':'全部折叠'):'';if(va.textContent===want)return;
+  va.innerHTML=want?'<button class="vact" data-all title="需要你的任务折叠后仍然显示">'+want+'</button>':'';
+  const a=va.querySelector('[data-all]');if(a)a.onclick=()=>{const ks=[...document.querySelectorAll('#tlist .pblk')].map(e=>e.dataset.pb),all=ks.every(k=>pbCollapsed.has(k));for(const k of ks)all?pbCollapsed.delete(k):pbCollapsed.add(k);localStorage.qaProjBlkCollapsed=JSON.stringify([...pbCollapsed]);_renderTasks()}}
 function _renderTasks(){
   if(!hubLoaded)return; // keep the loading skeleton until the first hub snapshot
   const q=($('#tsearch')?.value||'').trim().toLowerCase();
   const match=i=>{if(!q)return true;const t=tasks.get(i.taskId)||{};return [i.taskId,i.title,i.reason,i.question,t.cwd,i.machine,t.summary,LVL[i.level],projName(itemProj(i))].some(v=>String(v||'').toLowerCase().includes(q))};
   const pf=projFilter==='~none'?'':liveProject(projFilter)?.id;
-  const items=[...attn.values()].filter(match).filter(i=>!projFilter||itemProj(i)===pf);const by={};for(const l of LEVELS)by[l]=[];for(const i of items)by[i.level]?.push(i);
-  // Keep attention/project grouping, but progress and snooze updates never reorder peers.
-  for(const l of LEVELS)by[l].sort(taskCreationOrder);
+  const byProj=listView==='proj';
+  const items=[...attn.values()].filter(match).filter(i=>byProj||!projFilter||itemProj(i)===pf);const by={};for(const l of LEVELS)by[l]=[];for(const i of items)by[i.level]?.push(i);
+  for(const l of LEVELS)by[l].sort(byCreated); // stable: creation order inside a level, activity never reorders
   const shown=LEVELS.filter(l=>l!=='archived'||showArchived||q);
-  let h='';for(const l of shown){const list=l==='archived'?by[l].slice(0,30):by[l];if(!list.length)continue;h+='<div class="lvh '+l+'" id="lv-'+l+'" title="'+esc(LVL_HINT[l])+'">'+LVL[l]+' <span class="n">'+by[l].length+'</span></div>'+levelHtml(l,list)}
-  $('#tlist').innerHTML=h||'<div class="blank"><span class="lbl">没有需要你的事</span>'+(tasks.size?'交出去的事都在进行中或已确认。':'还没有交出去的事。<br>在前台告诉 agent 要做什么，它会派给 worker；只有需要你时才会出现在这里。')+'</div>';
+  let h='';if(byProj)h=projViewHtml(items,showArchived||!!q);else for(const l of shown){const list=l==='archived'?by[l].slice(0,30):by[l];if(!list.length)continue;h+='<div class="lvh '+l+'" data-key="lv:'+l+'" id="lv-'+l+'" title="'+esc(LVL_HINT[l])+'">'+LVL[l]+' <span class="n">'+by[l].length+'</span></div>'+levelHtml(l,list)}
+  patchList($('#tlist'),h||'<div class="blank" data-key="blank"><span class="lbl">没有需要你的事</span>'+(tasks.size?'交出去的事都在进行中或已确认。':'还没有交出去的事。<br>在前台告诉 agent 要做什么，它会派给 worker；只有需要你时才会出现在这里。')+'</div>');
   $('#lvls').innerHTML=LEVELS.map(l=>'<button class="fchip '+l+(l==='archived'&&showArchived?' on':'')+'" data-l="'+l+'" title="'+esc(LVL_HINT[l])+'">'+LVL[l]+(l==='archived'?'':'<b>'+(counts[l]??by[l].length)+'</b>')+'</button>').join('');
   $('#lvls').querySelectorAll('button').forEach(b=>b.onclick=()=>qaShowView(b.dataset.l));
   const run=counts.inflight||0;$('#tcount').textContent=items.length+' 件';$('#tcount').title=run+' 件进行中';
   $('#tlist').querySelectorAll('.phead').forEach(h=>{const gid=h.dataset.pid||'~none';const tog=()=>{pCollapsed.has(gid)?pCollapsed.delete(gid):pCollapsed.add(gid);saveCollapsed();_renderTasks()};
     h.onclick=e=>{if(e.target.closest('[data-pmenu]'))return;tog()};h.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();tog()}};
     const mb=h.querySelector('[data-pmenu]');if(mb)mb.onclick=e=>{e.stopPropagation();projectMenu(h.dataset.pid)}});
-  renderProjBar();renderProjFilter();
+  $('#tlist').querySelectorAll('[data-pb]').forEach(h=>{const k=h.dataset.pb;const tog=()=>{pbCollapsed.has(k)?pbCollapsed.delete(k):pbCollapsed.add(k);localStorage.qaProjBlkCollapsed=JSON.stringify([...pbCollapsed]);_renderTasks()};
+    h.onclick=e=>{if(e.target.closest('[data-pmenu]'))return;tog()};h.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();tog()}};
+    const mb=h.querySelector('[data-pmenu]');if(mb)mb.onclick=e=>{e.stopPropagation();projectMenu(h.dataset.pid)}
+    if(h.classList.contains('pblk')&&h.dataset.pid){const pid=h.dataset.pid;
+      h.onkeydown=e=>{if(e.altKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){e.preventDefault();stepProject(pid,e.key==='ArrowUp'?-1:1)}else if(e.key==='Enter'||e.key===' '){e.preventDefault();tog()}};
+      h.ondragstart=e=>{dragPid=pid;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',pid);h.classList.add('dragging')};
+      h.ondragend=()=>{dragPid='';document.querySelectorAll('#tlist .pblk').forEach(x=>x.classList.remove('dragging','dropb','dropa'))}}
+    if(h.classList.contains('pblk')){h.ondragover=e=>{if(!dragPid||dragPid===h.dataset.pid||!h.dataset.pid)return;e.preventDefault();const r=h.getBoundingClientRect(),aft=e.clientY>r.top+r.height/2;h.classList.toggle('dropa',aft);h.classList.toggle('dropb',!aft)};
+      h.ondragleave=()=>h.classList.remove('dropa','dropb');
+      h.ondrop=e=>{e.preventDefault();const aft=h.classList.contains('dropa');h.classList.remove('dropa','dropb');if(dragPid&&h.dataset.pid&&dragPid!==h.dataset.pid)moveProject(dragPid,h.dataset.pid,aft)}}});
+  if(byProj){$('#projbar').style.display='none'}else renderProjBar();renderProjFilter();renderViewBar();
   $('#tlist').querySelectorAll('.titem').forEach(el=>{const id=el.dataset.id,i=attn.get(id);
     el.querySelectorAll('[data-act]').forEach(b=>{b.onclick=e=>{e.stopPropagation();act(id,b.dataset.act)};b.onkeydown=e=>e.stopPropagation()});
     el.querySelectorAll('[data-opt]').forEach(b=>{b.onclick=e=>{e.stopPropagation();const o=i?.options?.[+b.dataset.opt];if(o&&confirm('把「'+o+'」作为回答发给 '+id+'？'))act(id,'answer',o)};b.onkeydown=e=>e.stopPropagation()});
@@ -821,9 +1008,13 @@ function _renderTasks(){
   setCounts();
 }
 // Desktop client / level bar entry point: "need" | "skim" | "snoozed" | "inflight" | "archived"
+let jumpN=0;
 window.qaShowView=v=>{if(!LEVELS.includes(v))return;switchTab('tasks');closeTask();
   if(v==='archived'){showArchived=!showArchived;_renderTasks();if(!showArchived)return}
-  requestAnimationFrame(()=>$('#lv-'+v)?.scrollIntoView({block:'start',behavior:'smooth'}))};
+  requestAnimationFrame(()=>{if(listView!=='proj'&&v!=='need')return $('#lv-'+v)?.scrollIntoView({block:'start',behavior:'smooth'});
+    // each click goes to the next card of that level (需要你: cycles through them), highlighted briefly
+    const els=[...document.querySelectorAll('#tlist .titem.'+v)];if(!els.length)return;const cur=els.indexOf(document.activeElement);const el=els[(cur+1)%els.length];
+    el.scrollIntoView({block:'center',behavior:'smooth'});el.focus({preventScroll:true});el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1800)})};
 $('#needBtn').onclick=()=>qaShowView('need');
 $('#focusBtn').onclick=()=>{
   const opts=focus.on?[['关闭专注',null]]:[['专注 30 分钟',30],['专注 1 小时',60],['专注 2 小时',120],['专注，直到我关闭',0]];
@@ -832,7 +1023,7 @@ $('#focusBtn').onclick=()=>{
     dlg.querySelectorAll('.opt').forEach(b=>b.onclick=async()=>{close();const m=opts[+b.dataset.k][1];try{const r=await hubPost('attention/focus',m===null?{on:false}:{on:true,minutes:m||undefined});focus=r.focus;renderFocus()}catch(e){toast(e.message,'error')}});
   });
 };
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));for(const k of ['tasks','intake','cron'])$('#pane-'+k).style.display=b.dataset.tab===k?'flex':'none';if(b.dataset.tab==='cron')renderCron();closeTask()});
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));for(const k of ['tasks','cron'])$('#pane-'+k).style.display=b.dataset.tab===k?'flex':'none';if(b.dataset.tab==='cron')renderCron();closeTask()});
 let detailSeq=0;
 async function openTask(id){
   if(innerWidth<=900&&!document.body.classList.contains('show-side'))$('#mobToggle').click();
@@ -840,18 +1031,26 @@ async function openTask(id){
   if(!d.dataset.id||d.dataset.id!==id)d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(tasks.get(id)?.title||id)+'</h3></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div>',d.querySelector('[data-back]').onclick=closeTask;d.dataset.id=id;
   let r;try{r=await api('GET','/api/hub/tasks/'+encodeURIComponent(id)+'?events=1')}catch(e){if(seq===detailSeq)d.innerHTML='<div class="dhead"><button class="btn icon" data-back>←</button><h3>'+esc(id)+'</h3></div><div class="blank">'+esc(e.message)+'</div>';d.querySelector('[data-back]').onclick=closeTask;return}
   if(seq!==detailSeq)return;
-  const t=r.task;tasks.set(t.id,t);const i=attn.get(t.id);
+  const t=r.task;tasks.set(t.id,t);refreshTaskRefs();const i=attn.get(t.id);
   const keep=d.querySelector('#tmsg')?.value||'',changesKeep=d.querySelector('#tchanges')?.value||'';const briefOpen=d.querySelector('#briefSec')?.open;
+  const keepLog=d.dataset.id===id?d.querySelector('#tlog'):null,keepTop=keepLog?.scrollTop,rawOpen=d.querySelector('#dprog .praw')?.open;
+  const showProg=i&&(ACTIVE.includes(t.status)&&t.status!=='starting'||t.progress?.steps?.length);
   const acts=(i?.actions||[]).filter(a=>a.id!=='reply');
   d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(t.title)+'</h3>'+(i?'<span class="mark">'+esc(i.mark)+'</span>':'')+'</div><div class="dbody">'+
-    (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div><div class="ar">'+esc(i.reason)+'</div>'+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(!humanApproval(t)&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
+    (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div>'+(showProg?(ACTIVE.includes(t.status)?'':'<div class="ar">'+esc(i.reason)+'</div>')+'<div id="dprog">'+progHtml(t,i)+'</div>':'<div class="ar">'+esc(i.reason)+'</div>')+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(!humanApproval(t)&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
       (acts.length?'<div class="tacts">'+acts.map(a=>'<button class="btn'+(a.id==='cancel'?' danger':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+'</div>':'')+
-    lifecycleHtml(t)+
-    '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+(t.activity&&ACTIVE.includes(t.status)?'<dt>当前</dt><dd class="mono">'+esc(t.activity)+'</dd>':'')+'</dl>'+
+    lifecycleHtml(t)+watchHtml(t)+
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
-    (!humanApproval(t)?'<div class="dsec send"><h4>'+(i?.level==='need'?'回答 worker':'追加指令')+'</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>':'')+
+    '<details class="dsec" id="tlogSec"'+(tlIsOpen()?' open':'')+'><summary>工作记录<span class="grow"></span><span class="tlc"></span></summary><div id="tlog" data-id="'+esc(t.id)+'"></div></details>'+
+    '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+'</dl>'+
+    taskShots(t)+
     '<details class="dsec" id="briefSec"><summary>任务简报</summary><pre class="pre">'+esc(t.brief)+'</pre></details>'+
-    '<div class="acts"><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>关闭 worker 窗口</button></div></div>';
+    '<div class="acts"><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>关闭 worker 窗口</button></div></div>'+
+    (!humanApproval(t)?'<div class="dfoot"><div class="dfl"><span>'+(i?.level==='need'?'回答 WORKER':'追加指令')+'</span><span class="grow"></span><span>'+(t.closed||!ACTIVE.includes(t.status)?'窗口已关也能发，会自动恢复':'worker 在做，会插入它的当前工作')+'</span></div><textarea id="tmsg" rows="2" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>':'');
+  if(keepLog){d.querySelector('#tlog').replaceWith(keepLog);keepLog.scrollTop=TL?.stuck!==false?keepLog.scrollHeight:keepTop}
+  if(rawOpen){const r=d.querySelector('#dprog .praw');if(r)r.open=true}
+  const logSec=d.querySelector('#tlogSec');logSec.ontoggle=()=>{localStorage.qaLogOpen=logSec.open?'1':'0';if(logSec.open)tlActivate(t.id);else tlPause()};
+  if(logSec.open)tlActivate(t.id);
   const ta=d.querySelector('#tmsg');if(ta){ta.value=keep;ta.onkeydown=e=>{if(isSendKey(e)){e.preventDefault();d.querySelector('[data-a=send]').click()}}}if(briefOpen)d.querySelector('#briefSec').open=true;
   applySendKey();
   const changes=d.querySelector('#tchanges');if(changes)changes.value=changesKeep;
@@ -863,28 +1062,124 @@ async function openTask(id){
   });
   d.querySelector('[data-back]').onclick=closeTask;
   d.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>act(t.id,b.dataset.act));
+  d.querySelectorAll('[data-watch]').forEach(b=>b.onclick=async()=>{const w=b.dataset.watch;try{const r=await api('POST','/api/hub/tasks/'+encodeURIComponent(t.id)+'/watch',w==='now'?{now:true}:{off:w==='off'});tasks.set(r.task.id,r.task);toast(w==='now'?'已发起巡检，结果只记在这里':w==='off'?'已关闭巡检':'已开启巡检');openTask(t.id)}catch(e){toast(e.message,'error')}});
   d.querySelectorAll('[data-opt]').forEach(b=>b.onclick=()=>{const o=i?.options?.[+b.dataset.opt];if(o)act(t.id,'answer',o)});
   const ps=d.querySelector('[data-proj]');if(ps)ps.onchange=async()=>{let v=ps.value;if(v==='~new'){v=await askText('新建项目','','把 '+t.id+' 放进一个新项目');if(!v){ps.value=projOf(t);return}}
     try{const r=await api('POST','/api/hub/tasks/'+encodeURIComponent(t.id)+'/project',{project:v});tasks.set(r.task.id,r.task);await loadProjects();toast(t.id+' 已移到「'+projName(projOf(r.task))+'」');openTask(t.id)}catch(e){toast(e.message,'error');ps.value=projOf(t)}};
   d.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{const a=b.dataset.a;
     if(a==='close'&&!confirm('关闭 '+t.id+' 的 worker 窗口？'))return;
-    try{if(a==='send'){if(humanApproval(tasks.get(t.id)))throw new Error('请明确批准当前 SHA 或要求修改；普通消息不代表批准');const text=ta.value.trim();if(!text)return;await hubPost('tasks/'+encodeURIComponent(t.id)+'/message',{text});ta.value='';toast('已发送给 '+t.id)}
+    try{if(a==='send'){if(humanApproval(tasks.get(t.id)))throw new Error('请明确批准当前 SHA 或要求修改；普通消息不代表批准');const text=ta.value.trim();if(!text)return;b.disabled=true;try{await hubPost('tasks/'+encodeURIComponent(t.id)+'/message',{text})}finally{b.disabled=false}ta.value='';tlEcho(t.id,text);if(!document.querySelector('#tlogSec')?.open)toast('已发送给 '+t.id)}
       else await hubPost('tasks/'+encodeURIComponent(t.id)+'/'+a,{});if(selTask===t.id)openTask(t.id)}catch(e){toast(e.message,'error')}});
   window.qaTeamDetail?.(d,t,r); // team: people + comments (ui/team.js)
   // Viewing a finished task settles 待扫; a question keeps waiting until it is answered or put aside.
   if(i?.level==='skim')hubPost('tasks/'+t.id+'/ack').catch(()=>{});
 }
-function closeTask(){const was=selTask;selTask=null;detailSeq++;const d=$('#detail');const hadFocus=d.contains(document.activeElement);d.classList.remove('on');d.dataset.id='';_renderTasks();if(hadFocus&&was)document.querySelector('.titem[data-id="'+CSS.escape(was)+'"]')?.focus()}
+/** Browser-comment screenshots (copied into the task's attachments by the hub). */
+function taskShots(t){const shots=(t.attachments||[]).map((f,n)=>({f,n})).filter(x=>/\.(png|jpe?g|webp|gif)$/i.test(x.f));if(!shots.length||t.source?.kind!=='browser'&&!/\/intake\//.test(shots[0].f))return '';
+  return '<div class="dsec"><h4>截图</h4><div class="dshots">'+shots.map(x=>'<img class="zoomable" loading="lazy" alt="" title="'+esc(x.f)+'" src="/api/hub/tasks/'+encodeURIComponent(t.id)+'/attachment?n='+x.n+'">').join('')+'</div></div>'}
+function watchMeta(t){const tm=timing(t);if(!tm)return '';
+  return '<dt>用时</dt><dd><span class="mono'+(tm.over?' tdur over':'')+'">'+(tm.over?'[OVER] ':'')+esc(tm.label)+'</span> <span class="tsub">已用 / 预期 · '+esc(EXP_SRC[t.expect.source]||t.expect.source)+(t.expect.reason?'：'+esc(t.expect.reason):'')+'</span></dd>'+
+    '<dt>巡检</dt><dd>'+(t.watch?.off?'已关闭 <button class="btn" data-watch="on">开启</button>':(t.watch?.running?'正在巡检…':'开启')+' <button class="btn" data-watch="off" title="例如长时间轮询或等待的任务">关闭</button>'+(ACTIVE.includes(t.status)&&!t.watch?.running?' <button class="btn" data-watch="now">现在巡检</button>':''))+'</dd>'}
+function watchHtml(t){const rs=(t.watch?.reviews||[]).slice(-6).reverse();if(!rs.length)return '';
+  return '<div class="dsec"><h4>巡检</h4><ul class="watch">'+rs.map(r=>'<li><div class="wh"><span>'+esc(hm(r.at))+'</span><span class="wv">['+esc(r.verdict||'ERROR')+']</span><span>'+esc(WTRIG[r.trigger]||r.trigger)+'</span><span class="grow"></span><span>'+esc(WACT[r.action]||r.action)+(r.expected&&r.action==='silent'?' · 新预估 '+fmtMin(r.expected):'')+'</span></div>'+
+    '<div class="wt">'+esc(r.detail)+'</div>'+(r.evidence?'<div class="wt">依据：'+esc(r.evidence)+'</div>':'')+(r.advice&&r.action!=='silent'?'<div class="wt">建议：'+esc(r.advice)+'</div>':'')+(r.error?'<div class="wt">'+esc(r.error)+'</div>':'')+'</li>').join('')+'</ul></div>'}
+function closeTask(){tlStop();const was=selTask;selTask=null;detailSeq++;const d=$('#detail');const hadFocus=d.contains(document.activeElement);d.classList.remove('on');d.dataset.id='';_renderTasks();if(hadFocus&&was)document.querySelector('.titem[data-id="'+CSS.escape(was)+'"]')?.focus()}
 let detailTimer=0;function refreshDetailSoon(){clearTimeout(detailTimer);detailTimer=setTimeout(()=>{if(selTask&&!document.activeElement?.closest?.('#detail'))openTask(selTask)},400)}
 
-/* ---------- browser comments ---------- */
-function renderIntakes(){
-  const list=[...intakes.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,100);
-  $('#ilist').innerHTML=list.map(i=>'<div class="icard"><div class="trow">'+stPill(i.status)+'<span class="tsub">'+esc(i.title||i.url||'')+'</span><span class="tago">'+ago(i.createdAt)+'</span></div><div class="ctext">'+esc(i.comment)+'</div>'+(i.url?'<div class="tsub"><a href="'+esc(i.url)+'" target="_blank">'+esc(i.url)+'</a></div>':'')+
-    '<div class="trow" style="margin-top:6px"><span class="tidm">'+esc(i.id)+'</span>'+(i.machine&&i.machine!==selfId?'<span class="mach">@'+esc(i.machine)+'</span>':'')+(i.elements?.length?'<span class="tsub">'+i.elements.length+' 个元素 · '+esc(i.elements[0].selector||'')+'</span>':'<span class="grow"></span>')+(i.taskId?tidHtml(i.taskId):'')+'</div>'+
-    (i.screenshots?.length&&(!i.machine||i.machine===selfId)?'<div style="margin-top:6px"><img class="zoomable" loading="lazy" src="/api/hub/intake/'+encodeURIComponent(i.id)+'/screenshot?n='+(i.screenshots.length>1?1:0)+'"></div>':'')+'</div>').join('')||'<div class="blank"><span class="lbl">空</span>还没有浏览器评论。<br>安装浏览器插件后，在网页上按 '+kbd(MOD,SHIFT,'E')+' 框选元素写评论，评论会交给前台 agent 处理。<br><br><a class="btn" href="'+esc((S.hub||'')+'/extension.zip')+'">↓ 下载浏览器插件</a></div>';
-  $('#iBadge').textContent=list.filter(i=>i.status==='pending').length||'';
-}
+/* ---------- progress: step list + plain words (shared/progress.ts on the hub) ---------- */
+const STEPM={done:'■',active:'▶',todo:'□'};
+function dur(ms){const s=Math.max(0,Math.round(ms/1000));if(s<60)return s+' 秒';if(s<3600)return Math.round(s/60)+' 分钟';if(s<86400){const h=Math.floor(s/3600),m=Math.round(s%3600/60);return h+' 小时'+(m?' '+m+' 分':'')}return Math.round(s/86400)+' 天'}
+function stepPct(p){const st=p?.steps||[];if(p?.percent!=null)return p.percent;return st.length?Math.round(st.filter(s=>s.state==='done').length*100/st.length):0}
+function cardBar(t){const p=t.progress,pct=stepPct(p);return '<div class="pbar" title="'+pct+'%"><i style="width:'+pct+'%"></i></div>'}
+function progHtml(t,i){const p=t.progress||{},steps=p.steps||[],act=ACTIVE.includes(t.status);let h='';
+  if(steps.length){const pct=stepPct(p);h+='<div class="pbar" title="'+pct+'%"><i style="width:'+pct+'%"></i></div><ol class="steps" aria-label="步骤">'+steps.map(s=>'<li class="'+s.state+'"><i>'+STEPM[s.state]+'</i><span>'+esc(s.title)+'</span>'+(s.expectedMinutes&&s.state!=='done'?'<span class="em">约 '+esc(s.expectedMinutes)+' 分</span>':'')+'</li>').join('')+'</ol>'}
+  if(act){const fromReason=(i?.reason||'').replace(/^进行中：/,''),now=p.now||(steps.length?'':fromReason),main=p.note||now||'worker 在做';
+    h+='<div class="pnow">'+esc(main)+'</div>'+(p.note&&now&&now!==p.note?'<div class="pnow2">此刻：'+esc(now)+'</div>':'')}
+  const start=p.startedAt||t.statusSince||t.createdAt,end=act?Date.now():(t.statusSince||t.updatedAt);
+  const tm=timing(t),meta=[tm?(act?'已用 ':'用时 ')+fmtMin(tm.used)+' / 预期 '+fmtMin(tm.exp)+(tm.over?' [OVER]':''):(act?'已用 ':'用时 ')+dur(end-start)];
+  if(act){if(p.percent!=null)meta.push(p.percent+'%');if(p.eta)meta.push('预计还要 '+p.eta);meta.push('更新于 '+ago(Math.max(p.updatedAt||0,p.nowAt||0)||t.updatedAt))}
+  h+='<div class="pmeta">'+esc(meta.join(' · '))+'</div>';
+  if(act&&p.recent?.length)h+='<div class="precent">最近：'+esc(p.recent.slice(-4).map(m=>m.text).join(' / '))+'</div>';
+  if(act&&t.activity)h+='<details class="praw"><summary>细节</summary><pre class="pre">'+esc(t.activity)+'</pre></details>';
+  return '<div class="prog">'+h+'</div>'}
+function updateProg(){const el=document.getElementById('dprog');if(!el||!selTask)return;const t=tasks.get(selTask);if(!t)return;const open=el.querySelector('.praw')?.open;el.innerHTML=progHtml(t,attn.get(selTask));if(open){const r=el.querySelector('.praw');if(r)r.open=true}}
+setInterval(()=>{if(selTask&&!document.hidden)updateProg()},30000);
+
+/* ---------- 工作记录: the worker's full work log, read from the hub only while the section is open ---------- */
+let TL=null;const TL_GROUP={read:1,grep:1,find:1,ls:1,glob:1};const REPORT_NAME={done:'完成',progress:'进展',needs_input:'提问',blocked:'受阻'};
+function tlIsOpen(){return localStorage.qaLogOpen!=='0'}
+function tlFor(id){if(TL?.id!==id){tlStop();TL={id,stuck:true,list:[],first:0,total:0,pending:undefined,local:[],open:new Set(),busy:false,again:false,loaded:false,err:'',timer:0,kick:0}}return TL}
+function tlStop(){if(TL){clearInterval(TL.timer);clearTimeout(TL.kick)}TL=null}
+function tlPause(){if(TL){clearInterval(TL.timer);TL.timer=0}}
+function tlActivate(id){const t=tlFor(id),box=document.getElementById('tlog');if(!box)return;
+  if(box.dataset.wired!=='1'){box.dataset.wired='1';
+    box.addEventListener('click',e=>{const o=e.target.closest('[data-older]');if(o){tlOlder();return}const f=e.target.closest('[data-full]');if(f)tlFull(+f.dataset.full)});
+    // Follow the tail only while the reader is at the bottom; scrolling up stops following until they come back.
+    box.addEventListener('scroll',()=>{if(TL&&box.dataset.init==='1'&&!box.dataset.prog)TL.stuck=box.scrollTop+box.clientHeight>=box.scrollHeight-40},{passive:true});
+    box.addEventListener('toggle',e=>{const k=e.target?.dataset?.key;if(k&&TL){if(e.target.open)TL.open.add(k);else TL.open.delete(k);TL.stuck=box.scrollTop+box.clientHeight>=box.scrollHeight-40}},true)}
+  if(!t.loaded)tlRender();tlKick(0);
+  if(!t.timer)t.timer=setInterval(()=>{const x=tasks.get(id);if(TL===t&&!document.hidden&&(ACTIVE.includes(x?.status)||t.pending!=null||t.local.length))tlLoad()},3000)}
+function tlKick(ms){if(!TL||!document.querySelector('#tlogSec')?.open)return;clearTimeout(TL.kick);TL.kick=setTimeout(tlLoad,ms??400)}
+async function tlGet(t,q){const qs=new URLSearchParams(q).toString();const r=await api('GET','/api/hub/tasks/'+encodeURIComponent(t.id)+'/transcript'+(qs?'?'+qs:''));return TL===t?r:null}
+async function tlLoad(){const t=TL;if(!t)return;if(t.busy){t.again=true;return}t.busy=true;
+  try{let r;if(!t.loaded){r=await tlGet(t,{limit:60});if(!r)return;t.first=r.entries.length?r.entries[0].i:r.total;t.loaded=true}
+    else{const tail=t.total-1,after=t.pending!=null?Math.min(tail,t.pending-1):tail;r=await tlGet(t,{after,limit:200});if(!r)return;if(r.entries.length>=200)t.again=true}
+    t.err='';t.available=r.available;t.total=r.total;t.pending=r.pendingFrom;for(const e of r.entries){const old=t.list[e.i];t.list[e.i]=old?.full&&!e.truncated?old:e}
+    t.local=t.local.filter(l=>!t.list.some(e=>e&&e.kind==='instruction'&&e.ts>=l.ts-120000&&(e.text||'').includes(l.text.slice(0,40))));
+    tlRender()}
+  catch(e){if(TL===t){t.err='工作记录读取失败：'+e.message;t.loaded=t.loaded||false;tlRender()}}
+  finally{t.busy=false;if(t.again&&TL===t){t.again=false;tlKick(50)}}}
+async function tlOlder(){const t=TL;if(!t||t.first<=0||t.busy)return;t.busy=true;try{const r=await tlGet(t,{before:t.first,limit:80});if(!r)return;for(const e of r.entries)t.list[e.i]=t.list[e.i]||e;t.first=r.entries.length?r.entries[0].i:0;
+  const box=document.getElementById('tlog'),h=box.scrollHeight,top=box.scrollTop;tlRender(true);box.scrollTop=top+box.scrollHeight-h}catch(e){toast(e.message,'error')}finally{t.busy=false}}
+async function tlFull(i){const t=TL;if(!t)return;try{const r=await tlGet(t,{full:i});const e=r?.entries?.[0];if(!e)return;e.full=true;t.list[i]=e;t.open.add('t'+i);t.open.add('h'+i);t.open.add('b'+i);tlRender(true)}catch(e){toast(e.message,'error')}}
+function tlEcho(id,text){if(TL?.id!==id)return;TL.local.push({text,ts:Date.now()});const box=document.getElementById('tlog');if(box)box.dataset.stick='1';tlRender();tlKick(800)}
+function oneLine(s,n){s=String(s??'').replace(/\s+/g,' ').trim();return s.length>(n||140)?s.slice(0,n||140)+'...':s}
+function tlTs(e){return '<span class="w">'+hm(e.ts)+'</span>'}
+function fullBtn(e){return e.truncated&&!e.full?'<button class="full" data-full="'+e.i+'">显示全文</button>':''}
+function tlDet(key,cls,k,a,body,ts){return '<div class="le '+cls+'"><details data-key="'+key+'"'+(TL.open.has(key)?' open':'')+'><summary><span class="k">'+k+'</span><span class="a">'+a+'</span><span class="w">'+hm(ts)+'</span></summary>'+body+'</details></div>'}
+function tlBlock(cls,k,a,body,e){return '<div class="le '+cls+'"><div class="lh"><span class="k">'+k+'</span><span class="a">'+a+'</span>'+tlTs(e)+'</div>'+body+'</div>'}
+function diffHtml(d){return String(d).split('\n').map(l=>/^\s*\+/.test(l)&&!/^\s*\+\+\+/.test(l)?'<span class="dp">'+esc(l)+'</span>':/^\s*-/.test(l)&&!/^\s*---/.test(l)?'<span class="dm">'+esc(l)+'</span>':esc(l)).join('\n')}
+function editDiff(a){const eds=Array.isArray(a.edits)?a.edits:a.oldText!=null?[a]:[];return eds.map(x=>String(x.oldText??'').split('\n').map(l=>'-'+l).join('\n')+'\n'+String(x.newText??'').split('\n').map(l=>'+'+l).join('\n')).join('\n...\n')}
+function toolArg(e){const a=e.args||{};return String(a.command??a.path??a.pattern??a.query??(Object.keys(a).length?JSON.stringify(a):''))}
+function toolBody(e){const a=e.args||{};let h='';
+  if(e.tool==='bash'&&a.command&&(a.command.length>70||a.command.includes('\n')))h+='<pre>$ '+esc(a.command)+'</pre>';
+  if(e.diff)h+='<pre>'+diffHtml(e.diff)+'</pre>';
+  else if(e.tool==='edit')h+='<pre>'+diffHtml(editDiff(a))+'</pre>';
+  else if(e.tool==='write'&&a.content!=null)h+='<pre>'+esc(a.content)+'</pre>';
+  else if(!['bash','read','grep','find','ls'].includes(e.tool)&&Object.keys(a).length)h+='<pre>'+esc(JSON.stringify(a,null,1))+'</pre>';
+  if(e.running)h+='<div class="x">运行中</div>';
+  else if(e.result&&(e.isError||!['edit','write'].includes(e.tool)))h+='<pre>'+esc(e.result)+'</pre>';
+  return h+fullBtn(e)}
+function toolHtmlLog(e){const arg=toolArg(e);return '<div class="le tool'+(e.isError?' err':'')+(e.running?' run':'')+'"><details data-key="t'+e.i+'"'+(TL.open.has('t'+e.i)?' open':'')+'><summary><span class="k">'+esc(e.tool)+'</span><span class="a" title="'+esc(arg)+'">'+esc(oneLine(arg,300))+'</span>'+tlTs(e)+'</summary>'+toolBody(e)+'</details></div>'}
+function entryHtmlLog(e){
+  switch(e.kind){
+    case 'brief':return tlDet('b'+e.i,'brief','简报',esc(oneLine((e.text||'').replace(/<[^>]+>/g,''))),'<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e.ts);
+    case 'instruction':return tlBlock('instruction','追加指令','','<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e);
+    case 'user':return tlBlock('user','消息','','<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e);
+    case 'text':return tlBlock('text','输出','','<div class="x md">'+md(e.text||'')+'</div>'+fullBtn(e),e);
+    case 'thinking':return tlDet('h'+e.i,'thinking','思考',esc(oneLine(e.text)),'<div class="x">'+esc(e.text)+'</div>'+fullBtn(e),e.ts);
+    case 'report':return tlBlock('report '+esc(e.status||''),'汇报',esc(REPORT_NAME[e.status]||e.status||''),'<div class="x md">'+md(e.text||'')+'</div>'+fullBtn(e),e);
+    case 'progress':{const a=e.args||{};const txt=[a.plan?.length?'计划：'+a.plan.join(' / '):'',a.current?'第 '+a.current+' 步':'',a.note||''].filter(Boolean).join(' · ');return tlBlock('progress','进度',esc(txt),'',e)}
+    case 'note':return '<div class="le note">'+esc(e.text||'')+'</div>';
+    case 'tool':return toolHtmlLog(e);
+  }return ''}
+function tlRender(keepPos){const box=document.getElementById('tlog'),t=TL;if(!box||!t||box.dataset.id!==t.id)return;
+  if(box.dataset.stick==='1')t.stuck=true;box.dataset.stick='';const stick=!keepPos&&(box.dataset.init!=='1'||t.stuck);
+  const items=t.list.filter(Boolean);let h='';
+  if(t.loaded&&t.first>0)h+='<button class="tlmore" data-older>更早的记录（还有 '+t.first+' 条）</button>';
+  if(!items.length&&!t.local.length)h+='<div class="tlempty">'+esc(t.err||(!t.loaded?'加载中':t.available===false?'还没有工作记录：worker 尚未开始':'暂无记录'))+'</div>';
+  for(let k=0;k<items.length;){const e=items[k];
+    if(e.kind==='tool'){const same=TL_GROUP[e.tool]?x=>x.tool===e.tool:x=>x.tool===e.tool&&toolArg(x)===toolArg(e);let j=k,end=k;while(j<items.length&&(items[j].kind==='thinking'||items[j].kind==='tool'&&same(items[j]))){if(items[j].kind==='tool')end=j+1;j++}
+      const g=items.slice(k,end),nt=g.filter(x=>x.kind==='tool');j=end;
+      if(nt.length>=3){h+=tlDet('g'+e.i,'group',esc(e.tool)+' x'+nt.length,TL_GROUP[e.tool]?esc(nt.map(x=>{const a=toolArg(x);return a.split('/').pop()||a}).join(' · ')):esc(oneLine(toolArg(e),200)),g.map(entryHtmlLog).join(''),g[g.length-1].ts);k=j;continue}}
+    h+=entryHtmlLog(e);k++}
+  for(const l of t.local)h+='<div class="le instruction local"><div class="lh"><span class="k">追加指令</span><span class="a">已发送，等 worker 接收</span><span class="w">'+hm(l.ts)+'</span></div><div class="x">'+esc(l.text)+'</div></div>';
+  if(t.err&&items.length)h+='<div class="le note">'+esc(t.err)+'</div>';
+  box.innerHTML=h;
+  if(t.loaded)box.dataset.init='1';
+  const c=document.querySelector('#tlogSec .tlc');if(c)c.textContent=t.total?t.total+' 条':'';
+  if(stick){box.dataset.prog='1';box.scrollTop=box.scrollHeight;requestAnimationFrame(()=>{if(TL===t&&t.stuck)box.scrollTop=box.scrollHeight;delete box.dataset.prog})}}
+
 
 /* ---------- scheduled jobs (定时) ---------- */
 const crons=new Map();let cronLoaded=false;
@@ -923,24 +1218,25 @@ async function loadCron(){try{const r=await api('GET','/api/hub/cron');crons.cle
 /* ---------- hub ---------- */
 function setHub(ok){hubOk=ok;$('#hubDot').className='dot '+(ok?'on':'off');$('#hubText').textContent=ok?'hub 已连接':'hub 离线'}
 async function loadHub(){
-  try{const [tr,mr,ir,ar,pr]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/intake'),api('GET','/api/hub/attention?archived=200'),api('GET','/api/hub/projects').catch(()=>({projects:[]}))]);
+  try{const [tr,mr,ar,pr]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/attention?archived=200'),api('GET','/api/hub/projects').catch(()=>({projects:[]}))]);
     projects=pr.projects||[];
-    tasks.clear();for(const t of tr.tasks)tasks.set(t.id,t);attn.clear();for(const i of ar.items||[])attn.set(i.taskId,i);counts=ar.counts||counts;focus=ar.focus||focus;selfId=mr.self||'';machines=mr.machines||[];intakes.clear();for(const i of ir.intake||[])intakes.set(i.id,i);
-    hubLoaded=true;renderMachines();renderTasks();renderIntakes();for(let i=0;i<nodes.length;i++)renderMsg(i);loadCron();
-  }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off;$('#ilist').innerHTML=off}}
+    tasks.clear();for(const t of tr.tasks)tasks.set(t.id,t);attn.clear();for(const i of ar.items||[])attn.set(i.taskId,i);counts=ar.counts||counts;focus=ar.focus||focus;selfId=mr.self||'';machines=mr.machines||[];
+    hubLoaded=true;renderMachines();renderTasks();refreshTaskRefs();loadCron();
+  }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off}}
 }
 function onHub(e){
   window.qaTeamOnHub?.(e);
-  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask&&(e.event||prev?.status!==e.task.status||JSON.stringify(prev?.lifecycle)!==JSON.stringify(e.task.lifecycle)))refreshDetailSoon();
+  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask){updateProg();tlKick();if(prev?.status!==e.task.status||JSON.stringify(prev?.lifecycle)!==JSON.stringify(e.task.lifecycle)||(e.event&&e.event.kind!=='progress'))refreshDetailSoon()}
     if(prev&&prev.status!==e.task.status){for(const [id,i] of toolOwner){const r=toolRes.get(id);if(r?.result?.details?.task?.id===e.task.id)schedule(i)}}}
-  else if(e.type==='attention'){const i=e.item;attn.set(i.taskId,i);counts=e.counts;focus=e.focus||focus;renderTasks();if(i.taskId===selTask)refreshDetailSoon();
+  else if(e.type==='attention'){const i=e.item,was=attn.get(i.taskId);attn.set(i.taskId,i);counts=e.counts;focus=e.focus||focus;renderTasks();
+    // In-flight reason changes are just progress: update the block in place instead of re-rendering the detail.
+    if(i.taskId===selTask){if(was&&was.level===i.level&&i.level==='inflight')updateProg();else refreshDetailSoon()}
     if(e.interrupt==='now')toast('需要你 '+i.mark+' '+i.title+'\n'+i.reason,'warning',9000)}
   else if(e.type==='attention.digest'){counts=e.counts;setCounts();toast('待扫 '+e.items.length+' 件：'+e.items.slice(0,4).map(i=>i.title.slice(0,24)).join('、'),'info',6000)}
   else if(e.type==='attention.state'){counts=e.counts;focus=e.focus;setCounts();api('GET','/api/hub/attention?archived=200').then(r=>{attn.clear();for(const i of r.items||[])attn.set(i.taskId,i);renderTasks()}).catch(()=>{})}
   else if(e.type==='machines'){machines=e.machines;renderMachines()}
   else if(e.type==='cron'){if(e.job.deleted)crons.delete(e.job.id);else{const prev=crons.get(e.job.id);crons.set(e.job.id,{...prev,...e.job,describe:e.job.describe||prev?.describe,tasks:e.job.tasks||prev?.tasks||[],running:e.job.running??prev?.running})}renderCron();clearTimeout(cronTimer);cronTimer=setTimeout(loadCron,800)}
   else if(e.type==='projects'){projects=e.projects||[];renderProjFilter();renderTasks()}
-  else if(e.type==='intake'){const isNew=!intakes.has(e.intake.id);intakes.set(e.intake.id,e.intake);renderIntakes();if(isNew&&e.intake.status==='pending')toast('新的浏览器评论：'+e.intake.comment.slice(0,80))}
 }
 
 /* ---------- stream ---------- */
@@ -963,9 +1259,10 @@ function connect(){
       case 'ui.dialog.close':{const c=openDialogs.get(e.id);if(c)c();break}
     }};
 }
-let cronTimer=0;applySendKey();connect();setInterval(()=>{renderTasks();renderCron()},30000);input.focus();
+let cronTimer=0;applySendKey();connect();setInterval(()=>{renderTasks();renderCron()},60000);input.focus();
 </script>
 <script src="/team.js"></script>
 <script src="/upgrade.js" defer></script>
+<script src="/worker-model.js" defer></script>
 </body>
 </html>

@@ -85,11 +85,12 @@ Unread tasks get a red bar on the left edge. The selected task gets an ink bar o
 
 ## Verification
 
-- `test/browser/ext_e2e.py`: headless Chromium with the unpacked extension, an isolated test hub and a test SPA (`test/browser/spa.html`). 53 checks, all passing:
+- `test/browser/ext_e2e.py`: headless Chromium with the unpacked extension, an isolated test hub and test pages (`test/browser/spa.html`, `test/browser/layers.html`), all checks passing:
   - drafts across SPA routes, hash routes, full navigation and back
   - pins not leaking across pages (SPA, back, plain `#fragment`)
   - pins following window scroll, inner container scroll, sticky header and resize, and hiding when scrolled out
   - click and drag gestures and their submitted payloads in the hub; Esc during a drag
+  - top layer: picking, region selection, typing and sending (selector + screenshots) on top of a native modal `<dialog>` (nested too, opened/closed/removed while picking), a popover, a z-index max portal overlay with outside-dismiss / Esc / focus trap, and a fullscreen element; none of them is closed by the picker
   - popup `M` key; send key in `mod` mode
 - `test/page-url.test.ts` (hub and extension copies of `pageKey` agree); `scripts/pack-extension.sh` passes (also checks the token copies and the ≤ 4 `suggested_key` limit).
 

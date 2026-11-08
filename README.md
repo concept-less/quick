@@ -54,6 +54,39 @@ worker 需要人类决定时必须显式上报：`qa_report(status="needs_input"
 - 进度、活动、确认、归档从不通知。
 - 专注模式、摘要间隔、待发摘要都持久化在 hub（`~/.quick-agent/attention.json`），所有客户端共享。
 
+### 进度与工作记录（只在你看的时候出现）
+
+「不用管」的任务也能看出做到哪了，但这些信息从不打扰你：不进「需要你」，不发通知，只在你打开任务或看卡片时显示。
+
+- **进度**（`shared/progress.ts`，`task.progress`）：worker 开工时用 `qa_progress` 上报计划（3–8 个步骤，可带每步预计分钟数），每完成一步或切换阶段时更新「正在做第几步」和一句人话说明（例如「正在发布 v0.4.1：已打 tag，等 CI 构建 dmg」），可选百分比 / 预计剩余时间。任务卡片显示「3/6 发布 Release」和一条细进度条；任务详情顶部是步骤清单（`■` 已完成、`▶` 进行中、`□` 未开始）、当前说明、已用时间、最后更新时间和最近几个里程碑，原始命令折在「细节」里。`quick ls` / `quick show` / 前台的 `qa_tasks` / `qa_task_read` 显示同样的内容。
+- **兜底**：没有上报计划的 worker（老版本、几分钟就做完的小任务）由 hub 把工具活动翻译成人话（`git push` → 推送代码，`npm test` → 跑测试，编辑文件 → 修改 X，`scripts/release.sh` → 执行发布脚本……），重要动作记为里程碑。注意力原因里的「进行中：…」也是这句人话，不再是原始命令。
+- 字段：`progress.steps[]{title, state: done|active|todo, expectedMinutes?}`、`note`、`percent`、`eta`、`now`（活动的人话）、`recent[]`（里程碑）、`startedAt`、`updatedAt`（只在计划/步骤/说明有实质变化时更新，活动不刷新它，可用来判断多久没有进展）、`nowAt`（最近一次活动）。任务完成时步骤全部标为完成；完成后再追加指令开始新一轮时进度重置。
+- **工作记录**（`shared/transcript.ts`）：任务详情里「工作记录」区完整展示 worker 做了什么：每轮的输出和思考、每个工具调用（命令、读写了哪个文件）和结果（默认截断，可看全文；edit 显示 diff）、收到的追加指令、汇报和进度上报。连续的同类动作（几次 read、同一条命令反复执行）折叠成一行。只有展开这个区时才拉取（`GET /api/tasks/:id/transcript`，跨机器经 mesh 读取所属机器上的记录）；运行中自动追加新条目、停在底部跟随，往上翻时不会被拉回去，「更早的记录」分页加载。已完成的任务同样能回看。追加指令输入框常驻在详情底部（Enter 发送），发出的指令立即出现在记录里，worker 的回应随后出现；窗口关了也能发，hub 会带着完整上下文恢复 worker。CLI：`quick log <id> [-f] [-n N]`。
+
+### 预期时间与巡检（超时了才看一眼，必要时才找你）
+
+很多任务实际耗时远超预期，却没人发现它在兜圈子。hub 给每个任务一个预期时间，明显超时、长时间没有进展或者出现重复模式时，自动派一个独立的只读检查 agent 审视它；检查本身不打扰你，只有真正需要你拍板时才进「需要你」。设计和理由见 [`docs/watchdog.md`](docs/watchdog.md)。
+
+- **预期时间**（`task.expect`）：前台派单时必须估时（`qa_dispatch` 的 `expected`，如 `"20m"`；`quick new --expected 30m`）。没给就按任务类型取默认值（小改动 15m、普通 30m、发布/调研/新机制等大任务 60m、定时任务 15m，可在配置里改）。worker 看清任务后可以用 `qa_expect` 带理由修正一次。只计 worker 实际在做的时间（starting/running），等你回答的时间不算。卡片上显示「已用 / 预期」（如 `12m / 20m`），超时后加粗、标记变成 `[OVER]`，不发通知。
+- **触发巡检**（hub 定时检查，默认每 30 秒）：已用超过预期的 1.5x，之后 3x、6x……（预期被更新后重新从 1.5x 算）；进度（`progress.updatedAt` / 汇报）20 分钟没变；最近的工具调用里出现重复模式：同一条命令得到同样的结果、同一个错误反复出现、等待/轮询结果一直不变、来回改同一处。同一任务两次巡检之间至少隔 10 分钟（冷却），同一次停滞、同一个重复模式只查一次，最多同时跑 2 个检查。
+- **检查 agent**：`pi -p` 跑的独立进程，只有 read/grep/find/ls 工具，不能改代码，不能中止任务，环境里不带任何 quick-agent 身份（`QA_*` 全部去掉）。hub 把材料整理给它：简报、预期和已用时间、进度、最新汇报、检测到的重复模式、最近 40 次工具调用和输出、git 状态和 diff 统计、之前的巡检；需要时它可以自己去读 worker 的内部记录。它在标准输出的最后一行给出结论 JSON，hub 解析。结论五选一：`ON_TRACK`（正常，只是比预估难，给新预估）、`DRIFTING`（偏离简报）、`STUCK`（死胡同或循环）、`BAD_APPROACH`（方法有问题，给替代方案）、`NEEDS_HUMAN`（缺信息或要拍板）。
+- **处理**：`ON_TRACK` 静默更新预期，只在任务的「巡检」区记一行；`DRIFTING` / `STUCK` / `BAD_APPROACH` 把具体建议作为追加指令（`【巡检纠偏】…`）发给原 worker，冷却后复查一次，仍有问题就升级给你；`NEEDS_HUMAN` 直接升级。升级后任务进「需要你」，标记 `[CHECK]`，带一句问题和选项；你回答（会连同巡检的问题一起转给 worker）、点「知道了」或任务停下后自动消失。是否中止只由你决定。
+- **可见性**：任务详情的「巡检」区列出每次巡检的时间、结论、触发原因、依据和建议，进度区和信息区显示「已用 / 预期」和预期来源，可以「关闭巡检」或「现在巡检」。`quick show <id>`、`quick watch <id> [on|off|now|expect 30m]`、前台的 `qa_task_read` 都能看到。
+- **按任务关闭**：长时间轮询/等待的任务派单时传 `watch: false`（`qa_dispatch watch=false`、`quick new --no-watchdog`），或者之后 `quick watch <id> off`。
+
+配置（`config.json` 的 `watchdog`，全部可选）：
+
+```json
+"watchdog": {
+  "enabled": true, "multipliers": [1.5, 3, 6], "cooldownMinutes": 10, "stallMinutes": 20,
+  "repeatThreshold": 4, "repeatWindow": 30, "model": "tokenjoy/claude-sonnet-5-5", "thinking": "low",
+  "timeoutMinutes": 8, "maxCorrections": 1, "maxConcurrent": 2, "tickSeconds": 30,
+  "defaults": { "small": 15, "normal": 30, "large": 60, "cron": 15 }
+}
+```
+
+`model` 不写时用 `workerModel` / `model`，建议换成便宜快一点的模型。`QA_WATCHDOG=off` 临时关闭整个巡检。测试：`npm test`（`test/watchdog.test.ts` 触发条件、冷却、重复模式、结论处理；`test/watchdog-hub.test.ts` 隔离 hub + 假 worker + 假检查 agent 的完整流程和环境隔离）；`test/watchdog-e2e.mjs` 用真实的检查 agent 跑一遍（兜圈子的假 worker 得到 STUCK → 纠偏 → 再 STUCK → 需要你；正常但慢的假 worker 得到 ON_TRACK，不打扰人），可选 `--shots DIR` 截图。
+
 ### 汇报怎么送到前台
 
 汇报按任务和注意力送达，不依赖是哪个前台派的单：
@@ -166,20 +199,31 @@ quick version        # 应显示「Release 安装，~/.quick-agent/app/X.Y.Z」
 ### 维护者：发布新版本
 
 ```bash
-scripts/release.sh minor --dry-run    # 先看看：在 dist/release/ 生成产物和更新说明，不提交不推送
-scripts/release.sh minor              # patch | minor | major | X.Y.Z
+scripts/release.sh minor --dry-run    # 隔离预览 committed HEAD → dist/release-preview/版本/，不提交/推送/安装
+scripts/release.sh minor              # 手动排队：patch | minor | major | X.Y.Z（发布最新 origin/main）
 ```
 
-`scripts/release.sh` 依次：检查在 main 上、工作区干净、与 origin/main 一致、`npm test` 通过 → 同步版本号（`package.json`、`electron/package.json` 和 lock、`browser/manifest.json`）→ 从上一个 tag 以来的提交生成 `CHANGELOG.md` 的新一节（`--notes 文件` 可以在前面加一段说明）→ 提交 `release vX.Y.Z` 并打 tag → 推送 main 和 tag → 生成产物并 `gh release create`：
+**自动发布**：每次 `origin/main` 的新 push 触发 [release Action](https://github.com/concept-less/quick/actions/workflows/release.yml)，不是监视未提交文件。自动默认 patch；手动命令只是 `workflow_dispatch --ref main`，与自动流程共用 `quick-release-main` 全流程锁，不在开发/hub 目录构建。短时间连续 push 合并为最多一个 pending run，锁内重新 fetch 最新 main；被合并的提交随最终 source SHA 一起进入 Release（可从 git ancestry/更新说明追溯，不为每一个中间 SHA 单独发布）。已公开的 source SHA 重跑幂等跳过。
+
+**版本策略**：从仓库版本和全部已保留 `vX.Y.Z` tags 取最大版本，再递增（显式版本必须更大）。cloud 在独立 checkout 先跑 `npm test`，然后同步 package/Electron lock/manifest 版本、生成 CHANGELOG，创建以 source main SHA 为 parent 的 **release-only commit/tag**。只 push tag，**不向 main push bump/changelog commit**，因此不会自触发循环，也不会与人的 main push 冲突。main 的 package 版本可以落后；安装包和 tag 中的版本是权威版本。Release notes、tag trailer 和 `release.json` 记录 source SHA、构建 commit、Action URL 和 cloud runner。
+
+**先 draft，后公开**：cloud 完成 core/插件产物后创建 draft；同一 workflow 的 GitHub macOS runner 从该不可变 tag 构建桌面。收齐下列产物，验证 cloud checksum 和 provenance，生成完整 checksum 并复验后，才将 draft 公开并设为 latest。updater 不会看到半成品。不发 npm，也不升级任何 hub/UI/worker。
 
 | 产物 | 说明 |
 |---|---|
 | `quick-agent-X.Y.Z.tgz` | `npm pack` 的包，`install.sh` 和 `quick upgrade` 安装的就是它 |
 | `quick-agent-extension-X.Y.Z-chrome.zip` / `-firefox.zip` | 浏览器插件 |
-| `quick-agent-X.Y.Z-arm64.dmg` / `-arm64-mac.zip` | macOS 桌面客户端，由 GitHub Actions（`.github/workflows/release.yml`，macos runner）在 Release 发布后构建并上传 |
-| `SHA256SUMS` | 以上所有文件的 sha256，Actions 上传 mac 产物时会补上它们的校验和 |
+| `quick-agent-X.Y.Z-arm64.dmg` / `-arm64-mac.zip` | GitHub macOS runner 构建，ad-hoc 签名、未公证；不在 Linux 构建 dmg |
+| `release.json` | version、source SHA、release commit、Action URL、cloud runner、构建时间 |
+| `SHA256SUMS` | core、两个插件、两个桌面包、release.json 全部文件的 sha256 |
 
-npm 发布是可选的：`scripts/release.sh minor --npm`（默认不发布）。mac 产物要重新构建时：Actions → release → Run workflow，填 tag。
+**cloud 识别与安全边界**：唯一专用 runner `quick-release-cloud`，要求 `[self-hosted, linux, x64, quick-release-cloud]`。部署于 `/home/simon/.local/share/quick-release-runner`，构建只在其 `_work/quick/quick`，不触碰 `/home/simon/quick-agent` 或已安装 app。仓库外 `ops/trust-gate.sh` 作为 `ACTIONS_RUNNER_HOOK_JOB_STARTED` 在 checkout 前 fail-closed 校验本机 `/etc/machine-id` hash、repository、main ref、push/manual 事件、精确 workflow ref；拒绝 PR、fork、tag、非可信分支和其他 workflow。仓库外部贡献者 workflow 设置为 **all_external_contributors 需批准**；不要批准任何将 PR 代码送到 cloud 的 workflow，不要为 PR 添加该标签或开启 pull_request_target。main 写权限就是在 cloud 执行代码的信任边界，请限制维护者并保护 main。runner 无长期 GitHub PAT，job 使用临时 `GITHUB_TOKEN`（cloud/mac 仅 contents:write，失败通知 job 无写权限）；凭证不进入产物/日志。
+
+**服务运维**：user systemd 单元 `~/.config/systemd/user/quick-release-runner.service`（已 enable，用户 linger），`systemctl --user status|stop|start quick-release-runner`，日志 `journalctl --user -u quick-release-runner`。停服务不会停止 hub/worker；临时停用自动发版可禁用 GitHub release workflow。runner 的 ops 门禁/通知脚本源文件在 `scripts/cloud-runner-gate.sh`、`scripts/cloud-release-notify.mjs`，升级部署需维护者将其复制到仓库外 ops 目录；不要用来自 PR 的脚本替换。网络代理取本机 `127.0.0.1:7890`，无外网监听/新入站密钥；注册令牌仅一次性使用。机器更换需重新校验 machine-id、注册标签。runner 支持自身更新，版本也可通过 Actions runner 管理页核查。
+
+**失败/重试**：测试失败不创建 Release；后续失败保留 draft，不改已运行版本。失败通知 job 通过 cloud 本机既有 hub 鉴权接口派一个“只汇报 blocked、不改代码”的通知 worker，进入「需要你」，按 Action run ID 去重；成功不派单、不通知。如果 runner/hub 离线，通知无法送达，仍以 GitHub Actions 红色状态/订阅邮件为兜底。到 Action 页面选择 **Re-run all jobs** 可继续同一 source 的 draft（macOS 产物可重复覆盖）；发布成功后重跑直接跳过。若 cloud 资产缺失/上传中断，脚本 fail-closed，维护者检查草稿后删除不完整 draft 再重跑；孤立 tag 保留占用版本，不覆写 tag、不 force。不要手工提前公开草稿。旧的 `--npm`、`--no-push`、`--notes` 入口已拒绝，避免绕过锁；本地预览用 `--dry-run`。
+
+**用户看到更新的延迟**：先等 cloud 测试、排队、macOS 下载依赖/构建（通常数分钟，受 GitHub runner 排队和网络影响，不保证即时）。公开后 CLI 下次执行会检查，缓存默认 10 分钟（非 TTY/worker 不打印）；hub 后台默认每 10 分钟检查，UI 每 5 分钟刷新版本状态，所以在线 UI 最坏约再等 15 分钟（失败/离线更久）。版本面板手动刷新/`quick upgrade --check` 可主动检查。可将 `update.cacheMinutes` 调低到 1（注意 GitHub API 限流）；没有新增 webhook 入站口或广播安装。**仍必须由用户点击升级**，本流程从不设置 `autoInstall`、从不执行安装/重启；用户自己设置的 autoInstall 属于原有可选配置。
 
 测试：`npm test`（全部在临时目录、临时端口里进行：版本比较、缓存、下载校验、原子切换和回滚的单测；4 个临时 hub 加一个假 GitHub API 模拟多机升级，包括「发现新版本 → 升级 → 重启 → 版本变化」，期间 tmux 里的 worker 一直在向 hub 汇报、一次请求都不失败）。浏览器端到端演示：`PLAYWRIGHT_CORE=…/playwright-core CHROMIUM=…/chrome node test/e2e-ui-upgrade.mjs --shots DIR`（隔离 hub + Web UI，headless 浏览器点「升级」，验证页面自动刷新到新版本、worker 不受影响）。
 
@@ -187,9 +231,10 @@ npm 发布是可选的：`scripts/release.sh minor --npm`（默认不发布）�
 
 | 情况 | 角色 |
 |---|---|
-| 环境变量里有 `QA_TASK_ID`（由 hub 拉起的进程） | **worker**：完整工具集，外加 `qa_report` |
+| 环境变量里有 `QA_TASK_ID`（由 hub 拉起的进程） | **worker**：完整工具集，外加 `qa_report`、`qa_progress`（进度）、`qa_expect`（修正预期）、`qa_comment` |
+| 环境变量里有 `QA_WATCH_TASK`（hub 拉起的巡检 agent） | 不加载任何角色（只读检查，结论走标准输出） |
 | 交互式 pi（终端 TUI，或 RPC 客户端如桌面端） | **前台**（默认开启） |
-| `pi -p …` / `--mode json` | 不受影响，就是普通 pi |
+| `pi -p …` / `--mode json` | 不受影响，就是普通 pi（即使环境里带着 `QA_TASK_ID` 也不会当 worker 汇报） |
 | `pi --qa-off` 或 `QA_ROLE=off pi` | 普通 pi（仍然显示任务状态） |
 
 在 pi 里可以随时切换：`/qa off` 切成普通 pi（恢复 bash/edit/write），`/qa on` 切回前台。
@@ -211,7 +256,8 @@ CLI（任何终端都能用）：
 quick attention                # 注意力队列：需要你 / 待扫 / 稍后 / 不用管，每级内按项目分组（quick a；quick ls 是一行一个的版本）
 quick ls --project quick-agent  # 只看一个项目；--by-project 先按项目分组
 quick projects                 # 项目列表与识别规则（见「项目」）
-quick show <id>                # 查看注意力、汇报、简报
+quick show <id>                # 查看注意力、进度、汇报、简报
+quick log <id> [-f]            # 工作记录：worker 的输出、命令和结果、追加指令（-f 持续跟随）
 quick send <id> "回答或追加指令"  # worker 窗口关了也会带着完整上下文重新拉起
 quick ack <id>                 # 知道了
 quick snooze <id> [分钟]        # 稍后提醒
@@ -282,9 +328,9 @@ quick cron pause|resume|run|rm <id>
 
 都不命中就归到「未归类」。归类时会顺带学习识别规则：git remote、本机的仓库目录、页面的 host（GitHub 之类的公共站点记到 `owner/repo`）。quick-agent 自己的仓库会预置 Web UI 地址（`127.0.0.1:<uiPort>`）。`config.json` 里旧的 `projects`（URL → 工作目录）会合并进对应项目：URL 成为页面规则，`cwd` 成为该机器上的项目目录。
 
-**存量任务**：hub 启动时自动给没归过类的任务归类（只改 `project`，不改更新时间和排序）；`quick projects backfill --all` 重新归类所有不是手动设置的任务。新建项目、改规则、合并之后，按文本 / 路径 / URL 弱匹配（或未归类）的任务会自动重新判断。
+**存量任务**：hub 启动时自动给没归过类的任务归类（只改 `project`，不改更新时间和排序）；`quick projects backfill --all` 重新归类所有不是手动设置的任务。新建项目（包括派单时显式指定的新项目、第一次见到的仓库）、改规则、合并之后，以及 hub 每次启动时，按文本 / 路径 / URL 弱匹配（或未归类）的任务会自动重新判断。
 
-**手动调整会被记住**：手动改过项目的任务（Web UI 任务详情里的「项目」下拉框，或 `quick projects move`）不会再被自动归类覆盖。合并后旧 id 作为别名保留，之后命中旧项目的任务也会进到新项目里。
+**手动调整会被记住**：手动改过项目的任务（Web UI 任务详情里的「项目」下拉框，或 `quick projects move`）不会再被自动归类覆盖。手动移动也会让目标项目学到这个任务的页面 host（以及还没有归属的 git 仓库），同一页面的其他任务随之归过去；已经属于别的项目的仓库不会被抢走。合并后旧 id 作为别名保留，之后命中旧项目的任务也会进到新项目里。
 
 ```bash
 quick projects                             # 列表：需要你 / 运行 / 总数，以及 git、目录、页面、关键词规则
@@ -294,10 +340,15 @@ quick projects rename relay-website 官网    # 改名（id 不变）
 quick projects merge tokenjoy relay-website  # 合并：规则和任务都并过去
 quick projects create 文档 --path ~/docs --url docs.example.com --keyword 文档
 quick projects rule quick-agent add keyword "pi TUI"   # add|rm url|path|remote|keyword
+quick projects order tokenjoy quick-agent   # 项目列表的顺序（Web UI 里拖动项目标题也可以；跨设备同步）
 quick new --project relay-website "标题" "简报"          # 不传 --cwd 时用该项目在选中机器上的目录
 ```
 
-**界面**：Web UI（Electron 客户端用同一套页面）里项目是注意力队列的第二维度，不取代「需要你」优先：队列仍按 需要你 / 待扫 / 稍后 / 不用管 分级，每一级里再按项目分小组（有需要你处理的项目在前，其次是有运行中任务的项目）。队列上方的项目条显示每个项目「需要你」和运行中的数量，点一下只看这个项目（筛选栏的下拉框也可以）。点项目小标题可以折叠这个项目，折叠后它在「需要你」里的任务仍然显示；小标题右侧的「...」可以重命名或合并项目；任务详情里的「项目」下拉框可以手动改项目。前台的 `qa_tasks` 也按「级别 · 项目」分组输出并给出每个项目的计数，系统提示里的项目列表从 hub 获取（hub 不可用时退回 config.json 的映射）。
+**界面**：Web UI（Electron 客户端用同一套页面）的任务列表顶部有「注意力 | 项目」视图切换，默认「项目」，记住上次的选择。
+
+- **项目视图**：每个项目一块，块标题显示项目名和计数（需要你 n / 运行中 n / 待扫 n / 稍后 n），只有一个项目时也显示。列表是**稳定的**：项目按固定顺序排列（默认按项目创建时间，拖动项目标题或在标题上按 Alt+↑/↓ 调整；顺序存在 hub 的项目里，刷新和其他设备上都一样；`quick projects order` 也可以改），「未归类」永远最后；块内任务按创建时间排列（新的在上），活动、进度、状态变化都不移动卡片，只改卡片上的标记（[ASK]、[RUN]、[DONE] …）和计数，确认过的任务离开列表，其余任务顺序不变。卡片高度固定，当前活动单行省略；SSE 更新时就地更新变化的卡片，滚动位置、焦点、折叠状态不变；相对时间每分钟刷新一次。点块标题折叠这个项目，折叠后它的「需要你」任务仍然显示，其余显示为「已折叠 n 件」；列表上方可以全部折叠 / 展开，折叠状态刷新后保留。点「已归档」或搜索时，已归档的任务排在各项目块的最后。
+- **注意力视图**：队列按 需要你 / 待扫 / 稍后 / 不用管 分级，每一级里再按项目分小组（项目顺序同上；只有一个项目也显示小标题），同一级里按创建时间排列。队列上方的项目条显示每个项目「需要你」和运行中的数量，点一下只看这个项目。点项目小标题可以折叠这个项目，折叠后它在「需要你」里的任务仍然显示。
+- 不论哪个视图，「需要你」的总数都在顶栏，点它跳到并高亮下一件需要你的任务（再点跳到下一件），而不是靠移动卡片来提示。项目标题右侧的「...」可以重命名或合并项目；任务详情里的「项目」下拉框可以手动改项目。前台的 `qa_tasks` 也按「级别 · 项目」分组输出并给出每个项目的计数，系统提示里的项目列表从 hub 获取（hub 不可用时退回 config.json 的映射）。
 
 只传 `project` 不传 `cwd` 派单时，hub 优先选有这个项目目录的机器（在满足 `requires` 的机器里按优先级），并用那台机器上的项目目录。项目可以带 `members`（团队成员）和 `notes`，定时任务等其他入口创建任务时也可以传 `project`。
 
@@ -311,23 +362,23 @@ quick ui status | url | logs | stop | restart
 
 `quick ui` 会先确保 hub 在运行，再拉起一个常驻的 Web UI 进程（`ui/server.ts`，日志 `~/.quick-agent/ui.log`），然后打开 `http://127.0.0.1:7790/?token=…`。
 
-- **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，每一级里按项目分组（见「项目」），按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。点开任务可以看注意力详情、最新汇报、简报，回答或追加指令。
+- **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，每一级里按项目分组（见「项目」），按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。任务卡片上显示进度（「3/6 发布 Release」+ 细进度条）。点开任务可以看进度（步骤清单 + 人话状态）、最新汇报、工作记录、简报，在底部常驻的输入框里回答或追加指令（见「进度与工作记录」）。
 - **前台 agent**：右侧是一个持续的前台，交代新的事、问"有什么需要我的"都在这里。回复流式显示，工具调用显示为卡片，派单卡片带任务 ID 和实时状态，点击任务 ID 打开详情。回复过程中继续发消息会排到本轮之后（Alt+Enter 插入当前轮），可以随时「停止」。支持粘贴图片，`/tasks`、`/qa on|off` 等扩展命令照常可用。顶栏可以切换模型和思考级别。
 - **只有一个前台**：没有会话列表，没有新建/切换/重命名；刷新页面或重启 `quick ui` 都接着同一段对话，上下文由自动压缩控制长度。（内部实现：前台通过 pi SDK 托管在 Web UI 进程里，加载同一个 quick-agent 扩展，对话持久化成 `~/.quick-agent/ui-sessions/` 下的 pi 会话文件；这是实现细节，不对人展示。调试时可用隐藏参数 `quick ui restart --fresh-front` 从空对话开始。）
-- **汇报与评论**：worker 的汇报按注意力进入前台对话（见「汇报怎么送到前台」）。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。「浏览器评论」标签页列出所有评论，以及它们对应的任务。
+- **汇报与评论**：worker 的汇报按注意力进入前台对话（见「汇报怎么送到前台」）。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。评论是一次性的，Web UI 不单独列出评论：前台处理后它就变成一个新任务或已有任务的追加指令；来源是浏览器的任务，详情里显示来源页面和截图。
 - **安全**：只监听 `127.0.0.1`（端口用 config 的 `uiPort` 或环境变量 `QA_UI_PORT` 设置，默认 7790）。访问需要 hub token：`?token=` 只用一次，换成 HttpOnly、SameSite=Strict 的 cookie 后，就会从地址栏移除。服务端还会拒绝非 localhost 的 Host 头（防 DNS rebinding）和跨源写请求。浏览器对 hub 的调用都由 Web UI 进程代理，token 不会暴露给页面脚本。
 - 深色和浅色跟随系统，也可以用右上角 ◐ 手动切换；窄屏时顶栏有「注意力 | 对话」切换，注意力队列始终在前/左。界面样式来自 `shared/tokens.css`（Web UI、登录页和浏览器插件共用同一份设计 token）。
 - **快捷键**（Mac 显示 ⌘，其他系统是 Ctrl；顶栏 `?` 按钮或按 `?` 查看）：
   | 操作 | 快捷键 |
   |---|---|
   | 聚焦输入框；在输入框里再按一次跳到任务搜索 | `⌘K` / `Ctrl+K` |
-  | 切到注意力队列 / 浏览器评论 | `⌘1` / `⌘2`（`Ctrl+1` / `Ctrl+2`） |
+  | 切到注意力队列 / 定时 | `⌘1` / `⌘2`（`Ctrl+1` / `Ctrl+2`） |
   | 发送 / 换行（两种模式，输入框右下角按钮或快捷键面板里切换，存在 localStorage） | 默认 `Enter` 发送、`Shift+Enter` 换行；另一种是 `⌘/Ctrl+Enter` 发送、`Enter` 换行 |
   | 回复中插入当前轮（steer） | `Alt` + 发送键 |
   | 停止回复（输入框为空时）；关闭任务详情、大图、清空搜索 | `Esc` |
   | 队列上下移动 / 打开 | `↑` `↓` / `Enter` |
   | 聚焦输入框 / 显示快捷键 | `/` / `?` |
-- 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理；汇报会送到所有在线前台，只有一个主动开口。
+- 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理，认领即消费，不会再投递给其他前台；汇报会送到所有在线前台，只有一个主动开口。
 
 ## 桌面客户端（Electron，macOS）
 
@@ -555,14 +606,13 @@ quick team board                                 # 团队视图：所有进行�
 - **发送键**：评论框默认 `Enter` 发送、`Shift+Enter` 换行；可以在弹窗里（或评论框里的「切换」）改成 `⌘/Ctrl+Enter` 发送、`Enter` 换行，设置存在 `chrome.storage`。
 - **弹窗快捷键**：`E` 开始框选，`D` 打开任务面板，`,` 展开连接设置，`M` 切换发送键。
 - **草稿跟着页面走**：框选到一半或评论写到一半时离开页面（普通跳转、SPA 换路由、hash 路由变化、后退），选择和评论框会立刻淡出，草稿按页面存起来（最多 30 个页面，保存 24 小时）；回到该页面会自动恢复选择和草稿，元素找不到时会提示。各页面的草稿互不影响，发送或取消后清除。
-- 插件界面（工具条、高亮、评论框、角标、提示）都在 closed shadow DOM 里，不受网页样式影响，也不会污染网页；配色和 Web UI 一样跟随系统深浅色。
+- 插件界面（工具条、高亮、评论框、提示）都在 closed shadow DOM 里，不受网页样式影响，也不会污染网页；配色和 Web UI 一样跟随系统深浅色。
 - 写完评论后发送。插件会附带以下内容：URL、选择器和 XPath、outerHTML 片段、可见文本、视口截图（选区用红框标出）、选区裁剪图、页面控制台错误。
-- 评论会先交给 **前台 agent**。前台根据项目映射确定工作目录，快速定位源码后派单；如果评论属于某个已有任务，就追加给对应的 worker。
-- 发出评论的元素旁边会出现编号角标（pin），样式表示任务状态：描边＝等待/进行中（进行中带闪烁小方块），红色描边＝需要你处理，实心黑/白＝完成，实心红＝失败，虚线＝已取消。点击角标可以查看 worker 的汇报。
-- 角标钉在组件上：保存的是「元素选择器 + 元素内相对位置」，窗口滚动、内部容器滚动、sticky 头部、窗口缩放和页面布局变化时都会重新定位；组件被滚出容器、被遮挡或不存在时隐藏。
-- 角标只属于它所在的页面：hub 按页面 key 匹配（忽略普通 `#锚点`、末尾斜杠、`utm_*`/`fbclid` 等跟踪参数，query 参数排序后比较；`#/…`、`#!/…` 这类 hash 路由算不同页面），插件在 URL 变化（含 SPA 路由、后退、bfcache 恢复）时立刻清空并重新拉取。
+- 评论会先交给 **前台 agent**。前台根据项目映射确定工作目录，快速定位源码后派单（`qa_dispatch`）；如果评论属于某个已有任务，就追加给对应的 worker（`qa_task_send`）。两种方式都带上 `intake_id`，评论和截图会关联到任务上（截图复制进任务的 `attachments/`）。
+- **评论是一次性的**：发送成功后，选中框、框选区域和评论框立刻消失，页面上不留任何标记，刷新或以后再访问也不会出现。发送失败时评论框、选择和文字都保留，修好连接后再发送即可。之后的进展在 Web UI 的注意力队列里看（任务详情里有来源页面和截图）。
+- 评论投递给前台并被认领就算消费掉了：hub 不会再投递第二次（hub 重启后也不会）。已消费的评论在 `~/.quick-agent/intake/<id>/` 里只保留一段时间方便排错，默认 72 小时，之后自动清理（config 的 `intakeRetentionHours` 或环境变量 `QA_INTAKE_RETENTION_HOURS`）；任务用到的截图已经复制到任务目录，不受影响。
 - 插件代码更新后，需要在 `chrome://extensions` 里点一下重新加载。
-- **权限**：默认只在你按快捷键/点按钮后才访问当前标签页（`activeTab`），所以角标在你第一次在该页面启动框选后才出现，控制台错误也从那一刻开始记录。想在所有网站自动显示角标、从页面加载起记录错误，可在弹窗「连接设置」里勾选「在所有网站自动显示…」（会额外申请"所有网站"权限，可随时关掉）。
+- **权限**：默认只在你按快捷键/点按钮后才访问当前标签页（`activeTab`），所以控制台错误从你第一次在该页面启动框选后才开始记录，未发送的草稿也要到那时才恢复。想从页面加载起记录错误、自动恢复草稿，可在弹窗「连接设置」里勾选「在所有网站自动恢复…」（会额外申请"所有网站"权限，可随时关掉）。
 - hub 没启动、Token 不对时，弹窗会给出明确提示；用快捷键在不能运行的页面（如 `chrome://`、扩展商店）触发时，工具栏图标会显示红色 `!`，悬停可看原因。
 
 ### 上架 Chrome Web Store / Edge / Firefox
@@ -593,6 +643,7 @@ quick team board                                 # 团队视图：所有进行�
   "uiPort": 7790,                         // Web UI（quick ui），只监听 127.0.0.1
   "token": "…自动生成…",
   "model": "tokenjoy/claude-opus-5-5",   // 前台和 worker 共用；也可以用 frontModel / workerModel 分开设置
+  // "workerModel": "tokenjoy/gpt-6.1-sol",   // worker 默认模型；Web UI 顶栏「WORKER」按钮可按机器设置（见下）
   "tmuxSession": "qa",
   "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work", "priority": 10, "resources": ["claude"], "resourceNotes": "无 GUI，网络稳定" },   // 见「机器资源与调度」
   //   machine.owner: 团队成员 id，机器 token 即代表他（见「团队协作」）
@@ -600,12 +651,17 @@ quick team board                                 # 团队视图：所有进行�
   "mesh": { "secret": "…quick mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
   "update": { "enabled": true, "autoInstall": false, "cacheMinutes": 10 },   // 见「升级与发布」
   "defaultCwd": "/home/simon",
+  // "intakeRetentionHours": 72,   // 已消费的浏览器评论保留多久（小时）后自动清理
   "projects": [
     // 浏览器评论按 URL 匹配工作目录（子串，或 /正则/）；hub 启动时合并进 ~/.quick-agent/projects.json 的项目（见「项目」）
     { "match": "localhost:5173", "cwd": "/home/simon/my-app", "notes": "Vite + React，组件在 src/components", "machine": "cloud" }
   ]
 }
 ```
+
+**worker 默认模型**：Web UI 顶栏的「WORKER <模型>」按钮（和右侧「前台」对话模型分开）打开设置面板，列出 mesh 里每台在线机器：生效的模型、来源（`workerModel` 设置 / 继承 `model`）、这台机器自己 `pi --list-models` 的可用模型（有思考能力的模型可选思考级别）。可以单台保存、恢复继承，或「应用到所有机器」（每台按自己的模型列表校验，部分失败会逐台列出，失败的机器不改）。保存由目标机器的 hub 校验后写入它的 config.json 并立即生效：之后新派发和恢复的 worker 用新模型，运行中的 worker 不受影响，前台模型不变。修改需要 owner 权限（`machine.configure`）。API：`GET /api/worker-model[?all=1|machine=id][&refresh=1]`，`POST /api/worker-model {"model": "provider/id[:thinking]" | null, "machine"?: id, "machines"?: [id…] | "all"}`。巡检 reviewer 没有设置 `watchdog.model` 时也跟随 worker 默认模型。
+
+**模型列表从哪来**：前台下拉框和 WORKER 面板都只列出这台机器的 pi 当前可用的模型（有可用认证的 provider；前台用进程内的 pi SDK，worker 面板用 `pi --list-models`，同一台机器的配置一致），按 provider 分组，悬停可看上下文、输出上限、是否可思考、是否支持图片；WORKER 面板每台机器有搜索框。`models.json` 里手写的模型列表是静态的，网关新增的模型不会自动出现：要动态发现，给 provider 配一个用 `pi.registerProvider` + `refreshModels` 的扩展（pi 官方方式，见 pi 文档 custom-provider.md）。前台的「↻」和 WORKER 面板的「刷新列表」会触发 pi 的目录刷新（重新读取 models.json、调用各 provider 的 refreshModels）；某个 provider 刷新失败时保留上次的列表并提示失败原因，不会清空，也不会切换正在用的模型。
 
 修改配置后需要运行 `quick hub restart`，并在 pi 里执行 `/reload` 或新开一个 pi，才会生效。
 
@@ -619,6 +675,7 @@ hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/handoff.ts               任务跨机器交接：编排、分块传输、目标端应用/回滚
 hub/cron.ts                  定时任务：持久化、触发定时器、mesh 复制、cron.* 方法（只由所属 hub 触发）
+hub/watchdog.ts              巡检：活动时钟、定时检查、拉起只读检查 agent（pi -p，read/grep/find/ls）、按结论纠偏或升级
 hub/projects.ts              项目：持久化、任务自动归类与回填、手动改名/合并/移动、mesh 同步
 shared/projects.ts           项目归类逻辑（git remote/worktree、路径、URL、文本）与分组排序
 cli/projects.ts              quick projects / 按项目分组的 quick ls
@@ -627,7 +684,7 @@ hub/attention.ts             注意力：计算变化、决定打扰、合批待
 hub/team.ts                  团队：成员名册（mesh 复制）、身份、邀请、任务上的人、评论、点名
 hub/dashboard.ts             网页面板（任务视图）
 ui/server.ts                 Web UI：用 pi SDK 托管唯一的前台 agent + 代理 hub API + SSE（quick ui）
-ui/app.html                  Web UI 前端（注意力队列、前台对话、浏览器评论、定时）
+ui/app.html                  Web UI 前端（注意力队列、前台对话、定时）
 ui/team.js                   Web UI 团队部分（身份、团队视图、任务的人和评论）
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
 shared/attention.ts          注意力模型：状态、原因、动作、排序、打扰策略（纯函数，所有前端共用）
@@ -638,6 +695,7 @@ scripts/release.sh           维护者发布脚本；.github/workflows/release.y
 shared/schedule.ts           机器资源探测与派单选机器（资源 + 优先级）
 shared/team.ts               团队规则：角色权限、@提及解析、球在谁手里、按人的注意力（纯函数）
 shared/cron.ts               定时规则：5 段 cron 解析、下次运行时间（时区/DST）、间隔/一次性、重叠与补跑决策
+shared/watchdog.ts           预期时间与巡检的纯逻辑：默认预期、活动时钟、触发条件与冷却、重复模式检测、结论解析与处理
 test/                        npm test（团队协作端到端、升级逻辑、多机升级模拟、调度选择、两机派单、定时规则、项目归类与回填）；*-e2e.sh 端到端测试
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
 extensions/front.ts          前台角色
@@ -648,14 +706,14 @@ docs/browser-extension/      插件隐私政策与上架材料
 scripts/pack-extension.sh    打包上架用 zip（dist/）
 ```
 
-运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`projects.json`（项目）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`cron.json`（本机 hub 所属的定时计划）、`hub.log`、`attention.json`（专注模式、摘要间隔、待发摘要）。内部细节：worker 的上下文是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`（`quick show <id> --debug` 显示路径），Web UI 前台的对话保存在 `ui-sessions/`；正常使用不需要关心它们，接管 worker 用 `quick attach`。
+运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`projects.json`（项目）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`（浏览器评论，消费后短期保留）、`cron.json`（本机 hub 所属的定时计划）、`hub.log`、`attention.json`（专注模式、摘要间隔、待发摘要）。内部细节：worker 的上下文是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`（`quick show <id> --debug` 显示路径），Web UI 前台的对话保存在 `ui-sessions/`；正常使用不需要关心它们，接管 worker 用 `quick attach`。
 
 ## Hub API（Bearer token）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
-| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, project?, attachments?, source?, reviewer?, assignee?, watchers?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器；发起人取自 token |
+| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, project?, attachments?, source?, reviewer?, assignee?, watchers?, expected?, watch?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器；发起人取自 token |
 | POST | `/api/tasks/:id/message` | `{text}` 回答或追加指令（worker 窗口关了会带着完整上下文重新拉起） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 知道了 |
 | POST | `/api/tasks/:id/snooze`、`/retry` | 稍后提醒 `{minutes}` / 重试 |
@@ -670,7 +728,9 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/projects/:id/rename`、`/merge`、`/rules` | `{name}` 改名 / `{into}` 合并 / `{add?, remove?, notes?, members?}` 改识别规则 |
 | POST | `/api/projects/backfill` | `{all?}` 给本机任务归类（all：重新归类所有非手动设置的） |
 | POST | `/api/tasks/:id/handoff` | `{to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}` 把任务交接到另一台机器（异步） |
-| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定 |
+| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定；`{kind:"progress", progress:{plan?, current?, done?, note?, percent?, eta?}}` 更新进度；`{expect:{expected, reason}}` worker 修正一次预期 |
+| POST | `/api/tasks/:id/watch` | 巡检：`{off: true\|false}` 按任务开关，`{expected: "30m"}` 改预期，`{now: true}` 立即巡检一次 |
+| GET | `/api/tasks/:id/transcript` | 工作记录：`?after=N` 增量（N 之后的条目），`?before=N&limit=M` 往前翻页，都不带 = 最新一页，`?full=N` 某条不截断的全文；返回 `{entries[], total, pendingFrom?, available}` |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
 | GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本、resources、priority） |
 | POST | `/api/machine` | `{machine?, priority?, resources?, addResources?, removeResources?, resourceNotes?, description?}` 修改某台机器的资源/优先级（null 清除），即时生效 |
@@ -685,7 +745,9 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/cron/:id/run`、`/pause`、`/resume`、`/delete`（或 `DELETE /api/cron/:id`） | 立即运行一次 / 暂停 / 恢复 / 删除；会路由到计划所属的 hub |
 | GET | `/api/events` | SSE 事件流（`?task=<id>` 用于 worker 接收指令；`?role=front&front=<id>` 用于前台；含 `attention*` 事件） |
 | POST/GET | `/api/intake` | 入口提交（浏览器评论等）/ 列表 |
-| GET | `/api/pages?url=` | 某个页面上的评论及其任务状态和注意力（插件角标用） |
+| POST | `/api/intake/:id/claim` | 前台认领评论（认领即消费，只能成功一次） |
+| POST | `/api/tasks/:id/message` | `{text, intakeId?}` 追加指令；带 `intakeId` 时把这条浏览器评论关联到任务，截图复制进任务 |
+| GET | `/api/tasks/:id/attachment?n=` | 任务附件（Web UI 显示截图用） |
 | GET | `/`、`/extension.zip`、`/health` | 面板 / 插件包 / 健康检查 |
 
 新入口只需要 `POST /api/intake`（交给前台组装上下文）或 `POST /api/tasks`（直接派单）。

@@ -1,6 +1,7 @@
 // Front role: your normal interactive pi *is* the quick-agent front agent.
 // It understands tasks, assembles context and delegates them to worker agents through the hub.
 // Toggle with /qa on|off, or start pi with --qa-off (or QA_ROLE=off) for a plain pi.
+import { progressLine, progressText } from "../shared/progress.ts";
 import { hostname } from "node:os";
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -18,6 +19,7 @@ import { createTeamFront, TEAM_TOOLS } from "./team-tools.ts";
 import { formatWall } from "../shared/cron.ts";
 import type { CronView } from "../hub/cron.ts";
 import { attentionOf, itemLine, LEVEL_LABEL, type AttentionCounts, type AttentionItem, type FocusState } from "../shared/attention.ts";
+import { EXPECT_SOURCE_LABEL, reviewLine, timingOf } from "../shared/watchdog.ts";
 import { classify, findProject, groupByProject, resolveProject, type Project } from "../shared/projects.ts";
 
 const QA_TOOLS = ["qa_dispatch", "qa_cron", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_review", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
@@ -32,6 +34,7 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
 1. 理解任务：只做最少量的澄清。只有在缺少关键信息、无法写出可执行简报时才提问，而且一次问完。
 2. 组装上下文：允许快速读取少量文件、grep/ls 确认工作目录和相关位置，但不要深入调研，不要动手实现。
 3. 派单：自动判断 workspace/review 策略并在 qa_dispatch.lifecycle 记录理由，不要每次让用户选择。只读调查/提醒 kind=read_only；低风险小型官网/前端文案样式布局普通交互 risk=low + complexity=small_frontend 走 A 直改主 dev 目录；复杂功能/后端/跨模块默认 B 隔离 + 独立 Agent review；支付/账务/金额/密钥/重要权限/不可逆数据为 critical 走 C 先 Agent review 再人工批准。规模大本身不用人工。不得仅凭文件在前端目录判低风险。先定位实际 dev 服务目录和机器；同文件并发优先追加已有任务，不抢占。然后调用 qa_dispatch 把任务交给一个独立的负责人 worker。brief 必须自包含：目标、背景、相关文件/位置、约束、验收标准，以及你掌握的全部上下文（含截图路径、元素选择器、页面 URL）。worker 看不到你和人类的对话。
+3a. 估时：派单时必须用 qa_dispatch 的 expected 给出 worker 完成它的预计用时（如 "15m"、"40m"、"2h"），按任务规模诚实估计：改一处文案/小 bug 10–20m，一个普通功能或修复 30–60m，跨模块的新机制、发布、调研 1–3h。实际用时明显超出时 hub 会自动派独立巡检检查它是否跑偏或卡住，只有真正需要人类决定时才进「需要你」。长时间轮询/等待外部事件的任务（例如盯一个 CI、每隔一段时间看一次）传 watch=false 关闭巡检。
 4. 派完立刻用一两句话回复（任务 ID、标题、工作目录），结束本轮，不要等待 worker。
 5. 一次请求包含多个互相独立的任务时，分别派单。属于已有任务的追加需求，用 qa_task_send 发给对应 worker，不要新建任务。
 6. 人类问进度或"有什么需要我的"时用 qa_tasks（按注意力排好：需要你 / 待扫 / 稍后 / 不用管）/ qa_task_read；要求中止时用 qa_task_cancel。
@@ -39,7 +42,7 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
    - 「需要你」且消息要求你转告：用一两句话告诉人类哪个任务、需要他决定什么（问题和选项），然后结束本轮；人类回答后用 qa_task_send 转给 worker。不要替人类做决定，不要复述整份汇报。
    - 「待扫」或其他：不要主动说话，它已经进了人类的待扫队列；人类问起时再基于它回答。
 8. 纯闲聊或一句话能回答的问题直接回答，不用派单。
-9. 收到 [浏览器评论] 时，它来自人类在网页上框选元素后写的评论：判断它属于哪个项目/工作目录（参考下方项目列表；不确定就问人类），必要时快速确认相关源码位置，然后派单；如果它明显是某个已有任务的追加，就用 qa_task_send。
+9. 收到 [浏览器评论] 时，它来自人类在网页上框选元素后写的评论：判断它属于哪个项目/工作目录（参考下方项目列表；不确定就问人类），必要时快速确认相关源码位置，然后派单；如果它明显是某个已有任务的追加，就用 qa_task_send。评论是一次性的：投递给你就算消费掉了，不会再投递第二次，所以要在这一轮里处理掉。无论新建任务（qa_dispatch）还是追加给已有任务（qa_task_send），都必须传 intake_id，这样评论和截图才会关联到任务上。
 10. 你没有 bash/edit/write，这是刻意的：所有实际工作都交给 worker。
 11. 多机：worker 可以跑在 mesh 里的任何在线机器上。需要了解远程机器上的目录或文件时用 qa_remote_fs（ls/read/grep，只读），本地文件仍用 read/grep/ls。
 12. 选机器（每台机器的资源标签和优先级见下方列表，优先级数字越小越优先）：
@@ -180,7 +183,7 @@ export function setupFront(pi: ExtensionAPI) {
 			const lines = list.slice(0, 8).map((t) => {
 				const color = t.status === "done" ? "success" : ACTIVE_STATUSES.includes(t.status) ? "accent" : ATTENTION_STATUSES.includes(t.status) ? "warning" : "dim";
 				const mark = t.unread ? th.fg("warning", "• ") : "  ";
-				const detail = ACTIVE_STATUSES.includes(t.status) || t.status === "handoff" ? (t.activity ?? "") : (t.summary ?? "").split("\n")[0];
+				const detail = ACTIVE_STATUSES.includes(t.status) || t.status === "handoff" ? (t.status === "handoff" ? (t.activity ?? "") : progressLine(t)) : (t.summary ?? "").split("\n")[0];
 				return `${mark}${th.fg(color as any, `${ICON[t.status] ?? "·"} ${tag(t)}`)} ${t.title}${detail ? th.fg("dim", ` — ${detail.slice(0, 70)}`) : ""}`;
 			});
 			if (list.length > 8) lines.push(th.fg("dim", `  … 还有 ${list.length - 8} 个任务（/tasks）`));
@@ -252,7 +255,7 @@ export function setupFront(pi: ExtensionAPI) {
 			intake.viewport ? `视口: ${intake.viewport.width}x${intake.viewport.height} @${intake.viewport.dpr}x` : "",
 			intake.consoleErrors?.length ? `控制台错误:\n${intake.consoleErrors.map((e) => `  - ${e}`).join("\n")}` : "",
 			intake.screenshots.length ? `截图文件（派单时放进 attachments）:\n${intake.screenshots.map((s) => `  - ${s}`).join("\n")}` : "",
-			`派单时请设置 intake_id="${intake.id}"。`,
+			`处理时请设置 intake_id="${intake.id}"：新建任务用 qa_dispatch，追加给已有任务用 qa_task_send，两者都要带上。`,
 		]
 			.filter(Boolean)
 			.join("\n");
@@ -370,6 +373,8 @@ export function setupFront(pi: ExtensionAPI) {
 			project: Type.Optional(
 				Type.String({ description: "Project id or name (see the project list). Omit to let the hub infer it from the cwd's git repository, path rules, page URL or title. Unknown names create a new project." }),
 			),
+			expected: Type.Optional(Type.String({ description: 'Your estimate of how long the worker needs (active time), e.g. "15m", "45m", "2h". Always give one; it drives the overtime watchdog.' })),
+			watch: Type.Optional(Type.Boolean({ description: "false turns the watchdog (overtime / stuck reviews) off for this task, e.g. long polling or waiting jobs" })),
 		}),
 		async execute(_id, p) {
 			void loadProjects(0);
@@ -387,6 +392,8 @@ export function setupFront(pi: ExtensionAPI) {
 				watchers: p.watchers,
 				project: p.project,
 				lifecycle: p.lifecycle,
+				expected: p.expected,
+				watch: p.watch,
 				source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
 			});
 			tasks.set(task.id, task);
@@ -533,7 +540,11 @@ export function setupFront(pi: ExtensionAPI) {
 				`${task.id} "${task.title}" status=${task.status} project=${projectName(task.project)} machine=${task.machine} cwd=${task.cwd}`,
 				`attention: ${LEVEL_LABEL[att.level]} ${att.mark} ${att.reason}${task.ask?.options?.length ? ` (options: ${task.ask.options.join(" / ")})` : ""}`,
 				`tmux: ${task.tmuxTarget ?? "-"}`,
-				task.activity ? `activity: ${task.activity}` : "",
+				ACTIVE_STATUSES.includes(task.status) || task.progress?.steps?.length ? `--- progress ---\n${progressText(task)}` : "",
+				task.activity ? `raw activity: ${task.activity}` : "",
+				task.expect ? `time: ${timingOf(task).label} (已用 / 预期, ${EXPECT_SOURCE_LABEL[task.expect.source]}${task.expect.reason ? `: ${task.expect.reason}` : ""})${timingOf(task).mark ? ` ${timingOf(task).mark}` : ""}${task.watch?.off ? " · 巡检已关闭" : ""}` : "",
+				task.watch?.pending ? `watchdog asks the human: ${task.watch.pending.question}${task.watch.pending.options?.length ? ` (options: ${task.watch.pending.options.join(" / ")})` : ""}` : "",
+				task.watch?.reviews?.length ? `--- 巡检 ---\n${task.watch.reviews.slice(-5).map((r) => `${new Date(r.at).toLocaleTimeString()} ${reviewLine(r)}${r.evidence ? `\n  依据: ${r.evidence}` : ""}${r.advice ? `\n  建议: ${r.advice}` : ""}${r.error ? `\n  错误: ${r.error}` : ""}`).join("\n")}` : "",
 				task.lifecycle ? `Git lifecycle: ${JSON.stringify(task.lifecycle)}` : "",
 				team.people(task) ? `people:${team.people(task)}` : "",
 				`--- summary ---\n${task.summary ?? "(none yet)"}`,
@@ -567,9 +578,13 @@ export function setupFront(pi: ExtensionAPI) {
 		label: "Send to task",
 		defaultActive: false,
 		description: "Send a follow-up instruction (or the human's answer) to the worker owning a quick-agent task. Restarts the worker with its full context if its window was closed.",
-		parameters: Type.Object({ id: Type.String(), message: Type.String({ description: "Self-contained follow-up instruction" }) }),
+		parameters: Type.Object({
+			id: Type.String(),
+			message: Type.String({ description: "Self-contained follow-up instruction" }),
+			intake_id: Type.Optional(Type.String({ description: "Browser comment id when appending a [浏览器评论] to this existing task (links the comment and copies its screenshots into the task)" })),
+		}),
 		async execute(_id, p) {
-			const task = await hub.sendMessage(p.id, p.message);
+			const task = await hub.sendMessage(p.id, p.message, p.intake_id);
 			tasks.set(task.id, task);
 			renderWidget();
 			return { content: [{ type: "text", text: `Sent to ${task.id} (status ${task.status}).` }], details: { task } };

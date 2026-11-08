@@ -39,7 +39,7 @@ test("isolated hub: A/B/C, worker permission gate, review SHA, restart and quiet
  await stop();await start();assert.equal((await api(`/api/tasks/${c.id}`)).task.lifecycle.phase,"human_approval");await assert.rejects(api(`/api/tasks/${c.id}/message`,{text:"yes"}),/409/);await assert.rejects(api(`/api/tasks/${c.id}/approve`,{sha:before}),/500/);await api(`/api/tasks/${c.id}/approve`,{sha:csha});assert.equal((await wait(c.id,"complete")).status,"done");
  assert.equal(await git(repo,"rev-parse","origin/main"),csha);
  const s=await create("小型前端布局",{kind:"code",risk:"low",complexity:"small_frontend"});const stok=(await readFile(join(home,"tasks",s.id,"worker.token"),"utf8")).trim();
- await api(`/api/tasks/${s.id}/report`,{scope:{risk:"critical",reason:"新增资金逻辑"}},stok);await api(`/api/tasks/${s.id}/report`,{scope:{risk:"complex",reason:"复杂"}},stok);await api(`/api/tasks/${s.id}/report`,{status:"done",summary:"不能绕过"},stok);await api(`/api/tasks/${s.id}/report`,{settled:true},stok);
+ await api(`/api/tasks/${s.id}/report`,{scope:{risk:"critical",reason:"新增资金逻辑"}},stok);await assert.rejects(api(`/api/tasks/${s.id}/report`,{scope:{risk:"complex",reason:"复杂"}},stok),/409/);await api(`/api/tasks/${s.id}/report`,{status:"done",summary:"不能绕过"},stok);await api(`/api/tasks/${s.id}/report`,{settled:true},stok);
  const scoped=(await api(`/api/tasks/${s.id}`)).task;assert.equal(scoped.lifecycle.policy.review,"human");assert.equal(scoped.lifecycle.phase,"blocked");assert.equal(scoped.status,"blocked");
  await assert.rejects(api(`/api/tasks/${s.id}/retry`,{}));
  const comment=await api(`/api/tasks/${s.id}/comments`,{text:"worker internal",asWorker:true,toWorker:true},stok);assert.equal(comment.comment.author,"agent");assert.notEqual(comment.comment.toWorker,true);

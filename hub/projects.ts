@@ -17,6 +17,7 @@ import {
 	normalizeRemote,
 	addRule,
 	removeRule,
+	reorderProjects,
 	RULE_KINDS,
 	resolveProject,
 	uniqueId,
@@ -140,6 +141,8 @@ export function createProjects(d: ProjectDeps) {
 		if (c.create) {
 			p = add(c.create);
 			changed.push(p);
+			// A new project (explicit name or unseen repository) can claim weakly classified older tasks.
+			reclassifySoon();
 		} else p = resolveProject(state.projects, c.project);
 		// Learn identifying rules only from strong evidence (git / explicit choice).
 		if (p && ["git-remote", "git-root", "explicit"].includes(c.via) && learn(p, input, state.projects)) {
@@ -277,6 +280,13 @@ export function createProjects(d: ProjectDeps) {
 		return p;
 	}
 
+	/** Manual order of the project list (drag in the Web UI): replicated like any project edit. */
+	function reorder(ids: unknown): Project[] {
+		if (!Array.isArray(ids)) throw d.httpError(400, "ids must be an array of project ids");
+		announce(reorderProjects(state.projects, ids.map(String)));
+		return state.projects;
+	}
+
 	/** Resolve a project key for a manual move ("" / null / "unsorted" / 未归类 = unsorted); unknown names are created. */
 	function resolveForMove(key: unknown): string {
 		const k = String(key ?? "").trim();
@@ -291,6 +301,20 @@ export function createProjects(d: ProjectDeps) {
 		const id = resolveForMove(key);
 		delete state.overrides[t.id];
 		d.patchTask(t, { project: id || undefined, projectVia: "manual" }, `project → ${id || "unsorted"}`);
+		// A manual choice is strong evidence: learn the repository / page of the task for the next ones.
+		const p = id ? get(id) : undefined;
+		if (p) {
+			const input: ClassifyInput = { cwd: t.cwd, machine: d.self, git: t.cwd ? git(t.cwd) : null, url: t.source?.url };
+			// Never steal a repository another project already owns (a one-off move is not a re-assignment of the repo).
+			const now = classify(state.projects, input);
+			const owned = !now.create && now.project && now.project !== p.id && (now.via === "git-remote" || now.via === "git-root");
+			if (owned) input.git = null;
+			if (learn(p, input, state.projects)) {
+				p.updatedAt = Date.now();
+				announce([p]);
+				reclassifySoon();
+			}
+		}
 		save();
 		return t;
 	}
@@ -335,6 +359,8 @@ export function createProjects(d: ProjectDeps) {
 		if (dedupeByRemote(state.projects).length) save();
 		backfill(false);
 		retag();
+		// Projects may have gained rules (or been created) since weak guesses were made.
+		reclassifySoon();
 	}
 
 	/** Project whose URL rules match a page URL (no git / text inference). */
@@ -344,7 +370,7 @@ export function createProjects(d: ProjectDeps) {
 		return c.via === "url" ? c.project : undefined;
 	}
 
-	return { start, list, get, classifyOwn, classifyUrl, view, backfill, create, rename, merge, setRules, move, override, onReplica, snapshot, find: (k: string) => findProject(state.projects, k) };
+	return { start, list, get, reorder, classifyOwn, classifyUrl, view, backfill, create, rename, merge, setRules, move, override, onReplica, snapshot, find: (k: string) => findProject(state.projects, k) };
 }
 
 function normalizeRemoteLoose(s: string): string | undefined {

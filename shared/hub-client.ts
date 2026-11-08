@@ -6,6 +6,8 @@ import type { CronRun } from "./cron.ts";
 import type { CronView } from "../hub/cron.ts";
 import type { AttentionCounts, AttentionItem, FocusState } from "./attention.ts";
 import type { Project } from "./projects.ts";
+import type { ProgressInput } from "./progress.ts";
+import type { TranscriptPage } from "./transcript.ts";
 import type { HubEvent, Intake, MachineInfo, MachineView, Task, TaskEvent } from "./types.ts";
 import type { PublicMember, Role, TaskComment, Viewer } from "./team.ts";
 
@@ -100,6 +102,14 @@ export class HubClient {
 	getTask(id: string, events = 30) {
 		return this.request<{ task: Task; events: TaskEvent[]; comments?: TaskComment[] }>("GET", `/api/tasks/${enc(id)}?events=${events}`);
 	}
+	/** 工作记录 (shared/transcript.ts): after → live tail, before → scroll back, neither → latest page. */
+	transcript(id: string, q: { after?: number; before?: number; limit?: number; full?: number } = {}) {
+		const qs = Object.entries(q)
+			.filter(([, v]) => v !== undefined)
+			.map(([k, v]) => `${k}=${v}`)
+			.join("&");
+		return this.request<TranscriptPage & { status: Task["status"] }>("GET", `/api/tasks/${enc(id)}/transcript${qs ? `?${qs}` : ""}`);
+	}
 
 	// ---- team (docs/team-collaboration.md)
 	me() {
@@ -150,6 +160,10 @@ export class HubClient {
 		project?: string;
 		/** Front's automatic risk/complexity judgement; hub applies project rules and safety checks. */
 		lifecycle?: import("./lifecycle.ts").LifecycleInput;
+		/** Expected active time, e.g. "20m" (default: by kind of task, see shared/watchdog.ts). */
+		expected?: string;
+		/** false = no watchdog reviews for this task (e.g. long polling jobs). */
+		watch?: boolean;
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}
@@ -157,8 +171,13 @@ export class HubClient {
 	configureMachine(input: { machine?: string; resources?: string[] | null; resourceNotes?: string | null; priority?: number | null; description?: string; owner?: string | null }) {
 		return this.request<{ machine: MachineInfo }>("POST", "/api/machine", input).then((r) => r.machine);
 	}
-	sendMessage(id: string, text: string) {
-		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/message`, { text }).then((r) => r.task);
+	/** Watchdog of one task: turn it off/on, set the expectation, or start a review now. */
+	watch(id: string, body: { off?: boolean; now?: boolean; expected?: string }) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/watch`, body).then((r) => r.task);
+	}
+	/** intakeId: a browser comment appended to this task (its screenshots are copied into the task, the comment is linked). */
+	sendMessage(id: string, text: string, intakeId?: string) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/message`, intakeId ? { text, intakeId } : { text }).then((r) => r.task);
 	}
 	cancel(id: string) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/cancel`, {}).then((r) => r.task);
@@ -189,7 +208,7 @@ export class HubClient {
 		return this.request<{ focus: FocusState }>("POST", "/api/attention/focus", { on, minutes }).then((r) => r.focus);
 	}
 	/** Worker → hub state report. needsHuman marks an explicit request for a human decision. */
-	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; settled?: boolean; scope?: {risk:"critical"|"complex";reason:string}; needsHuman?: boolean; question?: string; options?: string[] }) {
+	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; progress?: ProgressInput; settled?: boolean; scope?: {risk:"critical"|"complex";reason:string}; needsHuman?: boolean; question?: string; options?: string[]; expect?: { expected: string; reason: string } }) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/report`, body).then((r) => r.task);
 	}
 	projects() {
@@ -211,6 +230,10 @@ export class HubClient {
 	/** Classify tasks never classified (all: every task not set by hand). */
 	backfillProjects(all = false) {
 		return this.request<{ checked: number; changed: number }>("POST", "/api/projects/backfill", { all });
+	}
+	/** Manual order of the project list (the listed ids first, in this order). */
+	orderProjects(ids: string[]) {
+		return this.request<{ projects: Project[] }>("POST", "/api/projects/order", { ids }).then((r) => r.projects);
 	}
 	/** Manually move a task to a project ("" = unsorted); remembered across reclassification. */
 	setTaskProject(id: string, project: string) {

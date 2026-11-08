@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta charset="utf-8"><title>QA layers</title>
+<!-- Page with every kind of layer the picker must get on top of: native modal <dialog> (nested),
+     popover, a Radix/MUI-like portal overlay (z-index max, outside-pointerdown / Esc dismiss, focus trap,
+     body pointer-events:none) and a fullscreen element. Every close is recorded in window.closed. -->
+<style>
+body{margin:0;font:15px/1.6 system-ui,sans-serif;background:#fff;color:#222}
+main{padding:16px}
+.card{border:1px solid #ccc;padding:14px;margin:12px 0;background:#fafafa}
+.t{padding:14px;margin:10px 0;color:#fff;background:#555}
+#dlg-a{background:rgb(200,0,200)} #dlg2-a{background:rgb(0,160,160)} #pop-a{background:rgb(0,0,220)} #ov-a{background:rgb(220,120,0)} #fs-a{background:rgb(0,150,0)}
+/* a transformed, clipping dialog: our UI inside it must still use viewport coordinates */
+#dlg{width:520px;border:0;padding:20px;transform:translateZ(0);overflow:hidden}
+#dlg::backdrop{background:rgba(0,0,0,.5)}
+#dlg2{width:420px;border:0;padding:20px;margin-top:120px}
+#pop{width:480px;padding:20px;border:2px solid #333;margin-top:100px}
+#ov{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.45);display:none;pointer-events:auto}
+#ov.open{display:block}
+#ov-content{position:absolute;left:50%;top:80px;transform:translateX(-50%);width:520px;background:#fff;padding:20px}
+#fs{background:#fff;padding:20px}
+</style></head><body>
+<main>
+<h1>Layers</h1>
+<div class="card" id="behind-1">Behind card 1</div>
+<div class="card" id="behind-2">Behind card 2</div>
+<button id="open-dlg">open dialog</button> <button id="open-pop" popovertarget="pop">open popover</button> <button id="open-ov">open overlay</button>
+<div id="fs"><div class="t" id="fs-a">Fullscreen target</div><div class="t" id="fs-b">Fullscreen second</div><button id="open-fs">fullscreen</button></div>
+</main>
+<dialog id="dlg"><h2>Modal dialog</h2><div class="t" id="dlg-a">Dialog target</div><div class="t" id="dlg-b">Dialog second</div>
+  <input id="dlg-in" placeholder="dialog input"> <button id="open-dlg2">nested</button>
+  <dialog id="dlg2"><div class="t" id="dlg2-a">Nested target</div><div class="t" id="dlg2-b">Nested second</div></dialog>
+</dialog>
+<div id="pop" popover><div class="t" id="pop-a">Popover target</div><div class="t" id="pop-b">Popover second</div></div>
+<script>
+const $ = (id) => document.getElementById(id);
+window.closes = []; window.pageKeys = []; window.trapped = 0;
+for (const d of [$('dlg'), $('dlg2')]) {
+  d.addEventListener('close', () => closes.push(d.id));
+  d.addEventListener('click', (e) => { if (e.target === d) d.close(); }); // React-style "click on the backdrop closes"
+}
+$('open-dlg').onclick = () => $('dlg').showModal();
+$('open-dlg2').onclick = () => $('dlg2').showModal();
+$('pop').addEventListener('toggle', (e) => e.newState === 'closed' && closes.push('pop'));
+$('open-fs').onclick = () => $('fs').requestFullscreen();
+document.addEventListener('fullscreenchange', () => !document.fullscreenElement && closes.push('fs'));
+// Radix/MUI-like overlay rendered into a portal at the end of <body>
+const ov = document.createElement('div'); ov.id = 'ov';
+ov.innerHTML = '<div id="ov-content" role="dialog"><h2>Overlay</h2><div class="t" id="ov-a">Overlay target</div><div class="t" id="ov-b">Overlay second</div><input id="ov-in"></div>';
+document.body.appendChild(ov);
+const ovOpen = () => ov.classList.contains('open');
+function closeOv(why) { if (ovOpen()) { ov.classList.remove('open'); document.body.style.pointerEvents = ''; closes.push('ov:' + why); } }
+$('open-ov').onclick = () => { ov.classList.add('open'); document.body.style.pointerEvents = 'none'; $('ov-in').focus(); };
+document.addEventListener('pointerdown', (e) => { if (ovOpen() && !$('ov-content').contains(e.target)) closeOv('outside'); });
+document.addEventListener('mousedown', (e) => { if (ovOpen() && !$('ov-content').contains(e.target)) closeOv('outside-mouse'); }, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOv('esc'); }, true);
+document.addEventListener('focusin', (e) => { if (ovOpen() && !$('ov-content').contains(e.target)) { trapped++; $('ov-in').focus(); } });
+document.addEventListener('focusout', (e) => { if (ovOpen() && e.relatedTarget && !$('ov-content').contains(e.relatedTarget)) { trapped++; $('ov-in').focus(); } });
+document.addEventListener('wheel', (e) => { if (ovOpen() && !$('ov-content').contains(e.target)) e.preventDefault(); }, { passive: false }); // scroll lock
+// page keyboard shortcuts must not see what is typed into the comment box
+document.addEventListener('keydown', (e) => pageKeys.push(e.key));
+</script></body></html>

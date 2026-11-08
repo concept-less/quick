@@ -2,11 +2,21 @@
 # Needs an isolated test hub on :7811 with token "testtoken" (QA_HOME=<tmp> QA_PORT=7811 node hub/server.ts)
 # and the test site served on :7813:  python3 -m http.server 7813 --bind 127.0.0.1 -d test/browser
 # Run: python3 test/browser/ext_e2e.py     (closed shadow DOM is inspected via CDP DOM.getDocument pierce)
-# Covers: per-page drafts (SPA / hash / full navigation / back), pins not leaking across pages, pins
-# following window scroll / inner scroll / sticky header / resize, click-vs-drag gesture payloads, send key.
+# Covers: per-page drafts (SPA / hash / full navigation / back), one-shot comments (after sending no
+# mark stays on the page, also not after a reload or a later visit; a failed send keeps the text for a
+# retry), click-vs-drag gesture payloads, send key, and the top layer: picking, region selection and
+# commenting on top of a native modal <dialog> (nested too), a popover, a z-index max portal overlay
+# (Radix/MUI-like: outside-pointerdown / Esc dismiss, focus trap) and a fullscreen element, without
+# closing any of them.
 import asyncio, json, sys, shutil, os
 from playwright.async_api import async_playwright
 EXT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "browser")
+# captureVisibleTab needs activeTab (a real user gesture on the toolbar icon / shortcut) or <all_urls>:
+# test a copy whose manifest also has <all_urls>, so screenshots are taken like after a real click.
+import tempfile
+_ext = tempfile.mkdtemp(prefix="qa-ext-src-"); shutil.copytree(EXT, _ext, dirs_exist_ok=True)
+_m = json.load(open(os.path.join(_ext, "manifest.json"))); _m["host_permissions"].append("<all_urls>")
+json.dump(_m, open(os.path.join(_ext, "manifest.json"), "w")); EXT = _ext
 SITE = "http://127.0.0.1:7813/"
 SHOTS = os.environ.get("SHOTS", "/tmp/qa-shots/"); os.makedirs(SHOTS, exist_ok=True)
 results = []
@@ -30,11 +40,14 @@ async def shadow_state(page):
     r = await cdp.send("Runtime.callFunctionOn", {"objectId": obj["object"]["objectId"], "returnByValue": True, "functionDeclaration": """function(){
       const live = s => [...this.querySelectorAll(s)].filter(n => !n.classList.contains('fade'));
       const box = live('.box')[0];
-      return { bar: !!this.querySelector('.bar'), box: !!box, text: box ? box.querySelector('textarea').value : null,
+      const bar = this.querySelector('.bar'), br = bar && bar.getBoundingClientRect(), tag = live('.tag')[0];
+      return { bar: !!bar, barRect: br && [br.x, br.y, br.width, br.height], tag: tag && tag.style.display !== 'none' ? tag.textContent : null, box: !!box, text: box ? box.querySelector('textarea').value : null,
         meta: box ? box.querySelector('.meta').textContent : null, sel: live('.sel').length, region: live('.region').length,
         toast: [...this.querySelectorAll('.toast')].map(t => t.textContent),
-        pins: [...this.querySelectorAll('.pin')].map(p => { const m = /translate\\((-?[\\d.]+)px,\\s*(-?[\\d.]+)px\\)/.exec(p.style.transform) || []; return { id: p.dataset.id, hidden: p.hidden, x: +m[1], y: +m[2] }; }),
-        pop: !!this.querySelector('.pop:not([hidden])') };
+        // anything that marks the page besides the toolbar / toast: pins, badges, popovers, selection, region, box
+        marks: [...this.querySelectorAll('*')].filter(n => n.tagName !== 'STYLE' && !n.classList.contains('layer') && !n.closest('.bar,.toast,.fade')
+          && !((n.classList.contains('hl') || n.classList.contains('tag')) && n.style.display === 'none')).map(n => n.className || n.tagName.toLowerCase()),
+        hover: live('.hl,.tag').filter(n => n.style.display !== 'none').length };
     }"""})
     await cdp.detach()
     return r["result"]["value"]
@@ -90,7 +103,7 @@ async def main():
             await page.keyboard.type(f"comment on B ({scen})"); await page.keyboard.press("Enter")
             await page.wait_for_timeout(2500)
             st = await shadow_state(page)
-            check(f"[{scen}] B: sent (box closed, pin shown)", not st["box"] and len(st["pins"]) >= 1, st)
+            check(f"[{scen}] B: sent, nothing left on the page", not st["box"] and not st["marks"] and not st["bar"], st)
             # back to A
             if scen == "spa": await page.go_back()
             elif scen == "hash": await page.go_back()
@@ -104,9 +117,7 @@ async def main():
             await page.wait_for_timeout(2500)
             st = await shadow_state(page); d = await drafts()
             check(f"[{scen}] A: sent, draft cleared", not st["box"] and not d, (st, d))
-            # pins of A must not include B's comment (and vice versa)
-            pins_a = {p["id"] for p in st["pins"]}
-            check(f"[{scen}] A pins exclude B comment", len(pins_a) >= 1, st)
+            check(f"[{scen}] A: sent, nothing left on the page", not st["marks"] and not st["bar"], st)
             await page.keyboard.press("Escape")
 
         # ---------------------------------------------------------------- toggle after URL change starts fresh
@@ -163,62 +174,179 @@ async def main():
         check("[gesture] Esc during drag cancels (no region, no box, picker still on)", st["region"] == 0 and not st["box"] and st["bar"], st)
         await page.keyboard.press("Escape")
 
-        # ---------------------------------------------------------------- pins: no cross-page leaking
-        await page.goto(SITE + "spa.html?r=a"); await page.wait_for_timeout(2000)
-        st = await shadow_state(page); ids_a = {p["id"] for p in st["pins"]}
-        await spa("history.pushState({}, '', '?r=b'); render()"); await page.wait_for_timeout(150)
-        st = await shadow_state(page); ids_b_immediate = {p["id"] for p in st["pins"]}
-        check("[pins] SPA route change clears A's pins immediately", not (ids_a & ids_b_immediate), (ids_a, ids_b_immediate))
-        await page.wait_for_timeout(2000)
-        st = await shadow_state(page); ids_b = {p["id"] for p in st["pins"]}
-        check("[pins] B shows only B's pins", ids_b and not (ids_a & ids_b), (ids_a, ids_b))
-        await page.go_back(); await page.wait_for_timeout(2000)
-        st = await shadow_state(page); check("[pins] back to A shows A's pins again", {p['id'] for p in st['pins']} == ids_a, st["pins"])
-        await page.goto(SITE + "spa.html?r=a#section"); await page.wait_for_timeout(1500)
-        st = await shadow_state(page); check("[pins] plain #fragment = same page", {p['id'] for p in st['pins']} == ids_a, st["pins"])
-
-        # ---------------------------------------------------------------- pins stay on their component
+        # ---------------------------------------------------------------- one-shot: sent comments leave no marks
         await sw.evaluate("() => chrome.storage.local.remove('qaDrafts')")
-        import time; PIN = "pin" + str(int(time.time()))
-        await page.goto(SITE + "spa.html?r=" + PIN); await page.wait_for_timeout(800)
-        async def comment_on(sel, text, region=False):
-            await toggle(); await page.wait_for_timeout(200)
-            await page.click(sel); await page.wait_for_timeout(200)
-            await page.keyboard.type(text); await page.keyboard.press("Enter"); await page.wait_for_timeout(2200)
-        await comment_on("#second-"+PIN, "pin on card")
-        await page.evaluate(f"document.getElementById('row-{PIN}-3').scrollIntoView({{block:'center'}})"); await page.wait_for_timeout(200)
-        await comment_on("#row-"+PIN+"-3", "pin on inner row")
-        await page.evaluate("window.scrollTo(0,0)")
-        await comment_on("#sticky-btn", "pin on sticky header")
-        await page.wait_for_timeout(5500)  # let the poll attach ids
-        async def pin_vs(sel, idx):
+        check("[once] background has no page-comment polling", await sw.evaluate("() => typeof handlers['qa-page-comments']") == "undefined")
+        ONCE = SITE + "spa.html?r=once"
+        await page.goto(ONCE); await page.wait_for_timeout(700)
+        await toggle(); await page.wait_for_timeout(200)
+        await page.click("#item-once", modifiers=["Shift"]); await page.click("#second-once", modifiers=["Shift"]); await page.wait_for_timeout(150)
+        await page.keyboard.press("Enter"); await page.wait_for_timeout(200)
+        st = await shadow_state(page)
+        check("[once] before sending: selection boxes + comment box on the page", st["box"] and st["sel"] == 2, st)
+        await page.keyboard.type("one-shot element comment"); await page.keyboard.press("Enter")
+        await page.wait_for_timeout(1200)
+        st = await shadow_state(page)
+        iid = await last_id()
+        check("[once] sent: toast with the comment id", bool(iid), st["toast"])
+        check("[once] sent: no selection, box, pin, badge or toolbar left", not st["marks"] and not st["bar"] and st["hover"] == 0, st)
+        await page.screenshot(path=SHOTS + "ext-after-send.png")
+        await page.wait_for_timeout(3500)  # the old extension polled the hub here and drew pins
+        st = await shadow_state(page)
+        check("[once] still nothing after a while", not st["marks"], st)
+        await page.reload(); await page.wait_for_timeout(2500)
+        st = await shadow_state(page)
+        check("[once] reload: no marks come back", st is not None and not st["marks"] and not st["box"] and not st["bar"], st)
+        await page.goto(SITE + "other.html"); await page.wait_for_timeout(500)
+        await page.goto(ONCE); await page.wait_for_timeout(2500)
+        st = await shadow_state(page)
+        check("[once] later visit: no marks", st is not None and not st["marks"] and not st["bar"], st)
+        d = await drafts(); check("[once] nothing kept in extension storage for the page", not d, d)
+        # region: the dashed region goes away too
+        await toggle(); await page.wait_for_timeout(200)
+        b1 = await page.evaluate("(() => { const a = document.getElementById('item-once').getBoundingClientRect(); return [a.x - 6, a.y - 6, a.right + 6, a.bottom + 6]; })()")
+        await page.mouse.move(b1[0], b1[1]); await page.mouse.down()
+        for i in range(1, 11): await page.mouse.move(b1[0] + (b1[2] - b1[0]) * i / 10, b1[1] + (b1[3] - b1[1]) * i / 10)
+        await page.mouse.up(); await page.wait_for_timeout(250)
+        st = await shadow_state(page); check("[once] region drawn", st["region"] == 1 and st["box"], st)
+        await page.keyboard.type("one-shot region comment"); await page.keyboard.press("Enter"); await page.wait_for_timeout(1500)
+        st = await shadow_state(page); check("[once] region sent: no marks left", not st["marks"] and not st["bar"], st)
+        await page.reload(); await page.wait_for_timeout(2000)
+        st = await shadow_state(page); check("[once] region: reload shows nothing", not st["marks"], st)
+        # failed send: text and selection stay for a retry; the retry clears everything
+        await sw.evaluate("() => chrome.storage.local.set({ token: 'wrong' })")
+        await toggle(); await page.wait_for_timeout(200)
+        await page.click("#item-once"); await page.wait_for_timeout(200)
+        await page.keyboard.type("retry me"); await page.keyboard.press("Enter"); await page.wait_for_timeout(1500)
+        st = await shadow_state(page)
+        check("[once] send failed: box + text + selection kept, error toast", st["box"] and st["text"] == "retry me" and st["sel"] == 1 and any("发送失败" in t for t in st["toast"]), st)
+        await sw.evaluate("() => chrome.storage.local.set({ token: 'testtoken' })")
+        await page.keyboard.press("Enter"); await page.wait_for_timeout(1500)
+        st = await shadow_state(page)
+        check("[once] retry succeeds and clears the page", not st["marks"] and not st["bar"] and any("已发送" in t for t in st["toast"]), st)
+        await page.reload(); await page.wait_for_timeout(2000)
+        st = await shadow_state(page); check("[once] retry: reload shows nothing", not st["marks"], st)
+
+        # ---------------------------------------------------------------- top layer: dialog, popover, overlay, fullscreen
+        # Every layer gets: toolbar on top and clickable, hover / click pick inside the layer, typing into
+        # the comment box (focus traps, page shortcuts), hub payload + screenshots, region selection,
+        # backdrop / outside click and Esc while picking -- and the layer is never closed by any of it.
+        from PIL import Image
+        LAYERS = SITE + "layers.html"
+        def px(path, x, y):
+            return Image.open(path).convert("RGB").getpixel((int(x), int(y)))
+        near = lambda c, ref, tol=48: all(abs(a - b) <= tol for a, b in zip(c, ref))
+        async def rect(i):
+            return await page.evaluate(f"(() => {{ const r = document.getElementById('{i}').getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }})()")
+        host_info = lambda: page.evaluate("(() => { const h = document.querySelector('qa-agent-root'); return { parent: h.parentElement.id || h.parentElement.localName, top: h.matches(':popover-open') }; })()")
+        async def bar_on_top(st):
+            b = st and st["barRect"]
+            return bool(b) and await page.evaluate(f"document.elementFromPoint({b[0] + 20}, {b[1] + b[3] / 2})?.localName") == "qa-agent-root"
+        async def type_and_send(text):
+            await page.evaluate("pageKeys.length = 0")
+            await page.keyboard.type(text)
+            st = await shadow_state(page); keys = await page.evaluate("pageKeys.slice()")
+            await page.keyboard.press("Enter"); await page.wait_for_timeout(2000)
+            iid = await last_id()
+            return st, keys, (intake(iid) if iid else {})
+        async def drag(x0, y0, x1, y1):
+            await page.mouse.move(x0, y0); await page.mouse.down()
+            for i in range(1, 11): await page.mouse.move(x0 + (x1 - x0) * i / 10, y0 + (y1 - y0) * i / 10)
+            await page.mouse.up(); await page.wait_for_timeout(250)
+        LAYER_CASES = [
+            # name, page buttons that open it, target, second element, host parent, "still open" js, target colour, Esc can be tested
+            ("dialog", ["#open-dlg"], "dlg-a", "dlg-b", "dlg", "$('dlg').open", (200, 0, 200), True),
+            ("nested dialog", ["#open-dlg", "#open-dlg2"], "dlg2-a", "dlg2-b", "dlg2", "$('dlg').open && $('dlg2').open", (0, 160, 160), True),
+            ("popover", ["#open-pop"], "pop-a", "pop-b", "pop", "$('pop').matches(':popover-open')", (0, 0, 220), True),
+            ("overlay", ["#open-ov"], "ov-a", "ov-b", "html", "ov.classList.contains('open')", (220, 120, 0), True),
+            # the browser itself always leaves fullscreen on Esc (not cancellable), so no Esc step there
+            ("fullscreen", ["#open-fs"], "fs-a", "fs-b", "fs", "document.fullscreenElement === $('fs')", (0, 150, 0), False),
+        ]
+        for name, openers, tgt, sec, parent, is_open, color, esc_ok in LAYER_CASES:
+            T = f"[layer:{name}]"
+            still_open = lambda: page.evaluate(f"({is_open}) && closes.length === 0")
+            await page.goto(LAYERS); await page.wait_for_timeout(500)
+            for o in openers: await page.click(o); await page.wait_for_timeout(200)
+            check(f"{T} layer is open", await still_open())
+            await toggle(); await page.wait_for_timeout(300)
+            st = await shadow_state(page); hi = await host_info()
+            check(f"{T} toolbar shown on top of the layer and hit-testable", st["bar"] and await bar_on_top(st), (st, hi))
+            check(f"{T} host in the top layer, inside {parent}", hi["parent"] == parent and hi["top"], hi)
+            r = await rect(tgt); cx, cy = r[0] + r[2] / 2, r[1] + r[3] / 2
+            await page.mouse.move(cx, cy); await page.wait_for_timeout(150)
             st = await shadow_state(page)
-            r = await page.evaluate(f"(() => {{ const r = document.querySelector('{sel}').getBoundingClientRect(); return [r.right, r.top]; }})()")
-            pin = st["pins"][idx]
-            return pin, r
-        def near(pin, r):
-            return (not pin["hidden"]) and abs(pin["x"] + 11 - min(r[0], 1280 - 15)) <= 3 and abs(pin["y"] + 11 - max(r[1], 13)) <= 3
-        st = await shadow_state(page); n = len(st["pins"])
-        check("[pos] 3 pins on page", n == 3, st["pins"])
-        for dy in (300, 700):
-            await page.evaluate(f"window.scrollTo(0,{dy})"); await page.wait_for_timeout(250)
-            pin, r = await pin_vs("#second-"+PIN, 0)
-            vis = r[1] > 44  # below the sticky header
-            check(f"[pos] window scroll {dy}: card pin follows card / hides under sticky header", near(pin, r) if vis else pin["hidden"], (pin, r))
-            pin, r = await pin_vs("#sticky-btn", 2)
-            check(f"[pos] window scroll {dy}: sticky header pin stays on header", near(pin, r), (pin, r))
-        await page.evaluate("window.scrollTo(0,0)"); await page.wait_for_timeout(200)
-        await page.evaluate("document.getElementById('inner').scrollTop = 60"); await page.wait_for_timeout(250)
-        pin, r = await pin_vs("#row-"+PIN+"-3", 1)
-        check("[pos] inner container scroll: pin follows row", near(pin, r), (pin, r))
-        await page.screenshot(path=SHOTS + "ext-pins.png")
-        await page.evaluate("document.getElementById('inner').scrollTop = 600"); await page.wait_for_timeout(250)
-        pin, r = await pin_vs("#row-"+PIN+"-3", 1)
-        check("[pos] inner container scroll: row scrolled out → pin hidden", pin["hidden"], (pin, r))
-        await page.set_viewport_size({"width": 900, "height": 700}); await page.wait_for_timeout(300)
-        await page.evaluate("document.getElementById('inner').scrollTop = 60"); await page.wait_for_timeout(250)
-        pin, r = await pin_vs("#second-"+PIN, 0)
-        check("[pos] after resize: pin follows card", near(pin, r) or r[1] <= 44, (pin, r))
+            check(f"{T} hover highlights the element in the layer", st["tag"] == "#" + tgt, st["tag"])
+            b = st["barRect"]; await page.mouse.click(b[0] + 30, b[1] + b[3] / 2); await page.wait_for_timeout(150)
+            st = await shadow_state(page)
+            check(f"{T} a click on our toolbar is not a page pick", st["bar"] and not st["box"] and st["sel"] == 0, st)
+            await page.mouse.click(cx, cy); await page.wait_for_timeout(250)
+            st = await shadow_state(page)
+            check(f"{T} click picks the element, comment box opens", st["box"] and tgt in (st["meta"] or ""), st)
+            await page.screenshot(path=SHOTS + f"ext-layer-{name.replace(' ', '-')}.png")
+            st, keys, it = await type_and_send(f"comment in {name}")
+            check(f"{T} typing lands in the box (no focus trap steal, page sees no keys)", st["text"] == f"comment in {name}" and not keys, (st["text"], keys))
+            els = it.get("elements") or []
+            check(f"{T} hub got the element selector", it.get("mode") == "element" and len(els) == 1 and els[0]["selector"] == "#" + tgt, [e["selector"] for e in els])
+            shots = it.get("screenshots") or []
+            shot_ok = len(shots) == 2
+            if shot_ok:
+                vp = next(s for s in shots if "viewport" in s); crop = next(s for s in shots if "selection" in s)
+                e = els[0]["rect"]; ox, oy = min(24, e["x"]), min(24, e["y"])
+                c1, c2 = px(vp, e["x"] + e["width"] / 2, e["y"] + e["height"] / 2), px(crop, ox + e["width"] / 2, oy + e["height"] / 2)
+                shot_ok = near(c1, color) and near(c2, color)
+                if not shot_ok: shots = (shots, c1, c2)
+            check(f"{T} screenshots (viewport + crop) show the element, not our UI", shot_ok, shots)
+            check(f"{T} layer still open after the comment", await still_open(), await page.evaluate("closes"))
+            # region selection inside the layer
+            await toggle(); await page.wait_for_timeout(300)
+            a, s2 = await rect(tgt), await rect(sec)
+            await drag(min(a[0], s2[0]) - 6, a[1] - 6, max(a[0] + a[2], s2[0] + s2[2]) + 6, s2[1] + s2[3] + 6)
+            st = await shadow_state(page)
+            check(f"{T} drag draws a region and opens the box", st["region"] == 1 and st["box"] and "区域" in (st["meta"] or ""), st)
+            st, keys, it = await type_and_send(f"region in {name}")
+            sels = [e["selector"] for e in it.get("elements") or []]
+            check(f"{T} region payload: both elements, nothing behind the layer, none of our UI",
+                  it.get("mode") == "region" and set(sels) == {"#" + tgt, "#" + sec} and not any("qa-agent-root" in e["html"] for e in it["elements"]) and len(it.get("screenshots") or []) == 2, sels)
+            check(f"{T} layer still open after the region comment", await still_open(), await page.evaluate("closes"))
+            # outside / backdrop click while picking picks something, but closes nothing
+            await toggle(); await page.wait_for_timeout(300)
+            await page.mouse.click(6, 300); await page.wait_for_timeout(250)
+            st = await shadow_state(page)
+            check(f"{T} backdrop / outside click picks, layer stays open", st["box"] and await still_open(), (st, await page.evaluate("closes")))
+            if esc_ok:
+                await page.keyboard.press("Escape"); await page.wait_for_timeout(100)  # closes the box
+                await page.mouse.click(cx, cy); await page.wait_for_timeout(200)
+                await page.keyboard.press("Escape"); await page.wait_for_timeout(100)  # box
+                st = await shadow_state(page)
+                check(f"{T} Esc closes our box, not the layer", not st["box"] and st["bar"] and await still_open(), (st, await page.evaluate("closes")))
+                await page.keyboard.press("Escape"); await page.wait_for_timeout(200)  # picker off
+                st = await shadow_state(page); hi = await host_info()
+                check(f"{T} Esc exits the picker, not the layer", not st["bar"] and await still_open(), (st, await page.evaluate("closes")))
+                check(f"{T} picker off: host back on <html>, out of the top layer", hi["parent"] == "html" and not hi["top"], hi)
+            else:
+                await toggle(); await page.wait_for_timeout(200)
+                check(f"{T} picker off, layer still open", await still_open(), await page.evaluate("closes"))
+            if name == "fullscreen": await page.evaluate("document.exitFullscreen()")
+
+        # layers that open / close while the picker is on
+        await page.goto(LAYERS); await page.wait_for_timeout(500)
+        await toggle(); await page.wait_for_timeout(300)
+        await page.evaluate("$('dlg').showModal()"); await page.wait_for_timeout(300)
+        st = await shadow_state(page); hi = await host_info()
+        check("[layer:late] dialog opened while picking: toolbar moves on top", await bar_on_top(st) and hi["parent"] == "dlg" and hi["top"], hi)
+        await page.evaluate("$('dlg2').showModal()"); await page.wait_for_timeout(300)
+        hi = await host_info(); check("[layer:late] nested dialog: host follows into it", hi["parent"] == "dlg2" and hi["top"], hi)
+        await page.evaluate("$('dlg2').close()"); await page.wait_for_timeout(300)
+        hi = await host_info(); check("[layer:late] nested dialog closed: host back in the outer dialog", hi["parent"] == "dlg" and hi["top"], hi)
+        await page.evaluate("closes.length = 0")
+        r = await rect("dlg-a"); await page.mouse.click(r[0] + r[2] / 2, r[1] + r[3] / 2); await page.wait_for_timeout(250)
+        st, keys, it = await type_and_send("late dialog")
+        check("[layer:late] pick + comment in the outer dialog", (it.get("elements") or [{}])[0].get("selector") == "#dlg-a" and await page.evaluate("$('dlg').open && closes.length === 0"), it.get("elements"))
+        await toggle(); await page.wait_for_timeout(200)
+        await page.evaluate("$('dlg').remove()"); await page.wait_for_timeout(300)  # the app unmounts the dialog with our host in it
+        st = await shadow_state(page); hi = await host_info()
+        check("[layer:late] dialog removed from the DOM: host survives on <html>", st and st["bar"] and hi["parent"] == "html" and await bar_on_top(st), (st, hi))
+        await page.keyboard.press("Escape")
 
         # ---------------------------------------------------------------- popup
         await page.set_viewport_size({"width": 1280, "height": 800})

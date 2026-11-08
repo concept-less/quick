@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { hostname, platform } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { loadConfig, matchProject, paths, REPO_ROOT, saveConfigPatch } from "../shared/config.ts";
+import { intakeRetentionMs, loadConfig, matchProject, paths, REPO_ROOT, saveConfigPatch } from "../shared/config.ts";
 import { applyResourceEdits, candidateMachines, detectResources, mergeResources, normalizeRequires, pickMachineForCwd, ScheduleError } from "../shared/schedule.ts";
 import type { Project } from "../shared/projects.ts";
 import {
@@ -23,20 +23,23 @@ import {
 } from "../shared/types.ts";
 import { dashboardHtml } from "./dashboard.ts";
 import { Mesh } from "./mesh.ts";
-import { pageKey } from "./page-url.ts";
 import { activeRoot, compareVersions, readJob, readState, readVersion, runUpgrade, spawnReload, type Step, updateStatus, type UpgradeResult, writeJob } from "../shared/update.ts";
 import { createHandoff } from "./handoff.ts";
 import { createTeam } from "./team.ts";
 import { AGENT, can, personalAttention, teamRow, type Viewer } from "../shared/team.ts";
 import { createCron } from "./cron.ts";
 import { createAttention, keyOf } from "./attention.ts";
-import { attentionOf } from "../shared/attention.ts";
 import { createProjects } from "./projects.ts";
 import { createLifecycle, runAgentReview } from "./lifecycle.ts";
 import { createIntegrationLocks } from "./integration-locks.ts";
 import { normalizeRemote } from "../shared/projects.ts";
 import { lifecycleGit } from "./git-lifecycle.ts";
 import { CRITICAL_RISK } from "../shared/lifecycle.ts";
+import { applyActivity, applyProgress, finishProgress, restartProgress } from "../shared/progress.ts";
+import { readTranscript } from "../shared/transcript.ts";
+import { createWatchdog } from "./watchdog.ts";
+import { EXPECT_SOURCE_LABEL, fmtMinutes } from "../shared/watchdog.ts";
+import { checkModelSpec, listPiModels, type PiModel } from "../shared/worker-model.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -91,6 +94,7 @@ function loadAll() {
 			t.rev ??= 0;
 			if (t.machine === SELF) {
 				handoff.recoverOnLoad(t);
+				watchdog.onLoad(t);
 				tasks.set(t.id, t);
 			}
 		} catch {}
@@ -101,8 +105,8 @@ function loadAll() {
 			i.machine ??= SELF;
 			i.rev ??= 0;
 			if (i.machine !== SELF) continue; // local copies of remote intakes (screenshots) are not authoritative
-			// Claims do not survive a hub restart: let a front agent pick them up again.
-			if (i.status === "claimed") i.status = "pending";
+			// One-shot: a claimed comment was consumed by a front agent and is never delivered again.
+			if (i.status === "claimed") i.status = "consumed";
 			intakes.set(i.id, i);
 		} catch {}
 	}
@@ -202,7 +206,7 @@ const mesh = new Mesh({
 		const recent = (o: { updatedAt?: number; createdAt: number }) => Date.now() - (o.updatedAt ?? o.createdAt) < 14 * 86400_000;
 		return [
 			...[...tasks.values(), ...mirrorTasks.values()].filter(recent).map((task) => ({ kind: "task", data: { task } })),
-			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => recent(i)).map((intake) => ({ kind: "intake", data: { intake } })),
+			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => !intakeExpired(i)).map((intake) => ({ kind: "intake", data: { intake } })),
 			...team.snapshot(),
 			...cron.snapshot(),
 			...projects.snapshot(),
@@ -232,6 +236,7 @@ const mesh = new Mesh({
 			if (!i || i.machine === SELF) return false;
 			const cur = mirrorIntakes.get(i.id);
 			if (cur && cur.machine === i.machine && cur.rev >= i.rev) return false;
+			if (intakeExpired(i)) return false;
 			mirrorIntakes.set(i.id, i);
 			broadcast({ type: "intake", intake: i });
 			return true;
@@ -300,12 +305,18 @@ function recordEvent(t: Task, ev: Omit<TaskEvent, "ts" | "taskId">) {
 
 function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "taskId">) {
 	const prev = t.status;
+	watchdog?.beforeUpdate(t, patch, ev);
 	Object.assign(t, patch, { updatedAt: Date.now(), rev: (t.rev ?? 0) + 1 });
 	if (patch.status && patch.status !== prev) {
 		t.statusSince = t.updatedAt;
 		// A new status is new attention: an old snooze no longer applies.
 		t.snoozedUntil = t.snoozedAt = undefined;
 		if (!patch.ask) t.ask = undefined;
+	}
+	if (patch.status && patch.status !== prev && !("progress" in patch)) {
+		// Progress follows the run: a finished plan is complete; a new run after done/cancel starts a fresh one.
+		if (patch.status === "done") t.progress = finishProgress(t.progress, t.updatedAt);
+		else if (ACTIVE_STATUSES.includes(patch.status) && (prev === "done" || prev === "cancelled") && t.progress) t.progress = restartProgress(t.updatedAt);
 	}
 	if (patch.status && patch.status !== prev && ATTENTION_STATUSES.includes(patch.status)) t.unread = true;
 	if (patch.status && ACTIVE_STATUSES.includes(patch.status)) {
@@ -319,6 +330,51 @@ function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "task
 	broadcast({ type: "task", task: t, event: full });
 	mesh.flood("task", { task: t, event: full });
 	return t;
+}
+
+const INTAKE_RETENTION_MS = intakeRetentionMs(cfg);
+/** Consumed comments are only kept for a short while (debugging); pending ones until a front agent claims them. */
+function intakeExpired(i: Intake, now = Date.now()) {
+	if (i.status === "pending") return false;
+	return now - (i.consumedAt ?? i.createdAt) > INTAKE_RETENTION_MS;
+}
+/** Before deleting an intake directory: copy files that local tasks still reference into those tasks. */
+function rescueIntakeFiles(dir: string) {
+	const prefix = `${resolve(dir)}/`;
+	for (const t of tasks.values()) {
+		const refs = t.attachments.filter((a) => resolve(a).startsWith(prefix) && existsSync(a));
+		if (!refs.length) continue;
+		const moved = writeFiles(join(taskDir(t.id), "attachments", basename(dir)), readFiles(refs));
+		t.attachments = t.attachments.map((a) => moved.get(a) ?? a);
+		for (const [from, to] of moved) t.brief = t.brief.split(from).join(to);
+		saveTask(t);
+	}
+}
+function pruneIntakes() {
+	const now = Date.now();
+	for (const i of [...intakes.values()]) {
+		if (!intakeExpired(i, now)) continue;
+		intakes.delete(i.id);
+		const dir = join(paths.intake, i.id);
+		try {
+			rescueIntakeFiles(dir);
+			rmSync(dir, { recursive: true, force: true });
+		} catch (e) {
+			log(`[intake] prune ${i.id} failed: ${(e as Error).message}`);
+		}
+	}
+	for (const i of [...mirrorIntakes.values()]) if (intakeExpired(i, now)) mirrorIntakes.delete(i.id);
+	// Local copies of remote intakes (screenshots fetched on claim) and leftovers without an owner here.
+	for (const id of safeReaddir(paths.intake)) {
+		if (intakes.has(id)) continue;
+		const dir = join(paths.intake, id);
+		try {
+			if (now - statSync(dir).mtimeMs <= INTAKE_RETENTION_MS) continue;
+			if (mirrorIntakes.get(id)?.status === "pending") continue;
+			rescueIntakeFiles(dir);
+			rmSync(dir, { recursive: true, force: true });
+		} catch {}
+	}
 }
 
 function updateIntake(i: Intake, patch: Partial<Intake>) {
@@ -432,6 +488,21 @@ function readFiles(list: string[]): FileBlob[] {
 	return out;
 }
 
+const inIntakeDir = (f: string) => resolve(f).startsWith(`${resolve(paths.intake)}/`);
+
+/** Message to an existing task with files (screenshots of a browser comment): store them with the task, rewrite paths. */
+function adoptFiles(t: Task, text: string, files: FileBlob[] | undefined, intakeId?: string): string {
+	if (!files?.length) return text;
+	const sub = String(intakeId ?? `m${t.messages + 1}`).replace(/[^\w-]/g, "_");
+	const moved = writeFiles(join(taskDir(t.id), "attachments", sub), files);
+	for (const [from, to] of moved) {
+		text = text.split(from).join(to);
+		if (!t.attachments.includes(to)) t.attachments.push(to);
+	}
+	saveTask(t);
+	return text;
+}
+
 /** Write transferred files into dir; returns original path → new path. */
 function writeFiles(dir: string, files: FileBlob[] | undefined): Map<string, string> {
 	const map = new Map<string, string>();
@@ -482,6 +553,7 @@ async function createTaskLocal(body: any): Promise<Task> {
 		owner: typeof body.owner === "string" ? body.owner : undefined,
 		...team.newTaskPeople(body),
 	};
+	watchdog.onCreate(t, body);
 	try {
 		Object.assign(t, projects.classifyOwn(t, explicitProject));
 	} catch (e) {
@@ -504,6 +576,7 @@ async function createTaskLocal(body: any): Promise<Task> {
 		t.lifecycle ? `- Git 策略: ${t.lifecycle.policy.template} / ${t.lifecycle.policy.workspace} / ${t.lifecycle.policy.review}：${t.lifecycle.policy.reason}\n- 请只在指定 cwd 开发并提交本任务改动；不要自行合并/push/删除 worktree。qa_report done 表示交回 hub 审查与集成，不是最终完成。范围扩大必须 qa_scope 升级。` : "",
 		t.project ? `- 项目: ${projects.get(t.project)?.name ?? t.project}` : "",
 		`- 来源: ${t.source.kind}${t.source.url ? ` (${t.source.url})` : ""}`,
+		t.expect ? `- 预期用时: ${fmtMinutes(t.expect.minutes)}（${EXPECT_SOURCE_LABEL[t.expect.source]}；可以用 qa_expect 带理由修正一次）` : "",
 		attachments.length ? `- 附件:\n${attachments.map((a) => `  - ${a}`).join("\n")}` : "",
 		...team.briefLines(t),
 		"",
@@ -551,9 +624,11 @@ function recordFailedTask(body: any, reason: string): Task {
 	return update(t, {}, { kind: "status", status: "failed", text: reason });
 }
 
-async function deliverMessage(t: Task, text: string) {
+async function deliverMessage(t: Task, text: string, opts?: { watchdog?: boolean }) {
 	if (t.lifecycle?.workspace && !["developing","changes_requested"].includes(t.lifecycle.phase)) throw new HttpError(409,"任务处于 Git 审查/批准/集成/阻塞阶段，不可通过评论/消息启动 worker");
 	if (handoff.interceptMessage(t, text)) return;
+	// A human message answers an open watchdog escalation (with its context) and resets the correction count.
+	if (!opts?.watchdog) text = watchdog.onHumanMessage(t, text);
 	if (t.pendingNote) {
 		text = `${t.pendingNote}\n\n---\n${text}`;
 		t.pendingNote = undefined;
@@ -614,10 +689,101 @@ function configureMachine(p: any, from: string): MachineInfo {
 	return machineInfo();
 }
 
+// ---------------------------------------------------------------- worker default model (config.json workerModel)
+
+const MODEL_LIST_TTL_MS = 60_000;
+/** Last successful `pi --list-models` of this machine (kept when a later listing fails). */
+let modelList: { at: number; models: PiModel[]; warnings: string[] } | undefined;
+/** Error of the most recent listing attempt (cleared by the next success). */
+let modelListError: { at: number; message: string } | undefined;
+let modelListing: Promise<PiModel[]> | undefined;
+/** Models of this machine's pi (cached for a minute; `refresh` forces a new `pi --list-models`). Rejects when the listing fails. */
+async function piModels(refresh = false): Promise<PiModel[]> {
+	if (!refresh && modelList && !modelListError && Date.now() - modelList.at < MODEL_LIST_TTL_MS) return modelList.models;
+	modelListing ??= listPiModels().then(
+		(r) => {
+			modelList = { at: Date.now(), models: r.models, warnings: r.warnings };
+			modelListError = undefined;
+			return r.models;
+		},
+		(e) => {
+			modelListError = { at: Date.now(), message: (e as Error).message };
+			throw e;
+		},
+	).finally(() => (modelListing = undefined));
+	return modelListing;
+}
+
+/** Current worker model of this machine: raw setting, inherited value, effective model and the model list. */
+async function workerModelInfo(refresh = false) {
+	let models: PiModel[] = [];
+	let listError: string | undefined;
+	let stale = false;
+	try {
+		models = await piModels(refresh);
+	} catch (e) {
+		listError = (e as Error).message;
+		// Keep showing the last good list, marked as stale, instead of an empty picker.
+		if (modelList) {
+			models = modelList.models;
+			stale = true;
+		}
+	}
+	const effective = cfg.workerModel ?? cfg.model;
+	const known = (spec: string) => checkModelSpec(spec, models).ok;
+	return {
+		machine: SELF,
+		workerModel: cfg.workerModel ?? null,
+		model: cfg.model,
+		frontModel: cfg.frontModel ?? null,
+		effective,
+		source: cfg.workerModel ? "workerModel" : "model",
+		/** Does the effective model exist in this machine's pi? (undefined when the list failed) */
+		effectiveKnown: listError ? undefined : known(effective),
+		models: models.map((m) => ({ provider: m.provider, id: m.id, thinking: m.thinking, context: m.context, maxOut: m.maxOut, images: m.images })),
+		listError,
+		/** models is the last successful list (listedAt), not a fresh one. */
+		stale,
+		listWarnings: modelList?.warnings.length ? modelList.warnings : undefined,
+		listedAt: modelList?.at,
+	};
+}
+
+/** Set (string) or clear (null / "") this machine's worker default model; validated, persisted, live for new workers. */
+async function setWorkerModel(spec: unknown, from: string) {
+	let value: string | undefined;
+	if (spec !== null && spec !== undefined && spec !== "") {
+		let models: PiModel[];
+		try {
+			models = await piModels(true);
+		} catch (e) {
+			throw new HttpError(502, `${SELF}: 无法校验模型，未保存：${(e as Error).message}`);
+		}
+		const r = checkModelSpec(spec, models);
+		if (!r.ok) throw new HttpError(400, `${SELF}: ${r.error}，未保存`);
+		value = r.model;
+	}
+	saveConfigPatch((raw) => {
+		if (value) raw.workerModel = value;
+		else delete raw.workerModel;
+	});
+	const saved = loadConfig().workerModel;
+	if (saved !== value) throw new HttpError(500, `${SELF}: 写入 config.json 后读回的是 ${saved ?? "(未设置)"}，与 ${value ?? "(未设置)"} 不一致`);
+	const before = cfg.workerModel;
+	cfg.workerModel = value;
+	log(`[worker-model] ${before ?? "(inherit)"} -> ${value ?? `(inherit ${cfg.model})`} by ${from}`);
+	const info = await workerModelInfo();
+	broadcast({ type: "workerModel", info: { ...info, models: undefined } });
+	return info;
+}
+
 const integrationLocks = createIntegrationLocks(join(paths.home,"integration-locks"));
 const methods: Record<string, (p: any, from: string) => Promise<any>> = {
+	"workerModel.info": async (p) => workerModelInfo(!!p.refresh),
+	"workerModel.set": async (p, from) => setWorkerModel(p.model, from),
 	"integration.acquire": async (p, from) => integrationLocks.acquire(String(p.key ?? ""),`${from}/${String(p.taskId ?? "")}`),
 	"integration.release": async (p, from) => { await integrationLocks.release(String(p.key ?? ""),`${from}/${String(p.taskId ?? "")}`); return true; },
+
 	"machine.info": async () => machineInfo(),
 	"machine.configure": async (p, from) => configureMachine(p, from),
 
@@ -642,6 +808,14 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	},
 
 	"task.create": async (p) => createTaskLocal(p),
+	"task.attachment": async (p) => {
+		const t = ownTask(p.id);
+		const f = t.attachments[Number(p.n) || 0];
+		if (!f || !existsSync(f) || !statSync(f).isFile()) throw new HttpError(404, "no such attachment");
+		const [blob] = readFiles([f]);
+		if (!blob) throw new HttpError(404, "no such attachment");
+		return blob;
+	},
 	"task.get": async (p) => ({ task: ownTask(p.id), events: readEvents(p.id, Math.min(Number(p.events ?? 30) || 30, 500)), comments: team.readComments(p.id, Math.min(Number(p.comments ?? 50) || 50, 500)) }),
 	"task.message": async (p) => {
 		const t = ownTask(p.id);
@@ -662,7 +836,7 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		if (t.lifecycle && !["developing", "changes_requested", "complete"].includes(t.lifecycle.phase)) throw new HttpError(409, "任务正在审查/集成或等待关键批准；请用批准/要求修改操作，不要直接继续 worker");
 		const touched = team.touched(t, p.viewer?.user);
 		if (touched.pings !== t.pings) Object.assign(t, touched);
-		await deliverMessage(t, text);
+		await deliverMessage(t, adoptFiles(t, text, p.files, p.intakeId));
 		return t;
 	},
 	"task.cancel": async (p) => {
@@ -688,7 +862,7 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		// (and settles it in the attention model: archived, snooze cleared).
 		const t = ownTask(p.id);
 		const r = team.ack(t, p.viewer);
-		const settle = r.holder ? { unread: false, ackedAt: Date.now(), snoozedUntil: undefined, snoozedAt: undefined } : {};
+		const settle = r.holder ? { unread: false, ackedAt: Date.now(), snoozedUntil: undefined, snoozedAt: undefined, ...watchdog.onAck(t) } : {};
 		return update(t, { ...r.patch, ...settle }, { kind: "ack", ...(p.viewer?.user ? { by: p.viewer.user } : {}) });
 	},
 	// 稍后提醒: minutes > 0 hides the task from need/skim until then; 0 / null brings it back now.
@@ -716,6 +890,11 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		if (!p.viewer?.root && p.viewer?.user !== (t.reviewer ?? t.requester)) throw new HttpError(403, "仅任务验收人/请求人可要求修改");
 		return lifecycle.requestChanges(t, String(p.text ?? "请修复审查问题"));
 	},
+	"task.transcript": async (p) => {
+		const t = ownTask(p.id);
+		const num = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+		return { ...readTranscript(t.sessionFile, { after: num(p.after), before: num(p.before), limit: num(p.limit), full: num(p.full) }), status: t.status, machine: t.machine };
+	},
 	"task.project": async (p) => projects.move(ownTask(p.id), p.project),
 	"task.screen": async (p) => {
 		const t = ownTask(p.id);
@@ -732,14 +911,20 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		const i = intakes.get(p.id);
 		if (!i) throw new HttpError(404, `no such intake on ${SELF}: ${p.id}`);
 		if (i.status !== "pending") throw new HttpError(409, `intake already ${i.status}`);
-		updateIntake(i, { status: "claimed", claimedBy: String(p.by ?? "front") });
+		// Delivered and claimed = consumed: it is never handed to a front agent again.
+		updateIntake(i, { status: "consumed", consumedAt: Date.now(), claimedBy: String(p.by ?? "front") });
 		return { intake: i, files: p.withFiles ? readFiles(i.screenshots) : [] };
 	},
 	"intake.update": async (p) => {
 		const i = intakes.get(p.id);
 		if (!i) throw new HttpError(404, `no such intake on ${SELF}: ${p.id}`);
 		const patch: Partial<Intake> = {};
-		if (p.status) patch.status = p.status;
+		if (p.status) {
+			if (!["consumed", "dispatched", "dismissed"].includes(p.status)) throw new HttpError(400, `invalid intake status: ${p.status}`);
+			patch.status = p.status;
+			// A consumed comment never goes back to pending (it would be delivered again).
+			if (i.status === "pending") patch.consumedAt = Date.now();
+		}
 		if (p.taskId) patch.taskId = p.taskId;
 		return updateIntake(i, patch);
 	},
@@ -864,6 +1049,17 @@ const cron = createCron({
 	httpError: (status, msg) => new HttpError(status, msg),
 });
 Object.assign(methods, cron.methods);
+const watchdog = createWatchdog({
+	tasks,
+	config: () => cfg.watchdog,
+	defaultModel: () => cfg.workerModel ?? cfg.model,
+	taskDir,
+	update,
+	deliverMessage: (t, text, opts) => deliverMessage(t, text, opts),
+	log,
+	httpError: (status, msg) => new HttpError(status, msg),
+});
+Object.assign(methods, watchdog.methods);
 
 // ---------------------------------------------------------------- global (mesh-wide) views
 
@@ -935,7 +1131,13 @@ async function apiCreateTask(body: any): Promise<Task> {
 		const dir = projectDir(projects.find(String(body.project)), machine);
 		if (dir) params.cwd = dir;
 	}
-	if (machine !== SELF && Array.isArray(body.attachments) && body.attachments.length) params.files = readFiles(body.attachments.map(String));
+	if (Array.isArray(body.attachments) && body.attachments.length) {
+		// Remote machine: ship every attachment. Here: copy browser-comment screenshots into the task,
+		// the intake directory itself is pruned after the retention period.
+		const list = body.attachments.map(String);
+		const files = machine !== SELF ? list : list.filter(inIntakeDir);
+		if (files.length) params.files = readFiles(files);
+	}
 	const task = await call<Task>(machine, "task.create", params);
 	if (task.machine !== SELF) mirrorTasks.set(task.id, task);
 	// Mark the originating browser comment as dispatched (on whichever machine owns it).
@@ -1367,6 +1569,43 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		if (!mesh.reachable(machine)) throw new HttpError(400, `machine ${machine} is not reachable`);
 		return send(res, 200, { ...(await call(machine, "update.start", { action: body.action }, 20_000)), machine, self: machine === SELF });
 	}
+	if (p === "/api/worker-model" && m === "GET") {
+		// Worker default model of this / another / every machine (Web UI settings, `quick worker-model`).
+		const refresh = url.searchParams.get("refresh") === "1";
+		const one = (id: string) =>
+			call(id, "workerModel.info", { refresh }, 60_000)
+				.then((r) => ({ ...r, machine: id, self: id === SELF }))
+				.catch((e) => ({ machine: id, self: id === SELF, error: /unknown method/.test(e.message) ? "对方 hub 版本过旧，不支持远程设置 worker 模型（需先升级那台机器）" : e.message }));
+		if (url.searchParams.get("all") === "1") {
+			const list = mesh.machines().filter((x) => x.online || x.self);
+			return send(res, 200, { self: SELF, canEdit: can(viewer, "machine.configure"), machines: await Promise.all(list.map((x) => one(x.id))) });
+		}
+		const machine = url.searchParams.get("machine") || SELF;
+		if (!mesh.reachable(machine)) throw new HttpError(400, `machine ${machine} is not reachable (see /api/machines)`);
+		return send(res, 200, { ...(await one(machine)), canEdit: can(viewer, "machine.configure") });
+	}
+	if (p === "/api/worker-model" && m === "POST") {
+		// body: { model: "provider/id[:thinking]" | null, machine?: id, machines?: id[] | "all" }. Each machine validates against its own pi.
+		need(viewer, "machine.configure");
+		const body = await readJson(req);
+		if (!("model" in body)) throw new HttpError(400, "body.model is required (null clears the setting)");
+		const targets: string[] = body.machines === "all" ? mesh.machines().filter((x) => x.online || x.self).map((x) => x.id) : Array.isArray(body.machines) ? body.machines.map(String) : [String(body.machine || SELF)];
+		if (!targets.length) throw new HttpError(400, "no target machine");
+		const results = await Promise.all(
+			targets.map(async (id) => {
+				if (!mesh.reachable(id)) return { machine: id, ok: false, error: `machine ${id} is not reachable` };
+				try {
+					return { machine: id, ok: true, info: await call(id, "workerModel.set", { model: body.model ?? null }, 60_000) };
+				} catch (e) {
+					const msg = (e as Error).message;
+					return { machine: id, ok: false, status: (e as any).status, error: /unknown method/.test(msg) ? `${id}: 对方 hub 版本过旧，不支持远程设置 worker 模型` : msg };
+				}
+			}),
+		);
+		const failed = results.filter((r) => !r.ok);
+		const status = !failed.length ? 200 : failed.length === results.length ? ((failed.length === 1 && (failed[0] as any).status) || 400) : 207;
+		return send(res, status, { ok: !failed.length, results, ...(failed.length ? { error: failed.map((r) => r.error).join("；") } : {}) });
+	}
 	if (p === "/api/machines" && m === "GET") return send(res, 200, { self: SELF, machines: mesh.machines(), links: mesh.linkStatus() });
 	if (p === "/api/machine" && m === "POST") {
 		// Configure resources/priority of this or another machine (`quick machine set`).
@@ -1389,6 +1628,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 	if (p === "/api/projects" && m === "GET") return send(res, 200, { self: SELF, projects: projects.list() });
 	if (p === "/api/projects" && m === "POST") return send(res, 200, { project: projects.create(await readJson(req)) });
+	if (p === "/api/projects/order" && m === "POST") return send(res, 200, { projects: projects.reorder((await readJson(req)).ids) });
 	if (p === "/api/projects/backfill" && m === "POST") return send(res, 200, projects.backfill(!!(await readJson(req)).all));
 	const mp = /^\/api\/projects\/([^/]+)\/(rename|merge|rules)$/.exec(p);
 	if (mp && m === "POST") {
@@ -1468,14 +1708,36 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 				return send(res, 200, { task: update(t, { activity: "pi 已退出" }) });
 			}
 			if (typeof body.summary === "string") patch.summary = body.summary;
-			if (typeof body.activity === "string") patch.activity = body.activity;
+			if (typeof body.activity === "string") {
+				patch.activity = body.activity;
+				// Raw tool line → plain words + milestones (also covers older workers that never send a plan).
+				if (body.kind === "activity") patch.progress = applyActivity(t.progress, body.activity);
+			}
 			if (typeof body.sessionFile === "string") patch.sessionFile = body.sessionFile;
+			let progressNote: string | undefined;
+			if (body.progress && typeof body.progress === "object") {
+				const r = applyProgress(patch.progress ?? t.progress, body.progress);
+				patch.progress = r.progress;
+				const planned = Array.isArray(body.progress.plan) && r.progress.steps?.length;
+				progressNote = planned ? `计划：${r.progress.steps!.map((x) => x.title).join(" / ")}` : r.milestones.length ? r.milestones.join("；") : undefined;
+			}
+			// Worker revises its expectation once, with a reason (qa_expect).
+			if (body.expect) {
+				Object.assign(patch, watchdog.workerExpect(t, body.expect));
+				return send(res, 200, { task: update(t, patch, { kind: "expect", text: `worker 修正预期为 ${fmtMinutes(patch.expect!.minutes)}：${patch.expect!.reason}` }) });
+			}
 			// Explicit attention request from the worker: a human decision is required.
 			if (body.needsHuman) {
 				const question = String(body.question ?? body.summary ?? "").trim();
 				const options = Array.isArray(body.options) ? body.options.map(String).filter(Boolean).slice(0, 8) : undefined;
 				patch.ask = { question, options: options?.length ? options : undefined, at: Date.now() };
 				if (!patch.status || ACTIVE_STATUSES.includes(patch.status)) patch.status = "needs_input";
+			}
+			// First progress of this run: elapsed time counts from when the run started, not from the first report.
+			if (patch.progress && !t.progress) patch.progress = { ...patch.progress, startedAt: ACTIVE_STATUSES.includes(t.status) ? (t.statusSince ?? t.createdAt) : patch.progress.startedAt };
+			if (body.kind === "progress") {
+				// Progress never interrupts: keep the event log to plan changes and finished steps.
+				return send(res, 200, { task: update(t, patch, progressNote ? { kind: "progress", text: progressNote } : undefined) });
 			}
 			const kind = body.kind ?? (body.status ? "status" : body.summary ? "report" : "activity");
 			const text = body.summary ?? body.activity ?? body.sessionFile;
@@ -1484,7 +1746,26 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		}
 		const owner = findTask(id).machine;
 		if (action === "screen" && m === "GET") return send(res, 200, await call(owner, "task.screen", { id }));
+		if (action === "attachment" && m === "GET") {
+			const f = await call<FileBlob>(owner, "task.attachment", { id, n: Number(url.searchParams.get("n") ?? 0) });
+			const ext = f.name.toLowerCase().split(".").pop() ?? "";
+			res.writeHead(200, { "content-type": ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" } as Record<string, string>)[ext] ?? "application/octet-stream" });
+			return res.end(Buffer.from(f.data, "base64"));
+		}
 		if (!action && m === "GET") return send(res, 200, await call(owner, "task.get", { id, events: url.searchParams.get("events") ?? 30, comments: url.searchParams.get("comments") ?? 50 }));
+		if (action === "transcript" && m === "GET") {
+			const q: Record<string, string> = {};
+			for (const k of ["after", "before", "limit", "full"]) {
+				const v = url.searchParams.get(k);
+				if (v !== null) q[k] = v;
+			}
+			try {
+				return send(res, 200, await call(owner, "task.transcript", { id, ...q }));
+			} catch (e) {
+				if (/unknown method/.test((e as Error).message)) throw new HttpError(501, `${owner} 上的 hub 版本较旧，还不能提供工作记录（升级后可用）`);
+				throw e;
+			}
+		}
 		if (action === "comments" && m === "GET") return send(res, 200, await call(owner, "task.comments", { id, limit: url.searchParams.get("limit") ?? 100 }));
 		if (m !== "POST") throw new HttpError(405, "method not allowed");
 		const body = await readJson(req);
@@ -1495,7 +1776,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			if (r.task.machine !== SELF) mirrorTasks.set(r.task.id, r.task);
 			return send(res, 200, r);
 		}
-		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign", "approve", "changes"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign", "watch", "approve", "changes"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		if (action === "message" && body.intakeId) {
+			// A browser comment appended to an existing task: ship its screenshots, then link (consume) it.
+			const i = findIntake(String(body.intakeId));
+			const shots = i.screenshots.filter((f) => existsSync(f));
+			const files = shots.length ? readFiles(shots) : undefined;
+			const task = await call<Task>(owner, "task.message", { ...body, files, intakeId: i.id, id, viewer, by: viewer.user });
+			if (task.machine !== SELF) mirrorTasks.set(task.id, task);
+			await call(i.machine, "intake.update", { id: i.id, status: "dispatched", taskId: task.id }).catch((e) => log(`intake.update failed: ${e.message}`));
+			return send(res, 200, { task });
+		}
 		// Mesh RPC params are trusted: the owning hub learns who acts from here, never from the client body.
 		const task = await call<Task>(owner, `task.${action}`, { ...body, id, viewer, by: viewer.user });
 		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
@@ -1554,20 +1845,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return send(res, 200, { intake: await call(i.machine, "intake.update", { id, status: body.status, taskId: body.taskId }) });
 	}
 
-	// Browser badges: comments on a page (from any machine) and the status of their tasks.
-	if (p === "/api/pages" && m === "GET") {
-		const pageUrl = url.searchParams.get("url") ?? "";
-		const key = pageKey(pageUrl);
-		const list = allIntakes()
-			.filter((i) => i.url && pageKey(i.url) === key)
-			.sort((a, b) => a.createdAt - b.createdAt)
-			.map((i) => {
-				const t = i.taskId ? (tasks.get(i.taskId) ?? mirrorTasks.get(i.taskId)) : undefined;
-				const a = t ? attentionOf(t) : undefined;
-				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, mode: i.mode, anchor: i.anchor, viewport: i.viewport, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine, attention: a && { level: a.level, mark: a.mark, reason: a.reason } };
-			});
-		return send(res, 200, { comments: list });
-	}
+	// Browser comments are one-shot: pages show no marks for sent comments. Kept (always empty) for older extensions.
+	if (p === "/api/pages" && m === "GET") return send(res, 200, { comments: [] });
 
 	throw new HttpError(404, "not found");
 }
@@ -1602,6 +1881,7 @@ server.listen(cfg.port, cfg.host, () => {
 	log(`[quick-agent hub] web ui: run \`quick ui\` → http://127.0.0.1:${cfg.uiPort}/`);
 	mesh.start();
 	cron.start();
+	watchdog.start();
 	// Background release check: never blocks startup, cached for update.cacheMinutes, silent on failure.
 	setTimeout(backgroundUpdate, 10_000).unref();
 	rmSync(paths.restarting, { force: true });
@@ -1619,6 +1899,8 @@ setInterval(() => {
 		else if (t.lifecycle.phase === "quiescing") void liveWindows().then(live => { if (!live.has(t.id)) void lifecycle.drive(t); });
 	}
 }, 10_000).unref();
+pruneIntakes();
+setInterval(pruneIntakes, Math.min(3600_000, Math.max(60_000, INTAKE_RETENTION_MS / 4))).unref();
 setInterval(() => void reconcile().catch(() => {}), 5000);
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
 	process.on(sig, () => {

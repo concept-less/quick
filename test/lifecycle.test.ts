@@ -23,10 +23,10 @@ export async function fixture(t:any, verdicts:ReviewResult[]=[{verdict:"approve"
  await git(repo,"add","page.txt","other.txt");await git(repo,"commit","-m","base");await git(repo,"remote","add","origin",remote);await git(repo,"push","-u","origin","main");
  const tasks=new Map<string,Task>();const resumes:string[]=[];let reviews=0;let active=false;
  const config={cwd:repo,test:[process.execPath,"-e","process.exit(0)"]};
- const ctl=createLifecycle({tasks,configs:()=>[config],worktreeRoot:join(root,"trees"),patch:(task,p)=>Object.assign(task,p),stop:async()=>{active=false;},workerActive:async()=>active,resume:async(_task,text)=>{resumes.push(text);active=true;},review:async()=>{reviews++;return verdicts.shift() ?? {verdict:"approve",summary:"通过"};}});
+ const deps={tasks,configs:()=>[config],worktreeRoot:join(root,"trees"),patch:(task,p)=>Object.assign(task,p),stop:async()=>{active=false;},workerActive:async()=>active,resume:async(_task,text)=>{resumes.push(text);active=true;},review:async()=>{reviews++;return verdicts.shift() ?? {verdict:"approve" as const,summary:"通过"};}}; const ctl=createLifecycle(deps);
  const task=(id="t1234",title="调整布局"):Task=> {const x:Task={id,title,brief:title,cwd:repo,machine:"test",rev:0,status:"starting",createdAt:Date.now(),updatedAt:Date.now(),source:{kind:"api"},attachments:[],unread:false,messages:0};tasks.set(id,x);return x;};
  const commit=async(task:Task,text="new style\n")=>{await writeFile(join(task.cwd,"page.txt"),text);await git(task.cwd,"add","page.txt");await git(task.cwd,"commit","-m","task change");return git(task.cwd,"rev-parse","HEAD");};
- return {root,repo,remote,tasks,ctl,task,commit,resumes,config,get reviews(){return reviews;}};
+ return {root,repo,remote,tasks,deps,ctl,task,commit,resumes,config,get reviews(){return reviews;}};
 }
 test("human gate attention routes to the authorized reviewer rather than developer",()=>{
  const task={status:"needs_input",requester:"requester",assignee:"developer",reviewer:"reviewer",lifecycle:{phase:"human_approval"}} as Task;
@@ -121,4 +121,52 @@ test("completed task follow-up allocates new iteration instead of removed cwd",a
 
 test("review snapshot ignores replacement refs",async t=>{
  const f=await fixture(t);const task=f.task();await f.ctl.prepare(task,{kind:"code"});const sha=await f.commit(task);await git(f.repo,"replace",sha,task.lifecycle!.workspace!.baseSha);await f.ctl.developed(task,"done");await f.ctl.drive(task);assert.equal(task.status,"done");assert.equal(f.reviews,1);assert.equal(await git(f.repo,"--no-replace-objects","show","HEAD:page.txt"),"new style");
+});
+
+test('lost coordinator acquire receipt recovers after cancellation/restart',async t=>{
+ const f=await fixture(t),locks=createIntegrationLocks(join(f.root,'locks')),task=f.task();
+ const identity={coordinator:'coord',key:'repo/main'};
+ const serverSource=await readFile(new URL('../hub/server.ts',import.meta.url),'utf8');
+ const body=serverSource.split('acquire: async t => {')[1].split('\n\t},')[0].replace('call<boolean>','call').replaceAll('t.lifecycle!','t.lifecycle');
+ const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+ const actualAcquire=new AsyncFunction('t','integrationIdentity','update','call',body);
+ f.deps.acquire=(x:any)=>actualAcquire(x,async()=>identity,(x:any,p:any)=>Object.assign(x,p),async(_coordinator:any,_method:any,p:any)=>{assert.equal(await locks.acquire(p.key,'machine/'+p.taskId),true);throw new Error('lost coordinator acquire RPC reply');});
+ f.deps.release=async(x:any)=>{await locks.release(identity.key,'machine/'+x.id);x.lifecycle.lease=undefined;};
+ await f.ctl.prepare(task,{kind:'code'});await f.commit(task);await f.ctl.developed(task,'done');await f.ctl.drive(task);
+ assert.equal(task.status,'blocked');assert.deepEqual(task.lifecycle!.lease,identity);
+ task.status='cancelled';const restarted=createLifecycle(f.deps);await restarted.recoverLease(task);
+ const next=await locks.acquire(identity.key,'machine/next');
+ console.log('REPRO lost lease:',JSON.stringify({status:task.status,phase:task.lifecycle!.phase,receipt:task.lifecycle!.lease??null,nextCanAcquire:next,error:task.lifecycle!.error}));
+ assert.equal(next,true);
+});
+test('PR retarget after ensure is rejected without merge',async t=>{
+ const f=await fixture(t),task=f.task();let pr:any;let merges=0;const protectionPaths:string[]=[];
+ const server=createServer(async(req,res)=>{
+  const url=new URL(req.url!,'http://127.0.0.1');let body='';for await(const c of req)body+=c;
+  const reply=(data:any,status=200)=>{res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(data));};
+  if(url.pathname.endsWith('required_status_checks')){protectionPaths.push(url.pathname);return reply({strict:true,contexts:['test'],checks:[]});}
+  if(url.pathname.endsWith('/pulls')&&req.method==='GET')return reply(pr?[pr]:[]);
+  if(url.pathname.endsWith('/pulls')&&req.method==='POST'){const input=JSON.parse(body);const sha=task.lifecycle!.head!;pr={number:1,html_url:'https://github.com/acme/test/pull/1',state:'open',merged:false,head:{sha,ref:input.head,label:'acme:'+input.head,repo:{full_name:'acme/test'}},base:{ref:'main',repo:{full_name:'acme/test'}},draft:false,mergeable:true,mergeable_state:'clean'};return reply(pr,201);}
+  if(url.pathname.endsWith('/pulls/1'))return reply(pr);
+  if(url.pathname.endsWith('/status'))return reply({sha:pr.head.sha,state:'success',total_count:1,statuses:[{context:'test',state:'success'}]});
+  if(url.pathname.endsWith('/check-runs'))return reply({total_count:0,check_runs:[]});
+  if(url.pathname.endsWith('/pulls/1/merge')){merges++;await git(f.remote,'update-ref','refs/heads/'+pr.base.ref,pr.head.sha);pr.merged=true;pr.state='closed';pr.merge_commit_sha=pr.head.sha;return reply({merged:true,sha:pr.head.sha});}
+  return reply({},404);
+ });
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise<void>(r=>{server.close(()=>r());server.closeAllConnections();}));
+ Object.assign(f.config,{integration:'pr',githubRepo:'acme/test',githubApi:`http://127.0.0.1:${(server.address() as any).port}`,baseBranch:'main'});
+ const base=await git(f.remote,'rev-parse','main');await git(f.remote,'update-ref','refs/heads/production',base);
+ await f.ctl.prepare(task,{kind:'code'});const sha=await f.commit(task);await f.ctl.developed(task,'done');await f.ctl.drive(task);assert.equal(task.lifecycle!.phase,'ci');
+ pr.base.ref='production';await f.ctl.drive(task);
+ const result={merges,protectionPaths,status:task.status,phase:task.lifecycle!.phase,error:task.lifecycle!.error,production:await git(f.remote,'rev-parse','production'),main:await git(f.remote,'rev-parse','main'),sha};
+ console.log('REPRO retarget:',JSON.stringify(result));assert.equal(merges,0);assert.equal(result.production,base);assert.equal(result.main,base);
+});
+test('successful tests leaving artifacts block done until explicit cleanup and successful retry',async t=>{
+ const f=await fixture(t),task=f.task(),marker=join(f.root,'test-cwd');
+ f.config.test=[process.execPath,'-e',`const f=require('fs');f.writeFileSync(${JSON.stringify(marker)},process.cwd());f.writeFileSync('coverage.json','{}');`];
+ await f.ctl.prepare(task,{kind:'code'});await f.commit(task);await f.ctl.developed(task,'done');await f.ctl.drive(task);
+ const cwd=await readFile(marker,'utf8');t.after(()=>rm(join(cwd,".."),{recursive:true,force:true}));
+ const trees=await git(f.repo,'worktree','list','--porcelain');
+ console.log('REPRO local cleanup:',JSON.stringify({status:task.status,phase:task.lifecycle!.phase,testWorktreeRetained:trees.includes(cwd),worktrees:trees}));
+ assert.equal(task.status,'blocked');assert.notEqual(await git(f.remote,'rev-parse','main'),task.lifecycle!.head);assert.ok(trees.includes(cwd));await access(join(cwd,'coverage.json'));await rm(join(cwd,'coverage.json'));f.config.test=[process.execPath,'-e','process.exit(0)'];await f.ctl.retry(task);for(let i=0;i<2000&&task.status!=='done';i++)await new Promise(r=>setTimeout(r,10));assert.equal(task.status,'done');assert.ok(!(await git(f.repo,'worktree','list','--porcelain')).includes(cwd));
 });

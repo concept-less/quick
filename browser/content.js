@@ -1,6 +1,6 @@
 // quick-agent browser extension — content script (isolated world).
 // Element picking (hover + click, Shift+click for multiple), region selection (drag),
-// comment box, and status pins for comments already sent from this page.
+// and the comment box. Comments are one-shot: once sent, nothing of it stays on the page.
 // All UI lives in a closed shadow root: page CSS cannot reach it and ours cannot leak out.
 // Design tokens come from tokens.js (generated from shared/tokens.css, same as the Web UI).
 (() => {
@@ -22,10 +22,6 @@
 		cleanups.push(() => target.removeEventListener(type, fn, opts));
 	};
 
-	const STATUS_TEXT = {
-		pending: "等待前台", claimed: "前台处理中", dispatched: "已派单", starting: "启动中", running: "进行中",
-		idle: "等你查看", needs_input: "需要你回复", blocked: "受阻", done: "已完成", failed: "失败", cancelled: "已取消", exited: "已退出", dismissed: "已忽略",
-	};
 	const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 	const MOD = IS_MAC ? "⌘" : "Ctrl";
 
@@ -48,16 +44,15 @@
 		return `${u.protocol}//${u.host.toLowerCase()}${path}${q}${route}`;
 	}
 
-	// Attention level of the comment's task (hub attention model), preferred over the raw status.
-	const LEVEL_CLASS = { need: "needs_input", skim: "done", snoozed: "pending", inflight: "running", archived: "cancelled" };
-	const pinClass = (p) => (p.attention && LEVEL_CLASS[p.attention.level]) || p.taskStatus || p.status;
-	const pinLabel = (p) => (p.attention ? `${LEVEL_TEXT[p.attention.level] || p.attention.level} ${p.attention.mark || ""}`.trim() : STATUS_TEXT[pinClass(p)] || pinClass(p));
-	const LEVEL_TEXT = { need: "需要你", skim: "待扫", snoozed: "稍后", inflight: "不用管", archived: "已归档" };
 
 	// ------------------------------------------------------------ shadow UI host
 	const host = document.createElement("qa-agent-root");
 	// 0x0 fixed box at the viewport origin; every child is position:fixed in viewport coordinates.
 	host.style.cssText = "all:initial;position:fixed;left:0;top:0;width:0;height:0;overflow:visible;z-index:2147483647;pointer-events:none;";
+	// A manual popover: while our UI is up the host sits in the browser's top layer, above modal
+	// dialogs, popovers, fullscreen elements and any z-index (see "top layer" below).
+	const CAN_POPOVER = typeof host.showPopover === "function";
+	if (CAN_POPOVER) host.setAttribute("popover", "manual");
 	const root = host.attachShadow({ mode: "closed" });
 	root.innerHTML = `<style>${globalThis.__qaTokensCss || ""}
 		:host{all:initial}
@@ -65,6 +60,7 @@
 		kbd{font:500 10.5px/1 var(--mono);border:1px solid var(--line);border-bottom-width:2px;padding:1px 4px;color:var(--fg);background:var(--surface)}
 		button{font:inherit;cursor:pointer;border-radius:0}
 		:focus{outline:none}:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+		.shield{position:fixed;inset:0;pointer-events:auto;background:transparent}
 		.hl{position:fixed;border:2px solid var(--acc);background:var(--acc-soft);pointer-events:none}
 		.sel{position:fixed;border:2px solid var(--fg);outline:1px solid var(--bg);background:color-mix(in srgb,var(--fg) 8%,transparent);pointer-events:none}
 		.tag{position:fixed;background:var(--acc);color:var(--acc-fg);font:500 11px/1.5 var(--mono);padding:1px 6px;pointer-events:none;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
@@ -98,32 +94,10 @@
 		.toast{position:fixed;bottom:18px;right:18px;background:var(--bg);color:var(--fg);border:1px solid var(--line-2);border-left:4px solid var(--fg);padding:9px 14px;pointer-events:auto;max-width:min(420px,calc(100vw - 36px));box-shadow:var(--hard);cursor:pointer}
 		.toast.err{border-left-color:var(--acc)}
 		.toast .sub{color:var(--fg-2);font-size:12px;margin-top:2px}
-		.pin{position:fixed;left:0;top:0;width:22px;height:22px;font:700 11px/1 var(--mono);display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;border:2px solid var(--line-2);background:var(--bg);color:var(--fg);box-shadow:2px 2px 0 var(--hard-c);will-change:transform}
-		.pin[hidden],.pop[hidden]{display:none}
-		.pin.done,.pin.dispatched{background:var(--inv-bg);color:var(--inv-fg);border-color:var(--inv-bg)}
-		.pin.needs_input,.pin.idle,.pin.blocked{border-color:var(--acc);color:var(--acc)}
-		.pin.failed,.pin.exited{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
-		.pin.cancelled,.pin.dismissed{border-style:dashed;color:var(--fg-3)}
-		.pin.running::after,.pin.starting::after,.pin.claimed::after{content:"";position:absolute;right:-5px;top:-5px;width:7px;height:7px;background:var(--acc);animation:blink 1.2s steps(2,start) infinite}
-		.picking .pin{pointer-events:none;opacity:.5}
-		.pin.open{outline:2px solid var(--acc);outline-offset:1px}
-		@keyframes blink{to{visibility:hidden}}
-		.pop{position:fixed;left:0;top:0;width:min(320px,calc(100vw - 16px));background:var(--bg);color:var(--fg);border:1px solid var(--line-2);pointer-events:auto;box-shadow:var(--hard);max-height:300px;overflow:auto}
-		.pop .h{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line);font:11px/1.4 var(--mono);color:var(--fg-2);flex-wrap:wrap}
-		.pop .c{padding:9px 12px;white-space:pre-wrap;word-break:break-word}
-		.pop .s{padding:8px 12px;border-top:1px solid var(--line);color:var(--fg-2);font-size:12px;white-space:pre-wrap;word-break:break-word}
-		.st{display:inline-flex;align-items:center;gap:5px;font:600 10.5px/1 var(--mono);letter-spacing:.06em;padding:0 6px;height:19px;border:1px solid var(--line);color:var(--fg-2);white-space:nowrap}
-		.st::before{content:"";width:6px;height:6px;background:currentColor}
-		.st.running,.st.starting,.st.claimed{color:var(--fg);border-color:var(--fg)}
-		.st.done,.st.dispatched{background:var(--inv-bg);border-color:var(--inv-bg);color:var(--inv-fg)}
-		.st.needs_input,.st.idle,.st.blocked,.st.pending{border-color:var(--acc);color:var(--acc)}
-		.st.failed,.st.exited{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
-		.st.cancelled,.st.dismissed{color:var(--fg-3);border-style:dashed;text-decoration:line-through}
 		.fade{opacity:0!important;transition:opacity .15s ease-out!important;pointer-events:none!important}
 		@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-	</style><div class="pins"></div><div class="layer"></div>`;
+	</style><div class="layer"></div>`;
 	const layer = root.querySelector(".layer");
-	const pinLayer = root.querySelector(".pins");
 	document.documentElement.appendChild(host);
 
 	const el = (cls, parent = layer, tag = "div") => {
@@ -134,6 +108,96 @@
 	};
 	const escapeHtml = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 	const isOurs = (e) => e.composedPath().includes(host);
+	// The shield (see top layer) belongs to the page as far as picking is concerned.
+	let shield = null;
+	const onShield = (e) => !!shield && typeof e.clientX === "number" && root.elementFromPoint(e.clientX, e.clientY) === shield;
+	const isUi = (e) => isOurs(e) && !onShield(e);
+
+	// ------------------------------------------------------------ top layer
+	// Modal <dialog>s, popovers and fullscreen elements live in the top layer, which no z-index can beat,
+	// and a modal dialog makes everything outside it inert. So while our UI is up:
+	// - the host is a manual popover, re-shown whenever something else enters the top layer (so it is
+	//   the last, i.e. topmost, entry);
+	// - the host is moved inside the topmost modal dialog (or the topmost open popover / fullscreen
+	//   element in it): there it is not inert, and clicks on it are not "outside" the popover (no
+	//   light dismiss).
+	//   Top-layer rendering ignores the ancestors' transform/overflow, so viewport coordinates still hold.
+	// Without UI the host goes back to <html> and leaves the top layer.
+	const openedAt = new WeakMap(); // top-layer element -> open order (later = higher)
+	let openSeq = 0;
+	const noteOpen = (n) => n && n !== host && openedAt.set(n, ++openSeq);
+	const matches = (n, s) => {
+		try {
+			return n.matches(s);
+		} catch {
+			return false;
+		}
+	};
+	const byOpenOrder = (a, b) =>
+		(openedAt.get(a) || 0) - (openedAt.get(b) || 0) || (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+	/** Topmost modal dialog (everything outside it is inert), or undefined. */
+	function topModal() {
+		return [...document.querySelectorAll("dialog")].filter((d) => matches(d, ":modal")).sort(byOpenOrder).at(-1);
+	}
+	/** Where the host must live so it is on top and interactive. */
+	function layerParent() {
+		const dlg = topModal();
+		const pops = [...document.querySelectorAll("[popover]")].filter((p) => p !== host && matches(p, ":popover-open") && (!dlg || dlg.contains(p)));
+		// Chrome also makes everything outside the fullscreen element non-interactive. Elements that
+		// cannot render children (video, iframe, ...) can't host us: then we stay outside.
+		const fs = document.fullscreenElement;
+		const fsOk = fs && fs !== host && !/^(video|audio|img|canvas|iframe|embed|object|input|textarea|select|svg)$/.test(fs.localName) && (!dlg || dlg.contains(fs));
+		const top = [dlg, ...pops, fsOk && fs].filter(Boolean).sort(byOpenOrder).at(-1);
+		return top || document.documentElement;
+	}
+	const uiUp = () => active || layer.childElementCount > 0;
+	/** Put the host where it belongs; `raise`: something entered the top layer, re-show to get above it. */
+	function syncLayer(raise = false) {
+		const want = uiUp();
+		const parent = want ? layerParent() : document.documentElement;
+		const focused = root.activeElement;
+		let moved = false;
+		if (host.parentNode !== parent) {
+			parent.appendChild(host); // a popover leaves the top layer when it is moved
+			moved = true;
+		}
+		if (host.hasAttribute("inert")) host.removeAttribute("inert"); // libraries that inert "everything else"
+		// An open auto popover is light-dismissed by any press outside it, even a prevented one. While
+		// picking on top of one, a transparent full-viewport shield (inside our host, which is inside the
+		// popover) takes the presses; the picker hit-tests the page under it as usual.
+		const needShield = active && parent.hasAttribute("popover") && parent.getAttribute("popover") !== "manual";
+		if (needShield && !shield) layer.prepend((shield = Object.assign(document.createElement("div"), { className: "shield" })));
+		else if (!needShield && shield) shield = void shield.remove();
+		if (!CAN_POPOVER) return;
+		const open = matches(host, ":popover-open");
+		try {
+			if (!want) return void (open && host.hidePopover());
+			if (open && (raise || moved)) host.hidePopover();
+			if (!matches(host, ":popover-open")) host.showPopover();
+		} catch {}
+		if (focused && root.activeElement !== focused && focused.isConnected) focused.focus({ preventScroll: true });
+	}
+	on(document, "toggle", (e) => {
+		if (e.target === host || !(e.target instanceof Element) || !(e.target.tagName === "DIALOG" || e.target.hasAttribute("popover"))) return; // not <details>
+		if (e.newState === "open") noteOpen(e.target);
+		if (uiUp()) syncLayer(e.newState === "open");
+	}, true);
+	on(document, "close", (e) => e.target !== host && uiUp() && syncLayer(), true);
+	on(document, "fullscreenchange", () => {
+		noteOpen(document.fullscreenElement);
+		if (uiUp()) syncLayer(true);
+	});
+
+	// Events on our UI stay ours: page handlers must not see them as "outside" clicks (Radix/MUI/Headless UI
+	// dismiss), steal focus back (focus traps), react to keys typed into the comment box (Esc-to-close,
+	// shortcuts) or block wheel scrolling (scroll locks). Window capture runs before the page's
+	// document-level listeners; default actions (focus, typing, button activation) are unaffected.
+	const guard = (e) => {
+		if (isUi(e) || (e.type === "focusout" && e.relatedTarget === host)) e.stopImmediatePropagation();
+	};
+	for (const t of ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend", "focusin", "focusout", "keyup", "keypress", "wheel", "contextmenu"]) on(window, t, guard, true);
+	// Clicks/inputs need our own handlers inside the shadow root, so they are stopped at its boundary.
+	for (const t of ["click", "dblclick", "auxclick", "input", "beforeinput", "change", "paste", "copy", "cut", "compositionstart", "compositionend"]) root.addEventListener(t, (e) => e.stopPropagation());
 
 	// ------------------------------------------------------------ settings (chrome.storage, set in the popup)
 	let sendKey = "enter"; // "enter": Enter sends, Shift+Enter newline · "mod": ⌘/Ctrl+Enter sends, Enter newline
@@ -205,7 +269,7 @@
 		const r = node.getBoundingClientRect();
 		const attributes = {};
 		for (const a of node.attributes) if (a.name !== "style" && a.value.length < 200) attributes[a.name] = a.value;
-		let html = node.outerHTML || "";
+		let html = (node.outerHTML || "").replace(/<qa-agent-root[^>]*><\/qa-agent-root>/g, "");
 		if (html.length > 3000) html = `${html.slice(0, 3000)}…`;
 		return {
 			selector: cssPath(node),
@@ -241,8 +305,6 @@
 		selected = [];
 		regionRect = null;
 		mode = "element";
-		closePop();
-		pinLayer.classList.add("picking");
 		bar = el("bar");
 		bar.innerHTML = `<b>quick-agent</b><span class="hint">点击选元素 · 拖动框选区域 · ${kbdHtml(["⇧"])}+点击多选 · ${kbdHtml(["Enter"])} 写评论 · ${kbdHtml(["Esc"])} 退出</span><button data-x title="退出 (Esc)">✕</button>`;
 		bar.addEventListener("click", (e) => {
@@ -251,37 +313,28 @@
 		hl = el("hl");
 		tag = el("tag");
 		hl.style.display = tag.style.display = "none";
-		document.addEventListener("mousemove", onMove, true);
-		document.addEventListener("mousedown", onDown, true);
-		document.addEventListener("mouseup", onUp, true);
-		document.addEventListener("click", onClick, true);
-		document.addEventListener("keydown", onKey, true);
-		document.addEventListener("dragstart", onDragStart, true);
-		document.addEventListener("selectstart", onDragStart, true);
+		// Window capture: before the page's own (document) capture listeners, e.g. a dialog's Esc handler.
+		for (const [t, fn] of PICK_EVENTS) window.addEventListener(t, fn, true);
+		syncLayer(true);
 	}
 	function stop(keepDraft = false) {
 		if (!active) return;
 		active = false;
 		if (!keepDraft) dropDraft(); // cancelled or sent: this page's draft is done
-		pinLayer.classList.remove("picking");
 		document.documentElement.style.cursor = "";
 		dragStart = null;
 		dragging = false;
 		regionBox = null;
 		hovered = null;
-		document.removeEventListener("mousemove", onMove, true);
-		document.removeEventListener("mousedown", onDown, true);
-		document.removeEventListener("mouseup", onUp, true);
-		document.removeEventListener("click", onClick, true);
-		document.removeEventListener("keydown", onKey, true);
-		document.removeEventListener("dragstart", onDragStart, true);
-		document.removeEventListener("selectstart", onDragStart, true);
-		layer.querySelectorAll(".bar,.hl,.tag,.sel,.region,.box").forEach((n) => n.remove());
+		for (const [t, fn] of PICK_EVENTS) window.removeEventListener(t, fn, true);
+		layer.querySelectorAll(".shield,.bar,.hl,.tag,.sel,.region,.box").forEach((n) => n.remove());
+		shield = null;
 		selBoxes.length = 0;
 		box = null;
 		boxPage = null;
 		selected = [];
 		regionRect = null;
+		syncLayer();
 	}
 	/** Set the selection kind (restoring drafts); the user never switches it by hand. */
 	function setMode(m) {
@@ -319,12 +372,12 @@
 		document.documentElement.style.cursor = "";
 	}
 	function onDragStart(e) {
-		if (isOurs(e) || box) return;
+		if (isUi(e) || box) return;
 		e.preventDefault(); // no native drag of links/images, no text selection while picking
 	}
 
 	function onMove(e) {
-		if (box || isOurs(e)) return;
+		if (box || isUi(e)) return;
 		if (dragStart) {
 			if (!dragging && Math.hypot(e.clientX - dragStart.x, e.clientY - dragStart.y) < DRAG_PX) return;
 			if (!dragging) {
@@ -360,18 +413,24 @@
 		tag.style.left = `${Math.max(0, r.x)}px`;
 		tag.style.top = `${r.y > 22 ? r.y - 20 : r.bottom + 2}px`;
 	}
+	/** While picking, presses on the page are ours too: no "click outside" dismiss, no page reaction. */
+	function onPointer(e) {
+		if (!isUi(e)) e.stopImmediatePropagation(); // no preventDefault: that would suppress the mouse events
+	}
 	function onDown(e) {
-		if (box || isOurs(e) || e.button !== 0) return;
+		if (isUi(e)) return;
+		e.stopImmediatePropagation();
+		if (box || e.button !== 0) return; // with the comment box open: native text selection still works
 		e.preventDefault(); // also blocks text selection / native drag from starting
-		e.stopPropagation();
 		dragStart = { x: e.clientX, y: e.clientY };
 		dragging = false;
 		swallowClick = false;
 	}
 	function onUp(e) {
-		if (box || isOurs(e) || !dragStart) return;
+		if (isUi(e)) return;
+		e.stopImmediatePropagation();
+		if (box || !dragStart) return;
 		e.preventDefault();
-		e.stopPropagation();
 		const wasDrag = dragging;
 		dragStart = null;
 		dragging = false;
@@ -384,9 +443,9 @@
 		openBox();
 	}
 	function onClick(e) {
-		if (isOurs(e)) return;
-		e.preventDefault();
-		e.stopPropagation();
+		if (isUi(e)) return;
+		e.preventDefault(); // also no "click on the backdrop closes the dialog"
+		e.stopImmediatePropagation();
 		if (swallowClick) return void (swallowClick = false);
 		if (box) return;
 		const t = targetAt(e);
@@ -405,10 +464,16 @@
 		else snapDraft();
 	}
 	function onKey(e) {
-		if (isOurs(e)) return;
+		const ours = isOurs(e);
+		// Keys typed into our UI never reach the page (window capture runs first).
+		if (ours) e.stopImmediatePropagation();
+		if (box && ours && box.contains(root.activeElement)) return onBoxKey(e);
+		if (ours && e.key !== "Escape") return; // e.g. Enter/Space on a toolbar button: native activation
 		if (e.key === "Escape") {
+			// preventDefault also keeps the browser from closing a modal dialog / popover / page overlay:
+			// while the picker is on, Esc only cancels our own step.
 			e.preventDefault();
-			e.stopPropagation();
+			e.stopImmediatePropagation();
 			// Esc peels one layer: an in-progress drag, then the selection, then the picker itself.
 			if (dragStart) {
 				cancelDrag();
@@ -422,9 +487,14 @@
 			} else stop();
 		} else if (e.key === "Enter" && selected.length && !box) {
 			e.preventDefault();
+			e.stopImmediatePropagation();
 			openBox();
 		}
 	}
+	const PICK_EVENTS = [
+		["mousemove", onMove], ["pointerdown", onPointer], ["pointerup", onPointer], ["mousedown", onDown], ["mouseup", onUp],
+		["click", onClick], ["keydown", onKey], ["dragstart", onDragStart], ["selectstart", onDragStart],
+	];
 	function contentRect(n) {
 		// Block elements span the full row; measure their contents instead when they hold text directly.
 		const b = n.getBoundingClientRect();
@@ -436,24 +506,37 @@
 		}
 		return b;
 	}
+	/** Visible at the top: some sample point hits it or its subtree (not a dialog backdrop / overlay above it). */
+	function onTop(n, b) {
+		const pts = [[0.5, 0.5], [0.15, 0.15], [0.85, 0.15], [0.15, 0.85], [0.85, 0.85]];
+		return pts.some(([fx, fy]) => {
+			const hit = document.elementFromPoint(b.left + b.width * fx, b.top + b.height * fy);
+			return hit && (n.contains(hit) || hit.contains(n));
+		});
+	}
 	function elementsInRegion(r) {
 		const inside = [];
-		const all = document.body.querySelectorAll("*");
-		for (const n of all) {
-			if (n === host) continue;
-			const b = contentRect(n);
-			if (!b.width || !b.height) continue;
-			if (b.left >= r.x - 2 && b.top >= r.y - 2 && b.right <= r.x + r.width + 2 && b.bottom <= r.y + r.height + 2) inside.push(n);
-		}
-		// Keep outermost elements only.
-		let top = inside.filter((n) => !inside.some((o) => o !== n && o.contains(n)));
-		if (!top.length) {
-			host.style.display = "none";
-			const c = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+		// Under a modal dialog only its subtree is reachable; the rest of the page is inert behind it.
+		const scope = topModal() || document.body;
+		host.style.display = "none";
+		try {
+			for (const n of scope.querySelectorAll("*")) {
+				if (n === host) continue;
+				const b = contentRect(n);
+				if (!b.width || !b.height) continue;
+				if (b.left >= r.x - 2 && b.top >= r.y - 2 && b.right <= r.x + r.width + 2 && b.bottom <= r.y + r.height + 2) inside.push([n, b]);
+			}
+			// Drop what is covered (by a popover, a z-index overlay ...), keep outermost elements only.
+			const vis = inside.filter(([n, b]) => onTop(n, b)).map(([n]) => n);
+			let top = vis.filter((n) => !vis.some((o) => o !== n && o.contains(n)));
+			if (!top.length) {
+				const c = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+				if (c) top = [c];
+			}
+			return top.slice(0, 12);
+		} finally {
 			host.style.display = "";
-			if (c) top = [c];
 		}
-		return top.slice(0, 12);
 	}
 
 	// ------------------------------------------------------------ comment box
@@ -490,24 +573,6 @@
 		box.style.top = `${below + 220 < innerHeight ? below : Math.max(8, Math.min(u.y - 230, innerHeight - 240))}px`;
 		const ta = box.querySelector("textarea");
 		setTimeout(() => ta.focus(), 0);
-		box.addEventListener("keydown", (e) => {
-			e.stopPropagation();
-			if (e.key === "Escape") {
-				e.preventDefault();
-				return closeBox();
-			}
-			if (e.key !== "Enter" || e.isComposing || e.keyCode === 229 || e.target !== ta) return;
-			const mod = e.metaKey || e.ctrlKey;
-			if (sendKey === "mod" ? mod : !e.shiftKey && !e.altKey) {
-				e.preventDefault();
-				send();
-			} else if (sendKey === "enter" && mod) {
-				e.preventDefault();
-				send(); // ⌘/Ctrl+Enter always sends
-			}
-		});
-		box.addEventListener("keyup", (e) => e.stopPropagation());
-		box.addEventListener("keypress", (e) => e.stopPropagation());
 		ta.addEventListener("input", () => snapDraft(true));
 		box.querySelector("[data-shot]").addEventListener("change", () => snapDraft());
 		box.querySelector("[data-cancel]").onclick = closeBox;
@@ -519,6 +584,23 @@
 			ta.focus();
 		};
 		snapDraft();
+	}
+	/** Keys inside the comment box (called from the window-capture key handler, focus is in the box). */
+	function onBoxKey(e) {
+		const ta = box.querySelector("textarea");
+		if (e.key === "Escape") {
+			e.preventDefault();
+			return closeBox();
+		}
+		if (e.key !== "Enter" || e.isComposing || e.keyCode === 229 || root.activeElement !== ta) return;
+		const mod = e.metaKey || e.ctrlKey;
+		if (sendKey === "mod" ? mod : !e.shiftKey && !e.altKey) {
+			e.preventDefault();
+			send();
+		} else if (sendKey === "enter" && mod) {
+			e.preventDefault();
+			send(); // ⌘/Ctrl+Enter always sends
+		}
 	}
 	function closeBox() {
 		box?.remove();
@@ -547,31 +629,6 @@
 	}
 	const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-	/** Stable anchor for a pin: an element (selector) + relative offset inside it, plus a document-coordinate fallback. */
-	function makeAnchor() {
-		const u = unionRect();
-		const corner = mode === "region" && regionRect ? { x: regionRect.x + regionRect.width, y: regionRect.y } : { x: u.x + u.width, y: u.y };
-		let n = null;
-		if (mode === "element") n = selected[0];
-		else {
-			// smallest common ancestor of the selected elements that contains the region's corner
-			n = selected[0] || null;
-			for (const o of selected.slice(1)) while (n && !n.contains(o)) n = n.parentElement;
-			while (n && n !== document.documentElement) {
-				const r = n.getBoundingClientRect();
-				if (corner.x >= r.left - 1 && corner.x <= r.right + 1 && corner.y >= r.top - 1 && corner.y <= r.bottom + 1) break;
-				n = n.parentElement;
-			}
-			if (n === document.documentElement || n === document.body) n = null;
-		}
-		const doc = { x: Math.round(corner.x + scrollX), y: Math.round(corner.y + scrollY) };
-		if (!n) return { anchor: { doc }, el: null };
-		const r = n.getBoundingClientRect();
-		const fx = r.width ? (corner.x - r.left) / r.width : 1;
-		const fy = r.height ? (corner.y - r.top) / r.height : 0;
-		return { anchor: { selector: cssPath(n), fx: +fx.toFixed(4), fy: +fy.toFixed(4), doc }, el: n };
-	}
-
 	async function send() {
 		const ta = box.querySelector("textarea");
 		const comment = ta.value.trim();
@@ -584,7 +641,6 @@
 		const elements = selected.map(describe);
 		const focus = { ...unionRect(), viewportWidth: innerWidth };
 		const boxes = mode === "region" && regionRect ? [regionRect] : elements.map((e) => e.rect);
-		const { anchor, el: anchorEl } = makeAnchor();
 		const page = boxPage || { url: location.href, title: document.title };
 		const payload = {
 			comment,
@@ -593,7 +649,6 @@
 			mode,
 			elements,
 			region: mode === "region" && regionRect ? { x: Math.round(regionRect.x), y: Math.round(regionRect.y), width: Math.round(regionRect.width), height: Math.round(regionRect.height) } : undefined,
-			anchor,
 			viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio, scrollX: Math.round(scrollX), scrollY: Math.round(scrollY) },
 			consoleErrors: await consoleErrors(),
 			userAgent: navigator.userAgent,
@@ -612,17 +667,15 @@
 			if (box) {
 				sendBtn.disabled = false;
 				sendBtn.textContent = "发送";
+				ta.focus(); // ready for a retry: the text and the selection are kept
 			}
 			const hint = !alive() ? "插件已更新或重新加载，请刷新页面后重试（评论内容已保留在输入框）。" : "点击工具栏的 quick-agent 图标可检查连接。评论内容已保留，修好后再点发送。";
 			return toast(`发送失败：${res?.error ?? "unknown"}`, true, hint);
 		}
+		// One-shot: the selection, region and comment box go away and nothing is kept for this page
+		// (the draft is dropped; no marks are restored later). The comment now belongs to the front agent.
 		stop();
 		toast(`已发送给前台 agent（${res.intake.id}）`);
-		if (pageKey(page.url) === curKey) {
-			pins.push({ id: res.intake.id, comment, status: "pending", anchor, el: anchorEl });
-			renderPins();
-		}
-		schedulePoll(true);
 	}
 
 	function toast(text, err = false, sub = "") {
@@ -630,8 +683,13 @@
 		const t = el(`toast${err ? " err" : ""}`);
 		t.textContent = text;
 		if (sub) el("sub", t).textContent = sub;
-		t.onclick = () => t.remove();
-		setTimeout(() => t.remove(), err ? 8000 : 3000);
+		const drop = () => {
+			t.remove();
+			syncLayer();
+		};
+		t.onclick = drop;
+		setTimeout(drop, err ? 8000 : 3000);
+		syncLayer(true);
 	}
 
 	// ------------------------------------------------------------ in-progress comment drafts, per page
@@ -750,15 +808,11 @@
 		return true;
 	}
 
-	// ------------------------------------------------------------ pins for sent comments
-	// Pins are bound to the current page (curKey). They are position:fixed and re-measured from the
-	// anchor element's getBoundingClientRect on every scroll (any container), resize, layout or DOM
-	// change (rAF-throttled), so they stay on their component through window scroll, inner scroll
-	// containers and sticky headers, and hide when the component is clipped, covered or gone.
+	// ------------------------------------------------------------ page binding
+	// The picker's marks are bound to the current page (curKey) and redrawn from the elements'
+	// getBoundingClientRect on every scroll (any container), resize, layout or DOM change (rAF-throttled).
 	let curKey = pageKey(location.href);
 	let navGen = 0;
-	let pins = [];
-	let openPop = null; // { id, node }
 	function safeQuery(s) {
 		try {
 			return document.querySelector(s);
@@ -766,118 +820,7 @@
 			return null;
 		}
 	}
-	function resolveEl(p) {
-		if (p.el?.isConnected) return p.el;
-		p.el = null;
-		const sel = p.anchor?.selector || p.selector;
-		if (sel) p.el = safeQuery(sel);
-		return p.el;
-	}
-	const OVERFLOW_CLIP = /(auto|scroll|hidden|clip|overlay)/;
-	function clippedOut(n, x, y) {
-		for (let a = n.parentElement; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
-			const cs = getComputedStyle(a);
-			if (cs.position === "fixed") break; // a fixed ancestor is not clipped by anything above it
-			if (!OVERFLOW_CLIP.test(cs.overflow + cs.overflowX + cs.overflowY)) continue;
-			const r = a.getBoundingClientRect();
-			if (x < r.left - 1 || x > r.right + 1 || y < r.top - 1 || y > r.bottom + 1) return true;
-		}
-		return false;
-	}
-	function covered(n, x, y) {
-		if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false; // off-screen: nothing to test
-		const hit = document.elementsFromPoint(x, y).find((h) => h !== host);
-		return !!hit && hit !== n && !n.contains(hit) && !hit.contains(n);
-	}
-	/** Viewport position of a pin's anchor point, or null when it should not be shown. */
-	function pinPoint(p) {
-		const n = resolveEl(p);
-		if (n) {
-			const r = n.getBoundingClientRect();
-			if (!r.width && !r.height) return null; // display:none / detached
-			const fx = p.anchor?.fx ?? 1, fy = p.anchor?.fy ?? 0;
-			const x = r.left + fx * r.width, y = r.top + fy * r.height;
-			// probe a point just inside the element for clipping / occlusion tests
-			if (x < -4 || y < -4 || x > innerWidth + 4 || y > innerHeight + 4) return null; // scrolled out of view
-			const px = Math.min(Math.max(x, r.left + 2), r.right - 2), py = Math.min(Math.max(y, r.top + 2), r.bottom - 2);
-			if (clippedOut(n, px, py) || covered(n, px, py)) return null;
-			return { x, y };
-		}
-		const d = p.anchor?.doc || p.doc;
-		if (d) return { x: d.x - scrollX, y: d.y - scrollY };
-		return null;
-	}
-	function renderPins() {
-		pinLayer.querySelectorAll(".pin").forEach((n) => n.remove());
-		pins.forEach((p, i) => {
-			const st = pinClass(p);
-			const d = el(`pin ${st}`, pinLayer);
-			d.dataset.id = p.id;
-			d.textContent = String(i + 1);
-			d.title = `${pinLabel(p)}: ${p.comment}`;
-			d.onclick = (e) => {
-				e.stopPropagation();
-				if (openPop?.id === p.id) return closePop();
-				showPop(p);
-			};
-			p.node = d;
-		});
-		if (openPop) {
-			const p = pins.find((x) => x.id === openPop.id);
-			if (p) showPop(p);
-			else closePop();
-		}
-		reposition();
-	}
-	function showPop(p) {
-		closePop();
-		const st = pinClass(p);
-		const a = p.attention;
-		const label = pinLabel(p);
-		const pop = el("pop", pinLayer);
-		pop.innerHTML = `<div class="h"><span class="st ${escapeHtml(st)}">${escapeHtml(label)}</span>${p.taskId ? `<span>任务 ${escapeHtml(p.taskId)}</span>` : `<span>${escapeHtml(p.id)}</span>`}${p.taskTitle ? `<span>${escapeHtml(p.taskTitle)}</span>` : ""}</div><div class="c">${escapeHtml(p.comment)}</div>${a?.reason ? `<div class="s">${escapeHtml(a.reason)}</div>` : ""}${p.summary ? `<div class="s">${escapeHtml(p.summary)}</div>` : ""}`;
-		pop.addEventListener("click", (e) => e.stopPropagation());
-		openPop = { id: p.id, node: pop };
-		p.node?.classList.add("open");
-		reposition();
-	}
-	function closePop() {
-		if (!openPop) return;
-		openPop.node.remove();
-		pinLayer.querySelector(".pin.open")?.classList.remove("open");
-		openPop = null;
-	}
 	function reposition() {
-		const taken = []; // several comments on one element: fan the pins out to the left instead of stacking
-		for (const p of pins) {
-			if (!p.node) continue;
-			const pt = pinPoint(p);
-			p.visible = !!pt;
-			if (!pt) {
-				p.node.hidden = true;
-				continue;
-			}
-			p.node.hidden = false;
-			let x = Math.min(Math.max(pt.x - 11, 2), innerWidth - 26);
-			const y = Math.max(pt.y - 11, 2);
-			while (taken.some((t) => Math.abs(t.x - x) < 20 && Math.abs(t.y - y) < 20)) x -= 24;
-			taken.push({ x, y });
-			p.pos = { x, y };
-			p.node.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
-		}
-		if (openPop) {
-			const p = pins.find((x) => x.id === openPop.id);
-			const pop = openPop.node;
-			if (!p?.visible) pop.hidden = true;
-			else {
-				pop.hidden = false;
-				const w = pop.offsetWidth, h = pop.offsetHeight;
-				let x = p.pos.x + 28;
-				if (x + w > innerWidth - 8) x = Math.max(8, p.pos.x - w - 6);
-				const y = Math.min(Math.max(8, p.pos.y), innerHeight - h - 8);
-				pop.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
-			}
-		}
 		if (active) {
 			redrawSelection();
 			drawHover();
@@ -885,7 +828,7 @@
 	}
 	let rafId = 0;
 	const scheduleReposition = () => {
-		if (rafId || (!pins.length && !active)) return;
+		if (rafId || !active) return;
 		rafId = requestAnimationFrame(() => {
 			rafId = 0;
 			reposition();
@@ -898,28 +841,27 @@
 	ro.observe(document.documentElement);
 	if (document.body) ro.observe(document.body);
 	const mo = new MutationObserver((recs) => {
+		// showModal()/show() set [open]; a dialog removed together with our host inside it disconnects us.
+		let raise = false;
+		for (const r of recs) if (r.attributeName === "open" && r.target.tagName === "DIALOG" && r.target.open) noteOpen(r.target), (raise = true);
+		const layerChange = raise || !host.isConnected || recs.some((r) => r.attributeName === "open" || (r.attributeName === "inert" && r.target === host));
+		if (layerChange && (uiUp() || !host.isConnected)) syncLayer(raise);
 		if (recs.every((r) => r.target === host || host.contains(r.target))) return;
 		scheduleReposition();
 	});
-	mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "open"] });
-	// CSS transitions/animations do not trigger any of the above: a slow safety net while pins exist.
-	const tickTimer = setInterval(() => pins.length && document.visibilityState === "visible" && scheduleReposition(), 1000);
+	mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "open", "inert"] });
+	// CSS transitions/animations do not trigger any of the above: a slow safety net while picking.
+	const tickTimer = setInterval(() => active && document.visibilityState === "visible" && scheduleReposition(), 1000);
 	cleanups.push(() => {
 		ro.disconnect();
 		mo.disconnect();
 		clearInterval(tickTimer);
 		cancelAnimationFrame(rafId);
 	});
-	on(document, "click", (e) => {
-		if (openPop && !active && !isOurs(e)) closePop();
-	});
-	on(document, "keydown", (e) => {
-		if (e.key === "Escape" && openPop && !active) closePop();
-	});
 
-	// ------------------------------------------------------------ navigation: pins follow the URL
+	// ------------------------------------------------------------ navigation: marks follow the URL
 	// SPA routers (pushState/replaceState via console-hook.js, Navigation API), back/forward
-	// (popstate), hash routes and bfcache restores all re-bind the pins to the new page at once.
+	// (popstate), hash routes and bfcache restores all re-bind the picker to the new page at once.
 	function onNav(force = false) {
 		const k = pageKey(location.href);
 		if (!force && k === curKey) return;
@@ -930,11 +872,7 @@
 		}
 		curKey = k;
 		navGen++;
-		closePop();
 		restoreDraft();
-		pins = [];
-		renderPins();
-		schedulePoll(false);
 	}
 	const navSoon = () => setTimeout(() => onNav(), 0); // after the router has updated location
 	on(window, "popstate", navSoon);
@@ -942,57 +880,15 @@
 	on(window, "qa:locationchange", navSoon);
 	on(window, "pagehide", () => flushDraft());
 	on(window, "pageshow", (e) => {
-		if (e.persisted) onNav(true); // restored from bfcache: the page's comments may have changed
+		if (e.persisted) onNav(true); // restored from bfcache: re-bind to this page
 	});
 	if (window.navigation?.addEventListener) on(window.navigation, "navigatesuccess", navSoon);
 	let lastHref = location.href;
-	const hrefTimer = setInterval(() => location.href !== lastHref && ((lastHref = location.href), onNav()), 500);
+	const hrefTimer = setInterval(() => {
+		if (!alive()) return teardown(); // extension reloaded/removed: stop quietly
+		if (location.href !== lastHref) (lastHref = location.href), onNav();
+	}, 500);
 	cleanups.push(() => clearInterval(hrefTimer));
-
-	let pollTimer = null;
-	let hubDown = false;
-	async function poll() {
-		if (!alive()) return;
-		const gen = navGen, key = curKey;
-		try {
-			const res = await chrome.runtime.sendMessage({ type: "qa-page-comments", url: location.href });
-			if (gen !== navGen || key !== curKey) return; // the page changed while we were waiting: stale
-			hubDown = !res?.ok;
-			if (res?.ok) {
-				const known = new Map(pins.map((p) => [p.id, p]));
-				pins = res.comments.map((c) => {
-					const old = known.get(c.id) || {};
-					return {
-						id: c.id, comment: c.comment, status: c.status, taskId: c.taskId, taskStatus: c.taskStatus, attention: c.attention,
-						taskTitle: c.taskTitle, summary: c.summary, el: old.el,
-						anchor: old.anchor || c.anchor || legacyAnchor(c),
-					};
-				});
-				renderPins();
-			}
-		} catch {}
-	}
-	/** Comments saved before anchors existed: first element's top-right, or the region converted to document coords. */
-	function legacyAnchor(c) {
-		const sx = c.viewport?.scrollX ?? 0, sy = c.viewport?.scrollY ?? 0;
-		const doc = c.region ? { x: c.region.x + c.region.width + sx, y: c.region.y + sy } : undefined;
-		if (c.mode === "region" && doc) return { doc };
-		const sel = c.elements?.[0]?.selector;
-		if (sel) return { selector: sel, fx: 1, fy: 0, doc };
-		return doc ? { doc } : undefined;
-	}
-	function schedulePoll(soon = false) {
-		clearTimeout(pollTimer);
-		const tick = async () => {
-			if (!alive()) return teardown(); // extension reloaded/removed: stop quietly
-			if (document.visibilityState === "visible") await poll();
-			const busy = pins.some((p) => !["done", "failed", "cancelled"].includes(p.taskStatus || ""));
-			// Back off when the hub is not reachable or not configured.
-			pollTimer = setTimeout(tick, hubDown ? 60000 : busy ? 5000 : 30000);
-		};
-		pollTimer = setTimeout(tick, soon ? 1500 : 0);
-	}
-	on(document, "visibilitychange", () => document.visibilityState === "visible" && schedulePoll(false));
 
 	// ------------------------------------------------------------ wiring
 	function teardown() {
@@ -1000,7 +896,6 @@
 			flushDraft();
 			stop(true);
 		} catch {}
-		clearTimeout(pollTimer);
 		for (const c of cleanups.splice(0)) {
 			try {
 				c();
@@ -1024,6 +919,5 @@
 	};
 	chrome.runtime.onMessage.addListener(onMsg);
 	cleanups.push(() => chrome.runtime.onMessage.removeListener(onMsg));
-	schedulePoll();
 	restoreDraft(); // a full page load back to a page with a parked draft
 })();
