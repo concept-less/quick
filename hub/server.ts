@@ -1677,6 +1677,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			const t = ownTask(id);
 			const body = await readJson(req);
 			if (workerTask && workerTask.id !== id) throw new HttpError(403, "wrong worker");
+			if (t.lifecycle && (t.closed || ["cancelled","failed"].includes(t.status))) return send(res,200,{task:t});
 			if (t.lifecycle && t.lifecycle.policy.workspace !== "none") {
 				if (body.scope) {
 					if (lifecycle.busy(t.id) || (t.lifecycle && !["developing","changes_requested"].includes(t.lifecycle.phase))) throw new HttpError(409,"范围升级必须在开发阶段报告；当前生命周期正在处理");

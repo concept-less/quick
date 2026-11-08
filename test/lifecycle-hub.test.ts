@@ -43,6 +43,7 @@ test("isolated hub: A/B/C, worker permission gate, review SHA, restart and quiet
  const scoped=(await api(`/api/tasks/${s.id}`)).task;assert.equal(scoped.lifecycle.policy.review,"human");assert.equal(scoped.lifecycle.phase,"blocked");assert.equal(scoped.status,"blocked");
  await assert.rejects(api(`/api/tasks/${s.id}/retry`,{}));
  const comment=await api(`/api/tasks/${s.id}/comments`,{text:"worker internal",asWorker:true,toWorker:true},stok);assert.equal(comment.comment.author,"agent");assert.notEqual(comment.comment.toWorker,true);
+ const late=await create("late worker report",{kind:"code"});const lateTok=(await readFile(join(home,"tasks",late.id,"worker.token"),"utf8")).trim();await api(`/api/tasks/${late.id}/cancel`,{});await api(`/api/tasks/${late.id}/report`,{status:"running",summary:"late report"},lateTok);await api(`/api/tasks/${late.id}/report`,{status:"done"},lateTok);assert.equal((await api(`/api/tasks/${late.id}`)).task.status,"cancelled");
  const c2=await create("payment cancellation race",{kind:"code"});const c2sha=await commit(c2,"C2\n");const c2tok=await report(c2);await api(`/api/tasks/${c2.id}/report`,{settled:true},c2tok);await wait(c2.id,"human_approval");
  await assert.rejects(api(`/api/tasks/${c2.id}/retry`,{}),/409/);await assert.rejects(api(`/api/tasks/${c2.id}/comments`,{text:"continue",toWorker:true}),/409/);
  const races=await Promise.allSettled([api(`/api/tasks/${c2.id}/approve`,{sha:c2sha}),api(`/api/tasks/${c2.id}/cancel`,{})]);
