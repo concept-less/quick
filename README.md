@@ -28,7 +28,62 @@ pi install ~/quick-agent                # 写入 ~/.pi/agent/settings.json 的 p
 ln -sf ~/quick-agent/bin/quick ~/.local/bin/quick   # 命令行工具（确保 ~/.local/bin 在 PATH 中）
 ```
 
-更新用 `cd ~/quick-agent && git pull`，然后在 pi 里 `/reload` 并运行 `quick hub restart`。卸载用 `pi remove ~/quick-agent`。改了代码以后，在 pi 里执行 `/reload`，或者新开一个 pi，就能生效。
+升级见下面的「升级」一节（默认自动升级，也可以 `quick upgrade`）。卸载用 `pi remove ~/quick-agent`。改了代码以后，在 pi 里执行 `/reload`，或者新开一个 pi，就能生效。
+
+## 升级
+
+quick-agent 会自己检查新版本并自动安装：
+
+- **启动时后台检查**：hub 启动约 10 秒后（之后每小时一次）、前台 pi 启动 5 秒后、以及每次运行 `quick` 命令时（另起一个分离的后台进程）都会触发检查。检查不阻塞启动，每个请求有超时，失败时静默；结果缓存在 `~/.quick-agent/update.json`，两次检查至少间隔 `intervalHours`（默认 6 小时），多个进程之间用 `update.lock` 互斥。
+- **发现新版本后**：自动安装。安装后 hub 会在本机没有 starting/running 的 worker 时自动重启（`restartHub: "never"` 可关闭）；前台 pi 会弹出提示，执行 `/reload` 或新开 pi 后生效。正在运行的 worker 不受影响，下次启动时用新版本。
+- **版本来源（按优先级）**：npm 包 → GitHub Release → git 仓库。前一个不可用（未发布、404、超时、没有权限）就用下一个。npm 上同名但 `repository` 不是本仓库的包会被忽略，防止被抢注。GitHub 私有仓库会用 `GITHUB_TOKEN` / `GH_TOKEN` 或 `gh auth token`。
+- **安装方式自动识别**：
+
+| 安装方式 | 识别 | 升级做法 |
+|---|---|---|
+| git 克隆（`git clone` + `pi install ~/quick-agent`） | 目录里有 `.git` | `git fetch` 后快进到上游分支（`merge --ff-only`）；HEAD 是分离状态时 checkout 最新的版本 tag。有未提交改动、本地分支与上游分叉、没有上游分支时不自动升级，只提示原因 |
+| pi 管理的 npm 包（`pi install npm:quick-agent`） | 位于 `~/.pi/agent/npm/…/node_modules` | `pi update npm:<包名>` |
+| npm 全局安装（`npm i -g quick-agent`） | 位于其他 `node_modules` | `npm install -g <包名>@<版本>` |
+| 解压的发布包 | 以上都不是 | 下载 GitHub Release 的 `*.tgz` 附件（没有就用源码包），校验包名和版本后整体替换目录，旧版本保留为 `<目录>.prev` |
+
+手动升级与多机升级：
+
+```bash
+quick upgrade --check            # 只检查：当前版本、最新版本、来源，以及各来源的结果
+quick upgrade                    # 升级本机（quick update 是别名）；没有运行中的 worker 时会顺便重启 hub
+quick upgrade --all              # 通过 mesh 升级所有在线机器（包括本机），汇总每台的 旧版本 → 新版本 和成功/失败
+quick upgrade cloud mac-laptop   # 只升级指定机器（也可以写 --machine cloud,mac-laptop）
+quick upgrade --all --check      # 查看全网版本
+quick upgrade ... --json         # 机器可读的结果
+quick machines                   # 也会列出每台机器的 hub 版本
+```
+
+多机升级走 mesh RPC `update.run`：请求逐跳转发到每台机器，由那台机器的 hub 在本地执行升级并返回结果，各机器并行执行，单台超时 6 分钟。那台机器的 hub 会等转发中的请求都返回后再重启。还在运行旧版本（不支持 `update.run`）的 hub 会报「对方 hub 版本过旧」，需要在那台机器上手动升级一次（`git pull` 并 `quick hub restart`）。
+
+关闭或调整（`~/.quick-agent/config.json` 的 `update`，都可以省略）：
+
+```jsonc
+"update": {
+  "enabled": true,          // false：不做后台检查（quick upgrade 仍然可用）
+  "autoInstall": true,      // false：只检查并提示，不自动安装
+  "intervalHours": 6,
+  "restartHub": "idle",     // "never"：升级后不自动重启 hub
+  "sources": ["npm", "github", "git"],
+  "npmPackage": "quick-agent",            // 默认取 package.json 的 name
+  "githubRepo": "concept-less/quick",     // 默认取 package.json 的 repository
+  "gitUrl": "git@github.com:concept-less/quick.git"   // 非 git 安装时用来查 tag
+}
+```
+
+环境变量：`QA_UPDATE=off`（或 `QA_NO_UPDATE=1`）关闭后台检查，`QA_UPDATE_AUTO_INSTALL=0` 只检查不安装，`QA_UPDATE_INTERVAL_HOURS`、`QA_UPDATE_SOURCES=github,git`、`QA_NPM_REGISTRY`、`QA_GITHUB_API` 用于覆盖对应配置。
+
+### 发布新版本（维护者）
+
+1. 改 `package.json` 的 `version`，提交并打 tag：`git tag v0.4.0 && git push origin main --tags`（git 安装的机器这样就能升级了）。
+2. 可选：GitHub Release：`npm pack` 后 `gh release create v0.4.0 quick-agent-0.4.0.tgz`（发布包安装的机器用它）。
+3. 可选：npm：`npm publish`（`files` 字段已经限定了发布内容）。
+
+测试：`npm test`（全部在临时目录、临时端口里进行，会起 4 个临时 hub 模拟多机升级，不碰正在运行的 hub）。
 
 ## pi 如何选择角色（`extensions/quick-agent.ts`）
 
@@ -62,6 +117,7 @@ quick attach <id>              # 切换到 worker 的 tmux 窗口
 quick cancel <id> / quick close <id>
 quick new --cwd ~/proj "标题" "完整简报"   # 不经前台直接派单
 quick hub start|stop|restart|status|logs
+quick upgrade [--check] [--all]  # 升级（见「升级」）
 quick dashboard | quick tunnel | quick token
 ```
 
@@ -136,6 +192,7 @@ quick machines                           # 查看机器、路由、链路状态
   "tmuxSession": "qa",
   "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work" },
   "mesh": { "secret": "…quick mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
+  "update": { "enabled": true, "autoInstall": true, "intervalHours": 6 },   // 见「升级」
   "defaultCwd": "/home/simon",
   "projects": [
     // 浏览器评论按 URL 匹配工作目录（子串，或 /正则/）
@@ -155,13 +212,15 @@ hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/dashboard.ts             网页面板
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
+shared/update.ts             自动升级：版本来源、安装方式识别、安装、节流与锁
+test/                        npm test（升级逻辑 + 多机升级模拟）
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
 extensions/front.ts          前台角色
 extensions/worker.ts         worker 角色
 browser/                     Chrome MV3 插件
 ```
 
-运行时数据放在 `~/.quick-agent/`：`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`hub.log`。worker 的会话是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`，可以用 `pi --session <file>` 打开。
+运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`hub.log`。worker 的会话是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`，可以用 `pi --session <file>` 打开。
 
 ## Hub API（Bearer token）
 
@@ -173,7 +232,8 @@ browser/                     Chrome MV3 插件
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 标记已读 |
 | POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动 |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
-| GET | `/api/machines` | mesh 中的机器、路由与链路状态 |
+| GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本） |
+| POST | `/api/upgrade` | `{all?, machines?, check?}` 升级或检查指定机器，返回每台的结果 |
 | POST | `/api/fs` | `{machine, op: ls/read/grep, path, pattern?}` 远程只读文件访问 |
 | GET/POST | `/mesh/link`、`/mesh/send` | hub 之间的链路（mesh secret） |
 | GET | `/api/events` | SSE 事件流（`?task=<id>` 用于 worker 接收指令） |

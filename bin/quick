@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 # quick-agent CLI entry point
 DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-NODE_NO_WARNINGS=1 exec node "$DIR/cli/quick.ts" "$@"
+NODE_NO_WARNINGS=1 exec node --import "$DIR/bin/ts-hooks.mjs" "$DIR/cli/quick.ts" "$@"

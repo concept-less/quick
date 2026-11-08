@@ -1,9 +1,9 @@
 // quick-agent hub: task registry, attention inbox, worker lifecycle (tmux), intake, SSE,
 // and the multi-machine mesh (see mesh.ts).
 // Run: node hub/server.ts   (normally started automatically by pi or `quick hub start`)
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { hostname, platform } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -21,6 +21,7 @@ import {
 } from "../shared/types.ts";
 import { dashboardHtml } from "./dashboard.ts";
 import { Mesh } from "./mesh.ts";
+import { autoUpdate, readState, readVersion, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -28,6 +29,9 @@ const SELF = cfg.machine.id;
 const EXTENSION_DIR = join(REPO_ROOT, "browser");
 const STARTED_AT = Date.now();
 const MAX_TRANSFER = 25 * 1024 * 1024;
+/** Version of the code this hub process is running. */
+const VERSION = readVersion(REPO_ROOT);
+const UPGRADE_RPC_TIMEOUT_MS = 6 * 60_000;
 
 /** Tasks owned (executed) by this machine. */
 const tasks = new Map<string, Task>();
@@ -133,6 +137,7 @@ function machineInfo(): MachineInfo {
 		platform: platform(),
 		startedAt: STARTED_AT,
 		activeTasks: [...tasks.values()].filter((t) => ACTIVE_STATUSES.includes(t.status)).length,
+		version: VERSION,
 	};
 }
 
@@ -404,6 +409,19 @@ function resolvePath(p: unknown): string {
 const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	"machine.info": async () => machineInfo(),
 
+	// Upgrade this machine (`quick upgrade --all` / `--machine`). The hub restarts itself afterwards when idle.
+	"update.run": async (p, from) => {
+		log(`[update] upgrade requested by ${from}${p.check ? " (check only)" : ""}`);
+		const r = await runUpgrade({ check: !!p.check, machine: SELF });
+		if (r.installed) {
+			log(`[update] upgraded ${r.from} → ${r.to} (${r.kind})`);
+			broadcast({ type: "update", machine: SELF, from: r.from, to: r.to, ts: Date.now() });
+			r.note = restartNote();
+			setTimeout(maybeRestart, 1500);
+		}
+		return r;
+	},
+
 	"task.create": async (p) => createTaskLocal(p),
 	"task.get": async (p) => ({ task: ownTask(p.id), events: readEvents(p.id, Math.min(Number(p.events ?? 30) || 30, 500)) }),
 	"task.message": async (p) => {
@@ -582,6 +600,70 @@ function createIntake(body: any): Intake {
 	return i;
 }
 
+// ---------------------------------------------------------------- self-upgrade
+
+let upgradesInFlight = 0;
+async function apiUpgrade(body: any): Promise<UpgradeResult[]> {
+	upgradesInFlight++;
+	try {
+		return await upgradeMachines(body);
+	} finally {
+		upgradesInFlight--;
+		setTimeout(maybeRestart, 1500);
+	}
+}
+async function upgradeMachines(body: any): Promise<UpgradeResult[]> {
+	const check = !!body.check;
+	let targets: string[] = Array.isArray(body.machines) ? body.machines.map(String).filter(Boolean) : [];
+	if (body.all) targets = mesh.machines().filter((m) => m.online).map((m) => m.id);
+	if (!targets.length) targets = [SELF];
+	return Promise.all(
+		[...new Set(targets)].map(async (machine) => {
+			try {
+				if (!mesh.reachable(machine)) throw new Error(`machine ${machine} is not reachable`);
+				return { ...(await mesh.request<UpgradeResult>(machine, "update.run", { check }, UPGRADE_RPC_TIMEOUT_MS)), machine };
+			} catch (e) {
+				let msg = (e as Error).message;
+				if (/unknown method update\.run/.test(msg)) msg = "对方 hub 版本过旧，不支持远程升级（请在那台机器上手动升级一次）";
+				const version = mesh.machines().find((m) => m.id === machine)?.version ?? "?";
+				return { machine, ok: false, error: msg, from: version, to: version, current: version, installed: false, checkOnly: check, available: false, tried: [], root: "", kind: "git" } as UpgradeResult;
+			}
+		}),
+	);
+}
+
+let restarting = false;
+function restartNote() {
+	return cfg.update.restartHub === "never" ? "运行 quick hub restart 生效" : "hub 将在没有运行中的 worker 时自动重启";
+}
+/** After an upgrade was installed (by anyone) since this hub started: restart once no local worker is busy. */
+function maybeRestart() {
+	if (restarting || cfg.update.restartHub === "never") return;
+	const st = readState();
+	if (!st.installed || st.installed.at <= STARTED_AT) return;
+	if ([...tasks.values()].some((t) => !t.closed && ACTIVE_STATUSES.includes(t.status))) return;
+	// Do not cut off mesh RPCs (e.g. other machines' upgrade results still travelling through us).
+	if (upgradesInFlight > 0 || mesh.busy()) return void setTimeout(maybeRestart, 2000);
+	restarting = true;
+	log(`[update] restarting hub to load quick-agent ${st.installed.to} (running ${VERSION})`);
+	const out = openSync(paths.log, "a");
+	spawn(process.execPath, ["--import", join(REPO_ROOT, "bin", "ts-hooks.mjs"), join(REPO_ROOT, "cli", "quick.ts"), "hub", "restart"], {
+		detached: true,
+		stdio: ["ignore", out, out],
+		env: { ...process.env, NODE_NO_WARNINGS: "1", QA_TASK_ID: "" },
+	}).unref();
+	closeSync(out);
+}
+
+function backgroundUpdate() {
+	void autoUpdate({ trigger: "hub", log }).then((r) => {
+		if (r?.installed) {
+			broadcast({ type: "update", machine: SELF, from: r.from, to: r.to, ts: Date.now() });
+			maybeRestart();
+		}
+	});
+}
+
 // Periodically reconcile local tasks whose tmux window disappeared.
 async function reconcile() {
 	const live = await liveWindows();
@@ -637,7 +719,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		res.writeHead(204, cors());
 		return res.end();
 	}
-	if (p === "/health") return send(res, 200, { ok: true, machine: SELF, pid: process.pid, tasks: tasks.size, mesh: mesh.enabled });
+	if (p === "/health") return send(res, 200, { ok: true, machine: SELF, pid: process.pid, tasks: tasks.size, mesh: mesh.enabled, version: VERSION });
 	if (p === "/" || p === "/dashboard") {
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 		return res.end(dashboardHtml());
@@ -685,6 +767,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return;
 	}
 
+	if (p === "/api/upgrade" && m === "POST") return send(res, 200, { results: await apiUpgrade(await readJson(req)) });
 	if (p === "/api/machines" && m === "GET") return send(res, 200, { self: SELF, machines: mesh.machines(), links: mesh.linkStatus() });
 	if (p === "/api/fs" && m === "POST") {
 		const body = await readJson(req);
@@ -782,9 +865,13 @@ const server = createServer((req, res) => {
 });
 server.listen(cfg.port, cfg.host, () => {
 	writeFileSync(paths.pid, String(process.pid));
-	log(`[quick-agent hub] machine "${SELF}" listening on http://${cfg.host}:${cfg.port} (pid ${process.pid}, mesh ${mesh.enabled ? `on, ${cfg.mesh.peers.length} peer(s)` : "off"})`);
+	log(`[quick-agent hub] v${VERSION} machine "${SELF}" listening on http://${cfg.host}:${cfg.port} (pid ${process.pid}, mesh ${mesh.enabled ? `on, ${cfg.mesh.peers.length} peer(s)` : "off"})`);
 	mesh.start();
+	// Background version check: never blocks startup, throttled by update.intervalHours, silent on failure.
+	setTimeout(backgroundUpdate, 10_000).unref();
 });
+setInterval(backgroundUpdate, 3600_000).unref();
+setInterval(maybeRestart, 60_000).unref();
 setInterval(() => void reconcile().catch(() => {}), 5000);
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
 	process.on(sig, () => {

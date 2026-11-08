@@ -62,6 +62,8 @@ export class Mesh {
 	private links = new Map<string, Link>();
 	private pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
 	private dialers: Dialer[] = [];
+	/** Requests we forwarded for others and whose response has not passed back yet (id → time). */
+	private relaying = new Map<string, number>();
 	private table = new Map<string, { hops: number; via: string; info: MachineInfo }>();
 	private offline = new Map<string, MachineInfo>(); // machines seen before but currently unreachable
 	private timer?: NodeJS.Timeout;
@@ -227,6 +229,12 @@ export class Mesh {
 		return { enabled: this.enabled, self: this.o.selfId, dialed, inbound };
 	}
 
+	/** RPCs in flight through this hub (own requests or relayed ones), e.g. to postpone a restart. */
+	busy(maxAgeMs = 10 * 60_000): boolean {
+		for (const [id, at] of this.relaying) if (Date.now() - at > maxAgeMs) this.relaying.delete(id);
+		return this.pending.size > 0 || this.relaying.size > 0;
+	}
+
 	reachable(machine: string) {
 		return machine === this.o.selfId || this.table.has(machine);
 	}
@@ -271,6 +279,7 @@ export class Mesh {
 				back?.send({ t: "res", id: f.id, to: f.from, ok: false, error: `machine ${f.to} is not reachable from ${this.o.selfId}`, ttl: MAX_HOPS });
 				return;
 			}
+			this.relaying.set(f.id, Date.now());
 			return this.sendTowards(f.to, { ...f, ttl: f.ttl - 1 });
 		}
 		let res: Frame;
@@ -285,6 +294,7 @@ export class Mesh {
 	}
 
 	private routeResponse(f: Extract<Frame, { t: "res" }>) {
+		this.relaying.delete(f.id);
 		if (f.to !== this.o.selfId) {
 			if (f.ttl > 0) this.sendTowards(f.to, { ...f, ttl: f.ttl - 1 });
 			return;

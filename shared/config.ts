@@ -51,6 +51,29 @@ export interface QaConfig {
 	/** Identity of this machine in the mesh. */
 	machine: { id: string; description?: string };
 	mesh: MeshConfig;
+	/** Self-upgrade settings (see shared/update.ts). */
+	update: UpdateConfig;
+}
+
+export interface UpdateConfig {
+	/** Master switch for automatic background checks (env QA_UPDATE=off / QA_NO_UPDATE=1 disables). `quick upgrade` always works. */
+	enabled: boolean;
+	/** Install a newer version automatically after a background check (env QA_UPDATE_AUTO_INSTALL=0 disables). */
+	autoInstall: boolean;
+	/** Minimum hours between background checks. */
+	intervalHours: number;
+	/** After an upgrade: "idle" restarts the hub automatically once no local worker is starting/running; "never" leaves it to you. */
+	restartHub: "idle" | "never";
+	/** Version sources, in priority order. */
+	sources: ("npm" | "github" | "git")[];
+	/** npm package name (default: package.json name). */
+	npmPackage: string;
+	npmRegistry: string;
+	/** GitHub repository "owner/name" for releases (default: from package.json repository). */
+	githubRepo?: string;
+	githubApi: string;
+	/** Git URL used for tag lookup when this copy is not a git checkout (default: package.json repository). */
+	gitUrl?: string;
 }
 
 export const QA_HOME = process.env.QA_HOME ?? join(homedir(), ".quick-agent");
@@ -94,11 +117,49 @@ export function loadConfig(): QaConfig {
 		projects: raw.projects ?? [],
 		machine: { id: process.env.QA_MACHINE ?? raw.machine?.id ?? sanitizeId(hostname()), description: raw.machine?.description },
 		mesh: { secret: raw.mesh?.secret, peers: raw.mesh?.peers ?? [] },
+		update: updateConfig(raw.update),
 	};
 	if (!existsSync(CONFIG_PATH) || raw.token === undefined) {
-		writeFileSync(CONFIG_PATH, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
+		// `update` is derived (env overrides, package.json defaults): only persist what the user sets.
+		const { update: _update, ...persist } = cfg;
+		writeFileSync(CONFIG_PATH, `${JSON.stringify(raw.update ? { ...persist, update: raw.update } : persist, null, 2)}\n`, { mode: 0o600 });
 	}
 	return cfg;
+}
+
+function packageJson(): any {
+	try {
+		return JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
+	} catch {
+		return {};
+	}
+}
+
+/** "owner/name" from a GitHub URL (git@github.com:o/n.git, https://github.com/o/n, git+https://…, github:o/n). */
+export function githubSlug(url: string | undefined): string | undefined {
+	if (!url) return undefined;
+	const m = /github\.com[:/]([^/]+)\/([^/#?]+?)(?:\.git)?(?:[#?].*)?$/i.exec(url) ?? /^github:([^/]+)\/(.+?)(?:\.git)?$/i.exec(url);
+	return m ? `${m[1]}/${m[2]}` : undefined;
+}
+
+function updateConfig(raw: Partial<UpdateConfig> | undefined): UpdateConfig {
+	const pkg = packageJson();
+	const repoUrl: string | undefined = typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url;
+	const off = (v: string | undefined) => v !== undefined && /^(0|off|false|no)$/i.test(v);
+	const env = process.env;
+	const sources = (env.QA_UPDATE_SOURCES?.split(",") ?? raw?.sources ?? ["npm", "github", "git"]).map((x) => String(x).trim()).filter((x) => ["npm", "github", "git"].includes(x)) as UpdateConfig["sources"];
+	return {
+		enabled: raw?.enabled !== false && !off(env.QA_UPDATE) && env.QA_NO_UPDATE !== "1",
+		autoInstall: raw?.autoInstall !== false && !off(env.QA_UPDATE_AUTO_INSTALL),
+		intervalHours: Number(env.QA_UPDATE_INTERVAL_HOURS ?? raw?.intervalHours ?? 6) || 6,
+		restartHub: raw?.restartHub === "never" ? "never" : "idle",
+		sources,
+		npmPackage: raw?.npmPackage ?? pkg.quickAgent?.npmPackage ?? pkg.name ?? "quick-agent",
+		npmRegistry: (env.QA_NPM_REGISTRY ?? raw?.npmRegistry ?? "https://registry.npmjs.org").replace(/\/+$/, ""),
+		githubRepo: raw?.githubRepo ?? githubSlug(repoUrl),
+		githubApi: (env.QA_GITHUB_API ?? raw?.githubApi ?? "https://api.github.com").replace(/\/+$/, ""),
+		gitUrl: raw?.gitUrl ?? repoUrl?.replace(/^git\+/, ""),
+	};
 }
 
 export function sanitizeId(s: string): string {

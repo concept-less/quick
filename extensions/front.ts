@@ -8,9 +8,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { hubUrl, loadConfig, matchProject } from "../shared/config.ts";
+import { hubUrl, loadConfig, matchProject, REPO_ROOT } from "../shared/config.ts";
 import { HubClient } from "../shared/hub-client.ts";
 import { ensureHub } from "../shared/hub-process.ts";
+import { autoUpdate, compareVersions, readState, readVersion } from "../shared/update.ts";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
 
 const QA_TOOLS = ["qa_dispatch", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_machines", "qa_remote_fs"];
@@ -513,6 +514,15 @@ export function setupFront(pi: ExtensionAPI) {
 
 	// ---------------------------------------------------------------- lifecycle
 
+	/** Version of the extension code loaded into this pi process. */
+	const loadedVersion = readVersion(REPO_ROOT);
+	let updateNotified = "";
+	const notifyUpgraded = (to: string) => {
+		if (!current?.hasUI || updateNotified === to || compareVersions(to, loadedVersion) <= 0) return;
+		updateNotified = to;
+		current.ui.notify(`quick-agent 已升级到 ${to}（当前加载 ${loadedVersion}），运行 /reload 生效`, "info");
+	};
+
 	pi.on("session_start", async (_e, ctx) => {
 		current = ctx;
 		// Interactive pi (terminal TUI, or RPC clients such as desktop apps) becomes the front agent.
@@ -524,6 +534,10 @@ export function setupFront(pi: ExtensionAPI) {
 			enabled = false;
 			setEnabled(true, ctx);
 		}
+		// Background version check (throttled, silent on failure); never awaited.
+		const installed = readState().installed;
+		if (installed) notifyUpgraded(installed.to);
+		setTimeout(() => void autoUpdate({ trigger: "pi" }).then((r) => r?.installed && notifyUpgraded(r.to)), 5000).unref?.();
 		try {
 			if ((await ensureHub(cfg, hub)) === "started") ctx.ui.notify(`quick-agent hub 已启动 ${hubUrl(cfg)}`, "info");
 		} catch (e) {
@@ -556,6 +570,8 @@ export function setupFront(pi: ExtensionAPI) {
 							{ triggerTurn: false },
 						);
 					}
+				} else if (e.type === "update") {
+					notifyUpgraded(e.to);
 				} else if (e.type === "machines") {
 					machines = e.machines;
 					machinesAt = Date.now();

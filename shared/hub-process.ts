@@ -14,11 +14,16 @@ export async function hubAlive(hub: HubClient): Promise<boolean> {
 	}
 }
 
+/** Node arguments to run the hub (the hook lets Node load our .ts files from node_modules when installed from npm). */
+export function hubArgs(): string[] {
+	return ["--import", join(REPO_ROOT, "bin", "ts-hooks.mjs"), join(REPO_ROOT, "hub", "server.ts")];
+}
+
 /** Ensure the hub is running. Returns "running" if it already was, "started" if we launched it. */
 export async function ensureHub(cfg: QaConfig = loadConfig(), hub = new HubClient(cfg)): Promise<"running" | "started"> {
 	if (await hubAlive(hub)) return "running";
 	const out = openSync(paths.log, "a");
-	const child = spawn(process.execPath, [join(REPO_ROOT, "hub", "server.ts")], {
+	const child = spawn(process.execPath, hubArgs(), {
 		detached: true,
 		stdio: ["ignore", out, out],
 		// Strip pi-specific env so the hub is a clean process.

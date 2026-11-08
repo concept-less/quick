@@ -1,13 +1,14 @@
 // quick — quick-agent command line.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { hostname, userInfo } from "node:os";
-import { hubUrl, loadConfig, paths, sanitizeId, saveConfigPatch, type PeerConfig } from "../shared/config.ts";
+import { hubUrl, loadConfig, paths, REPO_ROOT, sanitizeId, saveConfigPatch, type PeerConfig } from "../shared/config.ts";
 import { ensureHub, hubAlive as alive } from "../shared/hub-process.ts";
 import { HubClient } from "../shared/hub-client.ts";
-import type { Task } from "../shared/types.ts";
+import { ACTIVE_STATUSES, type Task } from "../shared/types.ts";
+import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 
 const cfg = loadConfig();
 const hub = new HubClient(cfg);
@@ -91,6 +92,8 @@ const HELP = `quick — quick-agent
   quick close <id>          关闭 worker 窗口
   quick ack <id>            标记已读
   quick machines            mesh 中的机器与链路状态
+  quick upgrade [--check] [--all | --machine M ... | M ...] [--json]
+                            升级 quick-agent（update 是别名）：默认只升级本机；--all 所有在线机器；--check 只检查不安装
 
   多机互联（mesh）:
   quick mesh init [--id NAME] [--desc 描述]   初始化本机身份与 mesh 密钥
@@ -106,6 +109,87 @@ const HELP = `quick — quick-agent
   quick tunnel              打印本地浏览器连接所需的 ssh 端口转发命令
 
   配置: ${join(paths.home, "config.json")}`;
+
+// ---------------------------------------------------------------- upgrade
+
+const KIND_LABEL: Record<string, string> = { git: "git 安装", "npm-pi": "pi npm 包", "npm-global": "npm 全局安装", release: "发布包" };
+
+function printUpgrade(r: UpgradeResult, verbose: boolean) {
+	const name = (r.machine ?? cfg.machine.id).padEnd(16);
+	let state: string;
+	if (!r.ok) state = `✗ ${r.error}`;
+	else if (r.installed) state = `✓ 已升级 ${r.from} → ${r.to}`;
+	else if (r.available) state = r.blocker ? `! 有更新，但无法自动安装：${r.blocker}` : `↑ 有更新（quick upgrade 安装）`;
+	else state = "✓ 已是最新";
+	const latest = r.latest ? `${r.latest.version} (${r.latest.source})` : "?";
+	const behind = r.git?.behind && !r.installed ? `，上游领先 ${r.git.behind} 个提交` : "";
+	console.log(`${name} 当前 ${r.from.padEnd(8)} 最新 ${latest.padEnd(16)} ${state}${behind}`);
+	if (verbose) {
+		if (r.root) console.log(`${"".padEnd(16)} \x1b[2m${KIND_LABEL[r.kind] ?? r.kind} · ${r.root}${r.git ? ` · ${r.git.branch ?? "detached"}${r.git.upstream ? `→${r.git.upstream}` : ""}${r.git.dirty ? " · 有未提交改动" : ""}` : ""}\x1b[0m`);
+		if (r.tried?.length) console.log(`${"".padEnd(16)} \x1b[2m来源: ${describeSources(r.tried)}\x1b[0m`);
+		if (r.note) console.log(`${"".padEnd(16)} ${r.note}`);
+	}
+}
+
+async function upgrade(args: string[]) {
+	if (args.includes("--auto")) {
+		// Internal: background check spawned by other commands.
+		await autoUpdate({ trigger: "cli" });
+		return;
+	}
+	const check = args.includes("--check");
+	const json = args.includes("--json");
+	const all = args.includes("--all");
+	const machines = [...flags(args, "--machine"), ...args.filter((a) => !a.startsWith("-"))].flatMap((m) => m.split(",")).filter(Boolean);
+	const remote = all || machines.some((m) => m !== cfg.machine.id);
+	if (remote) {
+		await hubStart(true);
+		if (!json) console.log(check ? "检查各机器版本 …" : "升级中（各机器并行，可能需要一两分钟）…");
+		const results = await hub.upgrade({ all, machines, check });
+		if (json) return console.log(JSON.stringify(results, null, 2));
+		for (const r of results) printUpgrade(r, results.length === 1);
+		const failed = results.filter((r) => !r.ok).length;
+		const done = results.filter((r) => r.installed).length;
+		console.log(`\n${results.length} 台机器：${done} 台已升级，${failed} 台失败${done ? "。各机器的 hub 会在没有运行中的 worker 时自动重启；pi 里 /reload 生效" : ""}`);
+		if (failed) process.exitCode = 1;
+		return;
+	}
+	const r = await runUpgrade({ check, machine: cfg.machine.id });
+	if (json) return console.log(JSON.stringify(r, null, 2));
+	printUpgrade(r, true);
+	if (!r.ok) process.exitCode = 1;
+	if (!r.installed) return;
+	// Load the new code into the hub: restart it now unless a local worker is busy.
+	if (await hubAlive()) {
+		const busy = (await hub.listTasks().catch(() => [] as Task[])).filter((t) => t.machine === cfg.machine.id && !t.closed && ACTIVE_STATUSES.includes(t.status));
+		if (cfg.update.restartHub === "never") console.log("运行 quick hub restart 让 hub 使用新版本");
+		else if (busy.length) console.log(`本机有 ${busy.length} 个运行中的 worker，暂不重启 hub（新版 hub 会在空闲时自动重启；也可以手动 quick hub restart）`);
+		else {
+			await hubStop();
+			await hubStart();
+		}
+	}
+	console.log("pi 里运行 /reload（或新开 pi）加载新版扩展");
+}
+
+/** Kick a throttled background check (detached, never slows the command) and hint at pending updates. */
+function backgroundUpdateCheck() {
+	if (!cfg.update.enabled) return;
+	try {
+		if (dueForCheck(cfg.update)) {
+			spawn(process.execPath, ["--import", join(REPO_ROOT, "bin", "ts-hooks.mjs"), join(REPO_ROOT, "cli", "quick.ts"), "upgrade", "--auto"], {
+				detached: true,
+				stdio: "ignore",
+				env: { ...process.env, NODE_NO_WARNINGS: "1" },
+			}).unref();
+		}
+		const st = readState();
+		if (st.available && st.latest && process.stderr.isTTY && Date.now() - (st.hintedAt ?? 0) > 86400_000) {
+			console.error(`\x1b[2mquick-agent ${st.latest} 可用（当前 ${st.current}），运行 quick upgrade 升级\x1b[0m`);
+			patchState({ hintedAt: Date.now() });
+		}
+	} catch {}
+}
 
 function flag(args: string[], name: string): string | undefined {
 	const i = args.indexOf(name);
@@ -315,6 +399,7 @@ async function main() {
 				console.log(
 					`${m.online ? "●" : "○"} ${m.id.padEnd(16)} ${m.self ? "self" : m.hops === -1 ? "offline" : m.hops === 1 ? "direct" : `via ${m.via} (${m.hops} hops)`}  \x1b[2m${m.description ?? ""}${m.activeTasks ? ` · ${m.activeTasks} running` : ""}\x1b[0m`,
 				);
+			if (r.machines.some((m) => m.version)) console.log(`\x1b[2m版本: ${r.machines.map((m) => `${m.id} ${m.version ?? "?"}`).join(" · ")}\x1b[0m`);
 			if (!r.links.enabled) console.log("\n(mesh 未启用：运行 quick mesh init)");
 			for (const d of r.links.dialed) console.log(`  → ${d.label}: ${d.state}${d.peer ? ` (${d.peer})` : ""}${d.error ? ` — ${d.error}` : ""}`);
 			for (const l of r.links.inbound) console.log(`  ← ${l.peer} from ${l.label}`);
@@ -322,6 +407,9 @@ async function main() {
 		}
 		case "mesh":
 			return mesh(rest);
+		case "upgrade":
+		case "update":
+			return upgrade(rest);
 		case "token":
 			return console.log(cfg.token);
 		case "dashboard":
@@ -341,4 +429,5 @@ function main2(args: string[]) {
 	return main();
 }
 
+if (!["upgrade", "update", "help", "--help", "-h"].includes(cmd)) backgroundUpdateCheck();
 main().catch((e) => die((e as Error).message));

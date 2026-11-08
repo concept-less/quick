@@ -1,11 +1,17 @@
 {
   "name": "quick-agent",
   "version": "0.3.0",
-  "private": true,
   "type": "module",
   "description": "Front/worker agent workflow for pi: your interactive pi becomes a quick front agent that delegates tasks to independent worker agents.",
   "keywords": ["pi-package"],
+  "repository": { "type": "git", "url": "git+ssh://git@github.com/concept-less/quick.git" },
+  "homepage": "https://github.com/concept-less/quick#readme",
+  "bugs": { "url": "https://github.com/concept-less/quick/issues" },
   "bin": { "quick": "bin/quick" },
+  "files": ["bin/", "cli/", "hub/", "shared/", "extensions/", "browser/", "README.md"],
+  "scripts": {
+    "test": "NODE_NO_WARNINGS=1 node --test test/*.test.ts"
+  },
   "engines": { "node": ">=22.18" },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

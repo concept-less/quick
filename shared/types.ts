@@ -104,6 +104,8 @@ export interface MachineInfo {
 	platform?: string;
 	startedAt?: number;
 	activeTasks?: number;
+	/** quick-agent version of that hub. */
+	version?: string;
 }
 export interface MachineView extends MachineInfo {
 	self: boolean;
@@ -121,4 +123,5 @@ export type HubEvent =
 	| { type: "task.message"; taskId: string; text: string; ts: number }
 	| { type: "task.cancel"; taskId: string; ts: number }
 	| { type: "intake"; intake: Intake }
-	| { type: "machines"; machines: MachineView[] };
+	| { type: "machines"; machines: MachineView[] }
+	| { type: "update"; machine: string; from: string; to: string; ts: number };

@@ -1,5 +1,6 @@
 // Minimal HTTP + SSE client for the quick-agent hub (uses global fetch).
 import { hubUrl, loadConfig, type QaConfig } from "./config.ts";
+import type { UpgradeResult } from "./update.ts";
 import type { HubEvent, Intake, MachineView, Task, TaskEvent } from "./types.ts";
 
 export class HubError extends Error {
@@ -46,7 +47,7 @@ export class HubClient {
 	}
 
 	health() {
-		return this.request<{ ok: boolean; pid: number; tasks: number }>("GET", "/health");
+		return this.request<{ ok: boolean; pid: number; tasks: number; machine?: string; version?: string }>("GET", "/health");
 	}
 	listTasks() {
 		return this.request<{ tasks: Task[] }>("GET", "/api/tasks").then((r) => r.tasks);
@@ -85,6 +86,10 @@ export class HubClient {
 	}
 	machines() {
 		return this.request<{ self: string; machines: MachineView[]; links: any }>("GET", "/api/machines");
+	}
+	/** Upgrade (or with check: just check) machines through the mesh. */
+	upgrade(body: { machines?: string[]; all?: boolean; check?: boolean }) {
+		return this.request<{ results: UpgradeResult[] }>("POST", "/api/upgrade", body).then((r) => r.results);
 	}
 	fs(body: { machine?: string; op: "ls" | "read" | "grep"; path: string; pattern?: string; offset?: number; limit?: number }) {
 		return this.request<any>("POST", "/api/fs", body);
