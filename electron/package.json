@@ -1,0 +1,84 @@
+{
+  "name": "quick-agent-desktop",
+  "productName": "quick-agent",
+  "version": "0.3.0",
+  "private": true,
+  "description": "quick-agent desktop client (Electron): front-agent chat, task inbox/board, native notifications.",
+  "main": "src/main.cjs",
+  "author": "quick-agent",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron .",
+    "icons": "python3 scripts/make-icons.py",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --mac dmg zip",
+    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/quick-preload.cjs && node --check src/lib.cjs && node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "electron": "^39.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "dev.quick-agent.desktop",
+    "productName": "quick-agent",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**",
+      "assets/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "src/bootstrap.mjs"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "quick-agent",
+        "filter": [
+          "package.json",
+          "bin/**",
+          "cli/**",
+          "hub/**",
+          "shared/**",
+          "ui/**",
+          "extensions/**",
+          "browser/**"
+        ]
+      }
+    ],
+    "protocols": [
+      {
+        "name": "quick-agent",
+        "schemes": [
+          "quick-agent"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSUserNotificationAlertStyle": "alert"
+      }
+    },
+    "dmg": {
+      "title": "quick-agent ${version}"
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    }
+  }
+}

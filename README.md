@@ -140,6 +140,17 @@ quick ui status | url | logs | stop | restart
 - 深色和浅色跟随系统，也可以用右上角 ◐ 手动切换；窄屏时对话和任务可以切换显示。
 - 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理，汇报只会进入派单的那个会话。
 
+## 桌面客户端（Electron，macOS）
+
+`electron/` 里是 quick-agent 的桌面客户端：把 Web UI 装进原生窗口，按"注意力"组织，没有会话。托盘和 Dock 角标只显示"需要你"的数量；只有 worker 提问、受阻、失败或停下时才立即发系统通知，点通知直达那个任务；完成的汇报合批成一条"已完成待扫"汇总；支持专注模式；全局快捷键 `⌘⇧Space` 随时"把一件事交出去"。客户端会复用或拉起 hub 和 Web UI 服务，关掉窗口或退出客户端，worker 都照常工作。
+
+```bash
+cd electron && npm install && npm run dev     # 本地运行
+npm run dist                                   # 打包 .app / .dmg（ad-hoc 签名，正式签名和公证见 electron/README.md）
+```
+
+详见 [electron/README.md](electron/README.md)。设计依据见 [docs/management-philosophy.md](docs/management-philosophy.md) 和 [docs/attention.md](docs/attention.md)。
+
 ## 多机互联（mesh）
 
 quick-agent 自带原生的多机互联，不依赖 codexhost。每台机器跑一个 hub，hub 之间组成网状网络：

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>把一件事交出去</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f4f0;--fg:#0d0d0d;--fg2:#55554f;--fg3:#8c8c85;--line:#d4d4cc;--acc:#e61919;--inv-bg:#0d0d0d;--inv-fg:#f4f4f0;--ok:#0d0d0d;--mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme: dark){:root{--bg:#0e0e0e;--fg:#ececE6;--fg2:#a3a39c;--fg3:#6b6b66;--line:#2a2a2a;--acc:#ff3b30;--inv-bg:#ececE6;--inv-fg:#0e0e0e;--ok:#ececE6}}
+html,body{margin:0;height:100%;overflow:hidden;background:transparent}
+body{font:14px/1.5 "Inter","Helvetica Neue",-apple-system,system-ui,"PingFang SC",sans-serif;color:var(--fg);-webkit-user-select:none}
+.box{position:absolute;inset:0;background:var(--bg);border:1px solid var(--fg);display:flex;flex-direction:column;box-sizing:border-box;-webkit-app-region:drag}
+.top{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
+.top b{font:800 12px/1 inherit;letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.top b::before{content:"";width:10px;height:10px;background:var(--acc)}
+.seg{display:inline-flex;border:1px solid var(--line);-webkit-app-region:no-drag}
+.seg button{border:0;background:none;color:var(--fg2);padding:2px 10px;font:12px inherit;cursor:pointer}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--inv-bg);color:var(--inv-fg)}
+.grow{flex:1}
+.mono{font:11.5px var(--mono);color:var(--fg3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+textarea{flex:1;margin:0;padding:12px 14px 6px;border:0;outline:0;resize:none;background:transparent;color:inherit;font:16px/1.5 inherit;-webkit-app-region:no-drag;-webkit-user-select:text}
+textarea::placeholder{color:var(--fg3)}
+.foot{display:flex;align-items:center;gap:10px;padding:6px 14px 9px;font:11px var(--mono);color:var(--fg3)}
+#msg.err{color:var(--acc)}#msg.ok{color:var(--ok);font-weight:600}
+kbd{font:10.5px var(--mono);border:1px solid var(--line);border-bottom-width:2px;padding:0 4px;color:var(--fg2)}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="top"><b>把一件事交出去</b>
+    <div class="seg" id="seg"><button data-m="front" title="交给前台 agent：它理解需求、补全上下文、决定交给谁；有需要你的地方会回来找你">交给前台</button><button data-m="direct" title="跳过前台，直接交给一个 worker（第一行作为标题）">直接交给 worker</button></div>
+    <span class="grow"></span><span class="mono" id="cwd"></span></div>
+  <textarea id="t" rows="3" placeholder="脑子里的一件事，说完就忘掉它。例如：修复登录页在 Safari 下的布局错位" autofocus></textarea>
+  <div class="foot"><span id="msg"><kbd>Enter</kbd> 交出去 · <kbd>⌘Enter</kbd> 交出去并打开 · <kbd>Tab</kbd> 切换 · <kbd>Esc</kbd> 关闭</span></div>
+</div>
+<script>
+"use strict";
+const t=document.getElementById('t'),msg=document.getElementById('msg'),seg=document.getElementById('seg');
+const HINT=msg.innerHTML;let mode='front',busy=false;
+function setMode(m){mode=m;for(const b of seg.children)b.classList.toggle('on',b.dataset.m===m);t.placeholder=m==='front'?'脑子里的一件事，说完就忘掉它。前台会接住，需要你时再来找你':'直接交给一个 worker：第一行是标题，全文是任务简报'}
+for(const b of seg.children)b.onclick=()=>{setMode(b.dataset.m);t.focus()};
+window.quickInput.onShow(info=>{setMode(info.mode||'front');const c=document.getElementById('cwd');c.textContent=info.cwd||'';c.title='工作目录 '+(info.cwd||'');msg.className='';msg.innerHTML=HINT;t.focus();t.select()});
+async function submit(open){
+  const text=t.value.trim();if(!text||busy)return;busy=true;msg.className='';msg.textContent='交出中…';
+  try{const r=await window.quickInput.submit(text,mode,open);
+    if(r&&r.ok){msg.className='ok';msg.textContent='✓ '+r.message+'，可以忘掉它了';t.value='';setTimeout(()=>{window.quickInput.hide();msg.className='';msg.innerHTML=HINT},800)}
+    else{msg.className='err';msg.textContent='✗ '+((r&&r.message)||'没交出去')}}
+  catch(e){msg.className='err';msg.textContent='✗ '+e.message}
+  busy=false}
+t.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.preventDefault();window.quickInput.hide()}
+  else if(e.key==='Tab'){e.preventDefault();setMode(mode==='front'?'direct':'front')}
+  else if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();submit(e.metaKey||e.ctrlKey)}
+});
+setMode('front');
+</script>
+</body>
+</html>
