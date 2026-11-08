@@ -161,6 +161,8 @@ quick cron pause|resume|run|rm <id>
 
 **多机 mesh 下谁来触发**：每个计划只属于一个 hub，就是创建它的那台（`job.hub`）。只有这个 hub 保存权威副本，也只有它的定时器会触发，所以不需要选主，也不依赖各机器时钟一致，不会重复派单。其他 hub 通过 mesh 复制拿到只读副本（和任务一样按 rev 排序，删除用墓碑同步），任何 hub 上的 REST/CLI/工具调用都会被路由到所属 hub 执行。派出的任务可以跑在 mesh 里任何一台机器上（`--machine`/`--requires`/`--cwd` 在触发时才选机器）。所属 hub 离线期间它的计划不会触发，恢复后按补跑策略处理。想让计划在某台常开的机器上触发，就在那台机器的 pi/CLI 上创建，或者在 `POST /api/cron` 里传 `hub`。
 
+团队模式下（见 `docs/team-collaboration.md`），计划记录创建者，每次运行都以他为 requester 派单；普通成员只能修改/删除自己的计划，owner 和机器 token 不受限。
+
 数据存放在 `~/.quick-agent/cron.json`（原子写入），hub 重启后自动恢复。测试：`npm test` 覆盖解析器、下次运行时间（含时区和 DST）、重叠与补跑决策；`test/cron-e2e.sh` 用隔离的 hub（`/tmp/qa-cron`、端口 17795、tmux 会话 `qa-cronT`，worker 是 PATH 里的假 `pi`，不花模型费用）验证 `--in 5s` 派单、`--every 10s` 重叠跳过、静默归档、暂停后不再触发、hub 重启后恢复和补跑。
 
 ## Web UI（在浏览器里用前台 agent）
