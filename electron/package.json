@@ -12,7 +12,7 @@
     "icons": "python3 scripts/make-icons.py",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --mac dmg zip",
-    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/quick-preload.cjs && node --check src/lib.cjs && node --test test/*.test.cjs"
+    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/quick-preload.cjs && node --check src/lib.cjs && node --check src/updater.cjs && node --test test/*.test.cjs"
   },
   "devDependencies": {
     "electron": "^39.2.0",

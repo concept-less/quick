@@ -33,6 +33,12 @@ npm run check        # 语法检查 + 单元测试
 
 设置保存在 `~/Library/Application Support/quick-agent/settings.json`（帮助 → 打开客户端设置文件）：`shortcut`、`notifications`、`quickMode`（专注模式和摘要间隔在 hub 里），以及高级选项 `repo`（quick-agent 仓库路径）、`node`（Node 路径）、`cwd`（前台进程的工作目录）。也可以用环境变量 `QA_REPO`、`QA_NODE` 指定。
 
+## 更新
+
+- **quick-agent 本身**（hub、Web UI、扩展）：窗口顶栏的版本标签 / 「升级」按钮，和浏览器里的 Web UI 一样（见主 README「升级与发布」）。客户端优先使用 `~/.quick-agent/app/current`（`install.sh` / `quick upgrade` 的 Release 安装），其次是 `quick` 所在的目录。
+- **客户端自己**：每 30 分钟通过 hub 的 `GET /api/update` 看最新 Release；有更新的 macOS 构建（`quick-agent-X.Y.Z-<arch>-mac.zip`）时，托盘菜单出现「更新客户端到 X.Y.Z」，版本面板里也有「更新客户端」按钮。点击后下载 zip，按 `SHA256SUMS` 校验，用 `ditto` 解压到 `.app` 旁边，退出后由一个脚本替换 `.app`（旧的先改名，新的放好后再删）并重新打开。`.app` 所在目录不可写时，改为下载 `.dmg` 到「下载」并打开它。没有用 electron-updater：产物是 ad-hoc 签名，Squirrel.Mac 只接受正式签名的更新。逻辑在 `src/updater.cjs`（有单元测试）。
+- Release 里的 `.dmg` / `.zip` 由 GitHub Actions（`.github/workflows/release.yml`，macos runner）在发布 Release 后构建上传。
+
 ## 安全
 
 - 窗口开启 `contextIsolation`、`sandbox`，关闭 `nodeIntegration`。只能导航到本地 Web UI 的 origin，外部链接用系统浏览器打开；`webview` 和弹窗一律拒绝；权限请求只放行剪贴板写入。
@@ -81,6 +87,7 @@ npm run dist         # .dmg + .zip：dist/quick-agent-<版本>-arm64.dmg
 ```
 electron/
   src/main.cjs          主进程：启动/复用后端、窗口、托盘、通知、专注模式、快捷键、菜单、深链
+  src/updater.cjs       客户端自更新（从 Release 下载 zip/dmg、校验、替换 .app）
   src/lib.cjs           纯逻辑：注意力分桶、通知分级与合批、专注模式、窗口位置校验（有单元测试）
   src/bootstrap.mjs     由系统 Node 运行，复用 shared/hub-process.ts、shared/ui-process.ts
   src/preload.cjs       主窗口 preload（window.quickDesktop）

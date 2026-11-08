@@ -15,6 +15,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const lib = require("./lib.cjs");
+const updater = require("./updater.cjs");
 
 const IS_MAC = process.platform === "darwin";
 const DEV = !app.isPackaged;
@@ -106,6 +107,9 @@ const isRepo = (d) => !!d && fs.existsSync(path.join(d, "ui", "server.ts")) && f
 function findRepo() {
 	const cands = [process.env.QA_REPO, settings.repo];
 	if (DEV) cands.push(path.resolve(SRC, "..", ".."));
+	try {
+		cands.push(fs.realpathSync(path.join(os.homedir(), ".quick-agent", "app", "current"))); // install.sh / quick upgrade
+	} catch {}
 	const q = which("quick");
 	if (q) {
 		try {
@@ -194,6 +198,7 @@ function createWindow() {
 		icon: IS_MAC ? undefined : path.join(ASSETS, "icon.png"),
 		webPreferences: {
 			preload: path.join(SRC, "preload.cjs"),
+			additionalArguments: [`--qa-app-version=${app.getVersion()}`],
 			contextIsolation: true,
 			nodeIntegration: false,
 			sandbox: true,
@@ -563,6 +568,7 @@ function renderIndicators() {
 					...[5, 10, 30, 60].map((m) => ({ label: `${m} 分钟`, type: "radio", checked: hubDigestMinutes === m, click: () => setDigestMinutes(m) })),
 				],
 			},
+			...appUpdateMenu(),
 			{ type: "separator" },
 			{ label: "退出（worker 继续在后台运行）", click: () => app.quit() },
 		]),
@@ -682,9 +688,68 @@ ipcMain.on("qa:retry", (e) => {
 		loadUi();
 	}
 });
+ipcMain.on("qa:update-app", (e) => {
+	if (win && e.sender === win.webContents) void runAppUpdate();
+});
 ipcMain.on("qa:open-external-ui", (e) => {
 	if (win && e.sender === win.webContents && conn) shell.openExternal(`${conn.uiUrl}/?token=${encodeURIComponent(conn.token)}`);
 });
+
+// ---------------------------------------------------------------- desktop client update (from GitHub Releases)
+
+let appUpdate; // updater.plan() result + { state, pct, error }
+async function checkAppUpdate() {
+	if (!conn || appUpdate?.state === "downloading") return;
+	try {
+		const st = await hubFetch("/api/update");
+		const p = IS_MAC ? updater.plan(st.latest, app.getVersion()) : undefined;
+		if (p?.version !== appUpdate?.version) {
+			appUpdate = p && { ...p, state: "available" };
+			if (p) log(`desktop update available: ${app.getVersion()} → ${p.version}`);
+			renderIndicators();
+		}
+	} catch {}
+}
+function appUpdateMenu() {
+	if (!appUpdate) return [];
+	const u = appUpdate;
+	const label = u.state === "downloading" ? `正在下载客户端 ${u.version}… ${Math.round((u.pct || 0) * 100)}%` : u.state === "error" ? `客户端更新失败：${String(u.error).slice(0, 40)}（重试）` : `更新客户端到 ${u.version}`;
+	return [{ type: "separator" }, { label, enabled: u.state !== "downloading", click: () => void runAppUpdate() }];
+}
+async function runAppUpdate() {
+	if (!appUpdate || appUpdate.state === "downloading") return;
+	appUpdate.state = "downloading";
+	appUpdate.pct = 0;
+	renderIndicators();
+	let last = 0;
+	try {
+		const r = await updater.install(appUpdate, {
+			exe: app.getPath("exe"),
+			pid: process.pid,
+			log,
+			openPath: (f) => shell.openPath(f),
+			onProgress: (pct) => {
+				appUpdate.pct = pct;
+				if (Date.now() - last > 1000) {
+					last = Date.now();
+					renderIndicators();
+				}
+			},
+		});
+		if (r.mode === "swap") {
+			quitting = true;
+			app.quit(); // the swap script reopens the new version
+		} else {
+			appUpdate.state = "available";
+			renderIndicators();
+		}
+	} catch (e) {
+		log(`desktop update failed: ${e.message}`);
+		appUpdate.state = "error";
+		appUpdate.error = e.message;
+		renderIndicators();
+	}
+}
 
 // ---------------------------------------------------------------- shortcuts + menu
 
@@ -795,6 +860,8 @@ if (!app.requestSingleInstanceLock()) {
 		createWindow();
 		if (startHidden && IS_MAC) app.hide(); // hand focus back to whatever the user was doing
 		await loadUi();
+		setTimeout(checkAppUpdate, 15000);
+		setInterval(checkAppUpdate, 30 * 60_000);
 		// Watchdog: if the UI server dies (killed, `quick ui stop`), bring it back and reload.
 		setInterval(async () => {
 			if (!conn || quitting) return;

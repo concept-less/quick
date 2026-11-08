@@ -8,9 +8,10 @@
   "homepage": "https://github.com/concept-less/quick#readme",
   "bugs": { "url": "https://github.com/concept-less/quick/issues" },
   "bin": { "quick": "bin/quick" },
-  "files": ["bin/", "cli/", "hub/", "shared/", "extensions/", "browser/", "README.md"],
+  "files": ["bin/", "cli/", "hub/", "shared/", "extensions/", "browser/", "ui/", "install.sh", "CHANGELOG.md", "README.md"],
   "scripts": {
-    "test": "NODE_NO_WARNINGS=1 node --test test/*.test.ts"
+    "test": "NODE_NO_WARNINGS=1 node --test test/*.test.ts electron/test/updater.test.cjs",
+    "release": "scripts/release.sh"
   },
   "engines": { "node": ">=22.18" },
   "peerDependencies": {

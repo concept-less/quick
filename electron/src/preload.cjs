@@ -44,6 +44,9 @@ if (trusted) {
 		onAction: on("qa:action"),
 		fallback: (ch, cb) => register(fallbacks, ch, cb),
 		retry: () => ipcRenderer.send("qa:retry"),
+		/** Version of the desktop client; updateApp() downloads the newer macOS build from the release and swaps it in. */
+		appVersion: (process.argv.find((a) => a.startsWith("--qa-app-version=")) || "").split("=")[1] || undefined,
+		updateApp: () => ipcRenderer.send("qa:update-app"),
 		openInBrowser: () => ipcRenderer.send("qa:open-external-ui"),
 	});
 }

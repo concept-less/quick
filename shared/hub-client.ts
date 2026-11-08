@@ -1,5 +1,6 @@
 // Minimal HTTP + SSE client for the quick-agent hub (uses global fetch).
-import { hubToken, hubUrl, loadConfig, type QaConfig } from "./config.ts";
+import { readFileSync } from "node:fs";
+import { hubToken, hubUrl, loadConfig, paths, type QaConfig } from "./config.ts";
 import type { UpgradeResult } from "./update.ts";
 import type { CronRun } from "./cron.ts";
 import type { CronView } from "../hub/cron.ts";
@@ -35,6 +36,15 @@ export interface CronInput {
 	hub?: string;
 }
 
+/** A hub restart is in progress (marker written by `quick hub reload`, at most 60 s old). */
+export function hubRestarting(): boolean {
+	try {
+		return Date.now() - Number(readFileSync(paths.restarting, "utf8")) < 60_000;
+	} catch {
+		return false;
+	}
+}
+
 export class HubClient {
 	readonly base: string;
 	readonly token: string;
@@ -44,20 +54,28 @@ export class HubClient {
 		this.token = hubToken(cfg);
 	}
 
-	async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+	async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, retry = true): Promise<T> {
 		let res: Response;
-		try {
-			res = await fetch(this.base + path, {
-				method,
-				headers: {
-					authorization: `Bearer ${this.token}`,
-					...(body === undefined ? {} : { "content-type": "application/json" }),
-				},
-				body: body === undefined ? undefined : JSON.stringify(body),
-				signal,
-			});
-		} catch (err) {
-			throw new HubError(`quick-agent hub unreachable at ${this.base} (${(err as Error).message}). Start it with: quick hub start`);
+		for (let attempt = 0; ; attempt++) {
+			try {
+				res = await fetch(this.base + path, {
+					method,
+					headers: {
+						authorization: `Bearer ${this.token}`,
+						...(body === undefined ? {} : { "content-type": "application/json" }),
+					},
+					body: body === undefined ? undefined : JSON.stringify(body),
+					signal,
+				});
+				break;
+			} catch (err) {
+				// The hub is being restarted (upgrade / `quick hub reload`): wait for it instead of failing.
+				if (retry && attempt < 60 && !signal?.aborted && hubRestarting()) {
+					await new Promise((r) => setTimeout(r, 250));
+					continue;
+				}
+				throw new HubError(`quick-agent hub unreachable at ${this.base} (${(err as Error).message}). Start it with: quick hub start`);
+			}
 		}
 		const text = await res.text();
 		let data: any;
@@ -71,7 +89,7 @@ export class HubClient {
 	}
 
 	health() {
-		return this.request<{ ok: boolean; pid: number; tasks: number; machine?: string; version?: string }>("GET", "/health");
+		return this.request<{ ok: boolean; pid: number; tasks: number; machine?: string; version?: string }>("GET", "/health", undefined, undefined, false);
 	}
 	listTasks() {
 		return this.request<{ tasks: Task[] }>("GET", "/api/tasks").then((r) => r.tasks);
@@ -173,6 +191,15 @@ export class HubClient {
 	/** Upgrade (or with check: just check) machines through the mesh. */
 	upgrade(body: { machines?: string[]; all?: boolean; check?: boolean }) {
 		return this.request<{ results: UpgradeResult[] }>("POST", "/api/upgrade", body).then((r) => r.results);
+	}
+	/** Update status of one machine (default this one) or, with all, of every online machine. */
+	updateStatus(q: { machine?: string; all?: boolean; refresh?: boolean } = {}) {
+		const qs = new URLSearchParams(Object.entries(q).filter(([, v]) => v).map(([k, v]) => [k, String(v)])).toString();
+		return this.request<any>("GET", `/api/update${qs ? `?${qs}` : ""}`);
+	}
+	/** Start an asynchronous upgrade / rollback on a machine (progress: updateStatus). */
+	startUpdate(body: { machine?: string; action: "install" | "rollback" }) {
+		return this.request<any>("POST", "/api/update", body);
 	}
 	fs(body: { machine?: string; op: "ls" | "read" | "grep"; path: string; pattern?: string; offset?: number; limit?: number }) {
 		return this.request<any>("POST", "/api/fs", body);

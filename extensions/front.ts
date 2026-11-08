@@ -11,7 +11,7 @@ import { hubUrl, loadConfig, matchProject, REPO_ROOT } from "../shared/config.ts
 import { HubClient } from "../shared/hub-client.ts";
 import { openAttach, planAttach, runForeground, type AttachResult } from "../shared/attach.ts";
 import { ensureHub } from "../shared/hub-process.ts";
-import { autoUpdate, compareVersions, readState, readVersion } from "../shared/update.ts";
+import { activeRoot, compareVersions, readVersion } from "../shared/update.ts";
 import { priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
 import { ACTIVE_STATUSES, ATTENTION_STATUSES, type Intake, type MachineView, type Task } from "../shared/types.ts";
 import { createTeamFront, TEAM_TOOLS } from "./team-tools.ts";
@@ -782,12 +782,33 @@ export function setupFront(pi: ExtensionAPI) {
 
 	/** Version of the extension code loaded into this pi process. */
 	const loadedVersion = readVersion(REPO_ROOT);
-	let updateNotified = "";
-	const notifyUpgraded = (to: string) => {
-		if (!current?.hasUI || updateNotified === to || compareVersions(to, loadedVersion) <= 0) return;
-		updateNotified = to;
-		current.ui.notify(`quick-agent 已升级到 ${to}（当前加载 ${loadedVersion}），运行 /reload 生效`, "info");
+	// After an upgrade the front pi reloads itself as soon as it is idle (workers keep their version).
+	let reloadPending = false;
+	const checkUpgraded = () => {
+		if (!current?.hasUI || reloadPending) return;
+		const onDisk = readVersion(activeRoot(REPO_ROOT));
+		if (compareVersions(onDisk, loadedVersion) === 0) return;
+		reloadPending = true;
+		const g = globalThis as { __qaReloadedFrom?: string };
+		if (g.__qaReloadedFrom === loadedVersion) {
+			// Already reloaded once and still on the old code: pi loads the extension from somewhere else.
+			current.ui.notify(`quick-agent ${onDisk} 已安装，但 pi 仍加载 ${loadedVersion}（${REPO_ROOT}）。运行 pi install ~/.quick-agent/app/current`, "warning");
+			return;
+		}
+		current.ui.notify(`quick-agent ${loadedVersion} → ${onDisk}：空闲时自动 /reload`, "info");
+		if (current.isIdle()) pi.sendUserMessage("/qa-reload", { expandPromptTemplates: true } as any);
 	};
+	pi.registerCommand("qa-reload", {
+		description: "重新加载 quick-agent（升级后自动执行）",
+		handler: async (_args, ctx) => {
+			reloadPending = false;
+			(globalThis as { __qaReloadedFrom?: string }).__qaReloadedFrom = loadedVersion;
+			await ctx.reload();
+		},
+	});
+	pi.on("agent_settled", () => {
+		if (reloadPending && (globalThis as { __qaReloadedFrom?: string }).__qaReloadedFrom !== loadedVersion) pi.sendUserMessage("/qa-reload", { expandPromptTemplates: true } as any);
+	});
 
 	pi.on("session_start", async (_e, ctx) => {
 		current = ctx;
@@ -802,10 +823,8 @@ export function setupFront(pi: ExtensionAPI) {
 			enabled = false;
 			setEnabled(true, ctx);
 		}
-		// Background version check (throttled, silent on failure); never awaited.
-		const installed = readState().installed;
-		if (installed) notifyUpgraded(installed.to);
-		setTimeout(() => void autoUpdate({ trigger: "pi" }).then((r) => r?.installed && notifyUpgraded(r.to)), 5000).unref?.();
+		reloadPending = false;
+		checkUpgraded();
 		try {
 			if ((await ensureHub(cfg, hub)) === "started") ctx.ui.notify(`quick-agent hub 已启动 ${hubUrl(cfg)}`, "info");
 		} catch (e) {
@@ -833,7 +852,7 @@ export function setupFront(pi: ExtensionAPI) {
 					focus = e.focus;
 					renderWidget();
 				} else if (e.type === "update") {
-					notifyUpgraded(e.to);
+					setTimeout(checkUpgraded, 500);
 				} else if (e.type === "machines") {
 					machines = e.machines;
 					machinesAt = Date.now();
@@ -845,6 +864,7 @@ export function setupFront(pi: ExtensionAPI) {
 			(ok) => {
 				connected = ok;
 				renderWidget();
+				if (ok) checkUpgraded(); // e.g. the hub came back after an upgrade
 				if (ok) void hub.pendingIntake().then((list) => list.forEach((i) => void deliverIntake(i))).catch(() => {});
 				if (ok) void catchUp();
 			},

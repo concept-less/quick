@@ -23,10 +23,37 @@ async function test() {
 		const mid = typeof r.health.machine === "string" ? r.health.machine : r.health.machine?.id;
 		const m = mid ? ` · ${mid}` : "";
 		status(`已连接 hub（${r.health.tasks} 个任务${m}）`, "ok");
+		showVersionHint(r.health.version);
 	} else {
 		status(r?.error || "连接失败", "err");
 		$("settings").open = true;
 	}
+}
+
+/** The hub was upgraded but this (unpacked) extension still runs older files: offer reload / download. */
+function showVersionHint(hubVersion) {
+	const mine = chrome.runtime.getManifest().version;
+	const num = (v) => String(v || "0").split("-")[0].split(".").map((x) => Number(x) || 0);
+	const older = (a, b) => { const x = num(a), y = num(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); return false; };
+	$("verHint")?.remove();
+	if (!hubVersion || !older(mine, hubVersion)) return;
+	const d = document.createElement("div");
+	d.id = "verHint";
+	d.className = "hint";
+	d.style.cssText = "border:1px solid var(--line-2);padding:8px 10px";
+	d.append(`插件 v${mine} 比 hub v${hubVersion} 旧。`);
+	const reload = document.createElement("a");
+	reload.textContent = "重新加载插件";
+	reload.title = "从 ~/.quick-agent/app/current/browser 加载的插件，重新加载即是新版";
+	reload.onclick = () => chrome.runtime.reload();
+	const zip = document.createElement("a");
+	zip.textContent = "下载新版 zip";
+	zip.onclick = async () => {
+		const { hubUrl } = await chrome.storage.local.get({ hubUrl: DEFAULT_HUB });
+		chrome.tabs.create({ url: `${hubUrl.replace(/\/+$/, "")}/extension.zip` });
+	};
+	d.append(reload, " · ", zip);
+	$("status").after(d);
 }
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);

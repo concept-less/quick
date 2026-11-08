@@ -1,6 +1,6 @@
 // quick — quick-agent command line.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { hostname, userInfo } from "node:os";
@@ -10,7 +10,7 @@ import { HubClient } from "../shared/hub-client.ts";
 import { ACTIVE_STATUSES, type MachineView, type Task } from "../shared/types.ts";
 import { attentionOf, LEVEL_LABEL, type AttentionCounts, type AttentionItem, type FocusState } from "../shared/attention.ts";
 import { applyResourceEdits, detectResources, mergeResources, normalizeRequires, priorityOf, rankMachines, resourcesOf } from "../shared/schedule.ts";
-import { autoUpdate, describeSources, dueForCheck, patchState, readState, runUpgrade, type UpgradeResult } from "../shared/update.ts";
+import { activeRoot, compareVersions, hintLine, KIND_LABEL, readVersion, runUpgrade, spawnReload, updateStatus, type UpgradeResult } from "../shared/update.ts";
 import { ensureUi, stopUi, uiHealth, uiLoginUrl } from "../shared/ui-process.ts";
 import { openAttach, planAttach, runForeground } from "../shared/attach.ts";
 import { assignCmd, commentCmd, TEAM_HELP, teamCmd } from "./team.ts";
@@ -94,7 +94,8 @@ const HELP = `quick — quick-agent
   pi                        直接打开 pi 就是前台 agent（quick front 是它的别名）；pi --qa-off 为普通 pi
   quick ui [--cwd DIR] [--no-open]   在浏览器里打开 Web UI（首屏是注意力队列，旁边是前台 agent）
   quick ui stop|restart|status|url|logs
-  quick hub start|stop|restart|status|logs
+  quick hub start|stop|restart|reload|status|logs
+                            reload = 用当前安装的版本平滑重启 hub 和 Web UI 服务（worker 不受影响）
   quick attention [-a]      注意力队列：需要你 / 待扫 / 稍后 / 不用管（别名 quick a；-a 含已归档）
   quick ls [-a]             同上，按任务一行一个（-a 含已归档）
   quick show <id>           查看任务的注意力、汇报、简报
@@ -123,7 +124,9 @@ const HELP = `quick — quick-agent
                             设置资源/优先级/所有者（数字越小越优先；--priority none / --resources none 清除），即时生效
   quick machine detect      只打印本机自动探测到的资源
   quick upgrade [--check] [--all | --machine M ... | M ...] [--json]
-                            升级 quick-agent（update 是别名）：默认只升级本机；--all 所有在线机器；--check 只检查不安装
+                            从 GitHub Release 升级 quick-agent（update 是别名）：下载、校验、原子切换、平滑重启；
+                            默认只升级本机；--all 所有在线机器；--check 只检查不安装
+  quick upgrade --rollback  切回上一个版本
 
   多机互联（mesh）:
   quick mesh init [--id NAME] [--desc 描述]   初始化本机身份与 mesh 密钥
@@ -134,6 +137,7 @@ const HELP = `quick — quick-agent
   quick mesh accept <secret>   （由 mesh add 远程调用）设置密钥并重启 hub
   quick mesh peers | remove <序号>   查看/删除本机主动连接的 peer
 
+  quick version             当前版本、已安装版本、hub 版本与最新 Release
 ${TEAM_HELP}
 
   quick token               打印 hub token
@@ -144,37 +148,51 @@ ${TEAM_HELP}
 
 // ---------------------------------------------------------------- upgrade
 
-const KIND_LABEL: Record<string, string> = { git: "git 安装", "npm-pi": "pi npm 包", "npm-global": "npm 全局安装", release: "发布包" };
+const STEP_LABEL: Record<string, string> = { check: "检查", download: "下载", verify: "校验", switch: "切换", restart: "重启", done: "完成", error: "失败" };
 
 function printUpgrade(r: UpgradeResult, verbose: boolean) {
 	const name = (r.machine ?? cfg.machine.id).padEnd(16);
 	let state: string;
 	if (!r.ok) state = `✕ ${r.error}`;
-	else if (r.installed) state = `✓ 已升级 ${r.from} → ${r.to}`;
-	else if (r.available) state = r.blocker ? `! 有更新，但无法自动安装：${r.blocker}` : `↑ 有更新（quick upgrade 安装）`;
+	else if (r.installed) state = `✓ ${compareVersions(r.to, r.from) < 0 ? "已回滚" : "已升级"} ${r.from} → ${r.to}`;
+	else if (r.available) state = r.blocker ? `! 有新版本，但不能自动安装：${r.blocker}` : "↑ 有新版本（quick upgrade 安装）";
 	else state = "✓ 已是最新";
-	const latest = r.latest ? `${r.latest.version} (${r.latest.source})` : "?";
-	const behind = r.git?.behind && !r.installed ? `，上游领先 ${r.git.behind} 个提交` : "";
-	console.log(`${name} 当前 ${r.from.padEnd(8)} 最新 ${latest.padEnd(16)} ${state}${behind}`);
+	console.log(`${name} 当前 ${r.from.padEnd(8)} 最新 ${(r.latest ?? "?").padEnd(8)} ${state}`);
 	if (verbose) {
-		if (r.root) console.log(`${"".padEnd(16)} \x1b[2m${KIND_LABEL[r.kind] ?? r.kind} · ${r.root}${r.git ? ` · ${r.git.branch ?? "detached"}${r.git.upstream ? `→${r.git.upstream}` : ""}${r.git.dirty ? " · 有未提交改动" : ""}` : ""}\x1b[0m`);
-		if (r.tried?.length) console.log(`${"".padEnd(16)} \x1b[2m来源: ${describeSources(r.tried)}\x1b[0m`);
+		if (r.root) console.log(`${"".padEnd(16)} \x1b[2m${KIND_LABEL[r.kind] ?? r.kind} · ${r.root}\x1b[0m`);
+		if (r.url && r.available) console.log(`${"".padEnd(16)} \x1b[2m更新说明: ${r.url}\x1b[0m`);
 		if (r.note) console.log(`${"".padEnd(16)} ${r.note}`);
+	}
+}
+
+/** Restart hub + Web UI with the new code (`quick hub reload` of the active version), if the hub runs. */
+async function reloadAfterUpgrade(quiet = false) {
+	if (!(await hubAlive())) return;
+	if (cfg.update.restartHub === "never") return void (quiet || console.log("运行 quick hub reload 让 hub 和 Web UI 使用新版本"));
+	if (!quiet) console.log("重启 hub 和 Web UI 服务（worker 不受影响）…");
+	const child = spawnReload({ wait: true });
+	await new Promise((r) => child.on("exit", r));
+	if (!quiet) {
+		const h = await hub.health().catch(() => undefined);
+		console.log(h ? `hub 已重启，运行 ${h.version}` : `hub 重启失败，见 ${paths.log}`);
 	}
 }
 
 async function upgrade(args: string[]) {
 	if (args.includes("--auto")) {
-		// Internal: background check spawned by other commands.
-		await autoUpdate({ trigger: "cli" });
+		// Internal: auto-install (update.autoInstall) spawned in the background by other commands.
+		const r = await runUpgrade({ machine: cfg.machine.id });
+		if (r.installed) await reloadAfterUpgrade(true);
 		return;
 	}
 	const check = args.includes("--check");
 	const json = args.includes("--json");
 	const all = args.includes("--all");
+	const rollback = args.includes("--rollback");
 	const machines = [...flags(args, "--machine"), ...args.filter((a) => !a.startsWith("-"))].flatMap((m) => m.split(",")).filter(Boolean);
 	const remote = all || machines.some((m) => m !== cfg.machine.id);
 	if (remote) {
+		if (rollback) die("--rollback 只能在本机执行（其他机器可以在 Web UI 的版本面板里回滚）");
 		await hubStart(true);
 		if (!json) console.log(check ? "检查各机器版本 …" : "升级中（各机器并行，可能需要一两分钟）…");
 		const results = await hub.upgrade({ all, machines, check });
@@ -182,45 +200,75 @@ async function upgrade(args: string[]) {
 		for (const r of results) printUpgrade(r, results.length === 1);
 		const failed = results.filter((r) => !r.ok).length;
 		const done = results.filter((r) => r.installed).length;
-		console.log(`\n${results.length} 台机器：${done} 台已升级，${failed} 台失败${done ? "。各机器的 hub 会在没有运行中的 worker 时自动重启；pi 里 /reload 生效" : ""}`);
+		console.log(`\n${results.length} 台机器：${done} 台已升级，${failed} 台失败${done ? "。各机器的 hub 和 Web UI 会马上平滑重启（worker 不受影响）" : ""}`);
 		if (failed) process.exitCode = 1;
 		return;
 	}
-	const r = await runUpgrade({ check, machine: cfg.machine.id });
+	let lastStep = "";
+	const r = await runUpgrade({
+		check,
+		rollback,
+		machine: cfg.machine.id,
+		onProgress: json
+			? undefined
+			: (p) => {
+					const pct = p.step === "download" && p.total ? ` ${Math.round(((p.received ?? 0) / p.total) * 100)}%` : "";
+					const label = `${STEP_LABEL[p.step] ?? p.step}${pct}`;
+					if (label !== lastStep && (p.step !== "download" || /(0|00)%$/.test(pct) || !pct)) process.stderr.write(`  ${(lastStep = label)}\n`);
+				},
+	});
 	if (json) return console.log(JSON.stringify(r, null, 2));
 	printUpgrade(r, true);
 	if (!r.ok) process.exitCode = 1;
 	if (!r.installed) return;
-	// Load the new code into the hub: restart it now unless a local worker is busy.
-	if (await hubAlive()) {
-		const busy = (await hub.listTasks().catch(() => [] as Task[])).filter((t) => t.machine === cfg.machine.id && !t.closed && ACTIVE_STATUSES.includes(t.status));
-		if (cfg.update.restartHub === "never") console.log("运行 quick hub restart 让 hub 使用新版本");
-		else if (busy.length) console.log(`本机有 ${busy.length} 个运行中的 worker，暂不重启 hub（新版 hub 会在空闲时自动重启；也可以手动 quick hub restart）`);
-		else {
-			await hubStop();
-			await hubStart();
-		}
-	}
-	console.log("pi 里运行 /reload（或新开 pi）加载新版扩展");
+	await reloadAfterUpgrade();
+	console.log(`${rollback ? "已回滚" : "已升级"}；前台 pi 会在空闲时自动 /reload，worker 继续用旧版本跑完${rollback ? "" : "（回滚：quick upgrade --rollback）"}`);
 }
 
-/** Kick a throttled background check (detached, never slows the command) and hint at pending updates. */
-function backgroundUpdateCheck() {
-	if (!cfg.update.enabled) return;
+/** `quick hub reload`: restart the hub (and the Web UI server if it runs) from the active version. */
+async function hubReload() {
+	writeFileSync(paths.restarting, String(Date.now()));
 	try {
-		if (dueForCheck(cfg.update)) {
-			spawn(process.execPath, ["--import", join(REPO_ROOT, "bin", "ts-hooks.mjs"), join(REPO_ROOT, "cli", "quick.ts"), "upgrade", "--auto"], {
-				detached: true,
-				stdio: "ignore",
-				env: { ...process.env, NODE_NO_WARNINGS: "1" },
-			}).unref();
+		const ui = await uiHealth(cfg);
+		await hubStop();
+		await hubStart(true);
+		const h = await hub.health().catch(() => undefined);
+		console.log(`${new Date().toISOString()} [reload] hub restarted (pid ${h?.pid}, ${h?.version})`);
+		if (ui) {
+			// Do not cut off a running front-agent turn in the Web UI: wait (bounded) until it is idle.
+			for (let i = 0; i < 240; i++) {
+				const u = await uiHealth(cfg);
+				if (!u || !(u as { busy?: boolean }).busy) break;
+				await new Promise((r) => setTimeout(r, 500));
+			}
+			await stopUi();
+			await ensureUi(cfg, { cwd: ui.cwd });
+			console.log(`${new Date().toISOString()} [reload] web ui restarted (cwd ${ui.cwd})`);
 		}
-		const st = readState();
-		if (st.available && st.latest && process.stderr.isTTY && Date.now() - (st.hintedAt ?? 0) > 86400_000) {
-			console.error(`\x1b[2mquick-agent ${st.latest} 可用（当前 ${st.current}），运行 quick upgrade 升级\x1b[0m`);
-			patchState({ hintedAt: Date.now() });
-		}
-	} catch {}
+	} finally {
+		rmSync(paths.restarting, { force: true });
+	}
+}
+
+/**
+ * Release check on every start: cached (update.cacheMinutes), short timeout, never delays the command
+ * itself; the hint is printed after the command's output.
+ */
+function startupUpdateCheck(): Promise<string | undefined> {
+	if (!cfg.update.enabled || process.env.QA_TASK_ID || rest.includes("--json")) return Promise.resolve(undefined);
+	if (["upgrade", "update", "help", "--help", "-h", "token", "version", "--version", "-v"].includes(cmd) || (cmd === "hub" && rest[0] === "reload")) return Promise.resolve(undefined);
+	return updateStatus({ quick: true, timeoutMs: cfg.update.cliTimeoutMs })
+		.then((st) => {
+			const line = hintLine(st);
+			if (!line) return undefined;
+			if (st.canInstall && st.autoInstall) {
+				const root = activeRoot();
+				spawn(process.execPath, ["--import", join(root, "bin", "ts-hooks.mjs"), join(root, "cli", "quick.ts"), "upgrade", "--auto"], { detached: true, stdio: "ignore", env: { ...process.env, NODE_NO_WARNINGS: "1" } }).unref();
+				return `installing v${st.latest!.version} in the background (update.autoInstall)`;
+			}
+			return line;
+		})
+		.catch(() => undefined);
 }
 
 function flag(args: string[], name: string): string | undefined {
@@ -460,6 +508,7 @@ async function main() {
 				await hubStop();
 				return hubStart();
 			}
+			if (sub === "reload") return hubReload();
 			if (sub === "logs") return void spawnSync("tail", ["-n", "80", "-f", paths.log], { stdio: "inherit" });
 			if (await hubAlive()) {
 				const h = await hub.health();
@@ -590,6 +639,18 @@ async function main() {
 			return upgrade(rest);
 		case "ui":
 			return ui(rest);
+		case "version":
+		case "--version":
+		case "-v": {
+			const st = await updateStatus({ timeoutMs: 4000 });
+			const h = await hub.health().catch(() => undefined);
+			console.log(`quick-agent ${readVersion()}（${KIND_LABEL[st.kind]}，${st.root}）`);
+			if (st.installed !== readVersion()) console.log(`已安装 ${st.installed}（新进程使用）`);
+			if (h?.version) console.log(`hub 运行 ${h.version}`);
+			console.log(`最新 Release ${st.latest ? `${st.latest.version}  ${st.latest.url ?? ""}` : `?（${st.error ?? "未知"}）`}`);
+			if (st.available) console.log(hintLine(st));
+			return;
+		}
 		case "token":
 			return console.log(cfg.token);
 		case "dashboard":
@@ -751,5 +812,10 @@ function main2(args: string[]) {
 	return main();
 }
 
-if (!["upgrade", "update", "help", "--help", "-h"].includes(cmd)) backgroundUpdateCheck();
-main().catch((e) => die((e as Error).message));
+const updateHint = startupUpdateCheck();
+main()
+	.then(async () => {
+		const hint = await updateHint;
+		if (hint && (process.stderr.isTTY || process.env.QA_UPDATE_HINT === "1")) console.error(`\x1b[2m${hint}\x1b[0m`);
+	})
+	.catch((e) => die((e as Error).message));

@@ -347,6 +347,13 @@ const tokens = () => {
 	}
 };
 const appHtml = () => readFileSync(APP_HTML, "utf8").replace("/*@tokens*/", () => tokens());
+const VERSION = (() => {
+	try {
+		return String(JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")).version);
+	} catch {
+		return "0.0.0";
+	}
+})();
 
 async function proxyHub(req: IncomingMessage, res: ServerResponse, path: string) {
 	const method = req.method ?? "GET";
@@ -370,7 +377,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	const p = url.pathname;
 	const m = req.method ?? "GET";
 	if (!sameOrigin(req)) throw new HttpError(403, "forbidden origin");
-	if (p === "/health") return send(res, 200, { ok: true, pid: process.pid, cwd: runtime.cwd });
+	if (p === "/health") return send(res, 200, { ok: true, pid: process.pid, cwd: runtime.cwd, version: VERSION, busy: !!runtime.session?.isStreaming });
 
 	if (p === "/" || p === "/index.html") {
 		const t = url.searchParams.get("token");
@@ -405,6 +412,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return res.end(readFileSync(join(REPO_ROOT, "ui", "team.js"), "utf8"));
 	}
 	if (p === "/api/state" && m === "GET") return send(res, 200, state());
+	if (p === "/upgrade.js" && m === "GET") {
+		// Version / upgrade button in the header (see ui/upgrade.js).
+		res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+		return res.end(readFileSync(join(REPO_ROOT, "ui", "upgrade.js"), "utf8"));
+	}
 	if (p.startsWith("/api/hub/")) return proxyHub(req, res, `/api/${p.slice("/api/hub/".length)}${url.search}`);
 
 	if (m === "GET" && p === "/api/models") {

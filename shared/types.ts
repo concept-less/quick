@@ -174,4 +174,6 @@ export type HubEvent =
 	/** Batched "skim" hand-backs (timer, or focus mode ended). */
 	| { type: "attention.digest"; items: AttentionItem[]; counts: AttentionCounts; reason: "timer" | "focus_end"; ts: number }
 	/** Focus mode / counts changed without a specific task. */
-	| { type: "attention.state"; counts: AttentionCounts; focus: FocusState; ts: number };
+	| { type: "attention.state"; counts: AttentionCounts; focus: FocusState; ts: number }
+	| { type: "update.available"; machine: string; version: string; ts: number }
+	| { type: "update.job"; machine: string; job: { step: string; from: string; to?: string; error?: string; message?: string; received?: number; total?: number } };

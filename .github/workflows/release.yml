@@ -1,0 +1,56 @@
+# Adds the macOS desktop app (Electron .dmg + .zip) to a GitHub Release.
+#
+# scripts/release.sh creates the release with the core assets (quick-agent-X.Y.Z.tgz, browser
+# extension zips, SHA256SUMS); publishing it triggers this workflow, which builds the app on a
+# macOS runner, uploads quick-agent-X.Y.Z-arm64.dmg / quick-agent-X.Y.Z-arm64-mac.zip and adds
+# their checksums to SHA256SUMS. Re-run for an existing tag: Actions → release → Run workflow.
+name: release
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release tag, e.g. v0.4.0"
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+jobs:
+  macos:
+    runs-on: macos-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install electron deps
+        working-directory: electron
+        run: npm ci
+      - name: check
+        working-directory: electron
+        run: npm run check
+      - name: build dmg + zip (ad-hoc signed, not notarized)
+        working-directory: electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+      - name: upload to the release
+        working-directory: electron/dist
+        run: |
+          set -euo pipefail
+          files=$(ls *.dmg *-mac.zip)
+          echo "$files"
+          gh release upload "$TAG" $files --clobber -R "$GITHUB_REPOSITORY"
+          mkdir -p "$RUNNER_TEMP/sums"
+          gh release download "$TAG" -p SHA256SUMS -D "$RUNNER_TEMP/sums" -R "$GITHUB_REPOSITORY" || touch "$RUNNER_TEMP/sums/SHA256SUMS"
+          new=$(shasum -a 256 $files)
+          { grep -v -F -f <(printf '%s\n' $files | sed 's/^/  /') "$RUNNER_TEMP/sums/SHA256SUMS" || true; echo "$new"; } > "$RUNNER_TEMP/SHA256SUMS"
+          cat "$RUNNER_TEMP/SHA256SUMS"
+          gh release upload "$TAG" "$RUNNER_TEMP/SHA256SUMS" --clobber -R "$GITHUB_REPOSITORY"

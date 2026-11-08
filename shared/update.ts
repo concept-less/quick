@@ -1,97 +1,138 @@
-// quick-agent self-upgrade: version check (npm → GitHub Release → git), install, throttled background checks.
+// quick-agent self-upgrade, based on GitHub Releases.
 //
-// Install kinds (detected from where the code lives, override with QA_INSTALL_KIND):
-//   git         a git checkout (has .git)        → git fetch + fast-forward to upstream (or checkout the newest tag when detached)
-//   npm-pi      `pi install npm:<pkg>` (~/.pi/agent/npm/…) → pi update npm:<pkg>
-//   npm-global  `npm install -g <pkg>`            → npm install -g <pkg>@<version>
-//   release     unpacked release tarball          → download the GitHub release, swap the directory (previous copy kept as <dir>.prev)
+// Install kinds (detected from where the running code lives, override with QA_INSTALL_KIND):
+//   release     ~/.quick-agent/app/<version>/ with `current` → active version (install.sh, `quick upgrade`)
+//               → download the release tarball, verify SHA256SUMS, unpack next to it, swap `current` atomically,
+//                 keep `previous` for `quick upgrade --rollback`.
+//   dev         a git checkout (has .git): development mode, never upgraded automatically — only a hint.
+//   npm-pi      `pi install npm:<pkg>` → pi update npm:<pkg>          (optional; only if published to npm)
+//   npm-global  `npm install -g <pkg>` → npm install -g <pkg>@<version>
+//   unmanaged   anything else (e.g. a copy inside the desktop app): hint only.
 //
-// Background checks are non-blocking, time-limited, silent on failure, throttled through
-// ~/.quick-agent/update.json and serialised across processes with ~/.quick-agent/update.lock.
-// Zero dependencies (plain Node + git/npm/tar on PATH).
-import { execFile } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+// Lookups are cached in ~/.quick-agent/update.json (update.cacheMinutes), time-limited and silent on failure.
+// Installs are serialised across processes with ~/.quick-agent/update.lock. Zero dependencies (Node + tar).
+import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+	closeSync,
+	createWriteStream,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { join, sep } from "node:path";
 import { promisify } from "node:util";
-import { githubSlug, loadConfig, paths, REPO_ROOT, type UpdateConfig } from "./config.ts";
+import { loadConfig, paths, REPO_ROOT, type UpdateConfig } from "./config.ts";
 
 const run = promisify(execFile);
 const FETCH_TIMEOUT_MS = 8_000;
-const GIT_TIMEOUT_MS = 20_000;
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 const LOCK_STALE_MS = 10 * 60_000;
+/** Versions kept in the app directory besides current/previous. */
+const KEEP_EXTRA = 1;
 
 export const STATE_PATH = join(paths.home, "update.json");
 const LOCK_PATH = join(paths.home, "update.lock");
 
-/** Directory being upgraded (the running code, unless QA_UPDATE_ROOT points elsewhere – used by tests). */
-export function updateRoot(): string {
-	return process.env.QA_UPDATE_ROOT ?? REPO_ROOT;
+export type InstallKind = "release" | "dev" | "npm-pi" | "npm-global" | "unmanaged";
+export const KIND_LABEL: Record<InstallKind, string> = { release: "Release 安装", dev: "开发模式（git 副本）", "npm-pi": "pi npm 包", "npm-global": "npm 全局安装", unmanaged: "未托管的副本" };
+
+export interface ReleaseAsset {
+	name: string;
+	/** Direct download URL (browser_download_url). */
+	download: string;
+	/** API URL (works for private repos with a token). */
+	api?: string;
+	size?: number;
 }
 
-export type InstallKind = "git" | "npm-pi" | "npm-global" | "release";
-export type SourceName = "npm" | "github" | "git";
-
-export interface Latest {
-	source: SourceName;
+export interface ReleaseInfo {
+	source: "github" | "npm";
 	version: string;
-	/** git: tag to check out (detached installs). */
 	tag?: string;
-	/** github/npm: tarball to download (release installs). */
-	tarball?: string;
+	name?: string;
+	/** Release notes (markdown). */
+	notes?: string;
 	url?: string;
+	publishedAt?: string;
+	assets: ReleaseAsset[];
+	/** npm: tarball URL. */
+	tarball?: string;
 }
 
-export interface GitInfo {
-	head: string;
-	branch?: string;
-	upstream?: string;
-	behind: number;
-	ahead: number;
-	dirty: boolean;
-	upstreamVersion?: string;
-	latestTag?: string;
-	fetchError?: string;
-}
-
-export interface CheckResult {
-	root: string;
-	kind: InstallKind;
-	current: string;
-	latest?: Latest;
-	tried: { source: SourceName; ok: boolean; version?: string; error?: string }[];
-	git?: GitInfo;
-	/** A newer version (or newer upstream commits for git installs) exists. */
-	available: boolean;
-	/** Why it cannot be installed automatically (dirty tree, local commits, …). */
-	blocker?: string;
-}
-
-export interface UpgradeResult extends CheckResult {
+export interface UpdateStatus {
 	machine?: string;
+	kind: InstallKind;
+	/** Directory of the running code. */
+	root: string;
+	/** Version on disk that a restart would run (release: app/current). */
+	installed: string;
+	latest?: ReleaseInfo;
+	/** latest > installed. */
+	available: boolean;
+	/** An available update can be installed by `quick upgrade` / the UI button. */
+	canInstall: boolean;
+	/** Why it cannot be installed (dev checkout, …). */
+	blocker?: string;
+	/** Rollback target (release installs). */
+	previous?: string;
+	checkedAt?: number;
+	error?: string;
+	autoInstall: boolean;
+}
+
+export type Step = "check" | "download" | "verify" | "switch" | "restart" | "done" | "error";
+export interface Progress {
+	step: Step;
+	received?: number;
+	total?: number;
+	message?: string;
+}
+
+export interface UpgradeResult {
+	machine?: string;
+	kind: InstallKind;
+	root: string;
 	checkOnly: boolean;
+	available: boolean;
 	installed: boolean;
 	ok: boolean;
 	from: string;
 	to: string;
+	latest?: string;
+	notes?: string;
+	url?: string;
+	blocker?: string;
 	error?: string;
-	/** What happens next (hub restart, /reload, …). */
+	/** What happens next (hub restart, …). */
 	note?: string;
 }
 
 export interface UpdateState {
 	checkedAt?: number;
-	current?: string;
-	latest?: string;
-	source?: SourceName;
-	available?: boolean;
+	latest?: ReleaseInfo;
 	error?: string;
-	installed?: { from: string; to: string; at: number; kind: InstallKind; head?: string };
-	hintedAt?: number;
+	installed?: { from: string; to: string; at: number; kind: InstallKind };
 }
 
 // ---------------------------------------------------------------- versions
+
+/** Directory of the running code (QA_UPDATE_ROOT overrides it – tests). */
+export function updateRoot(): string {
+	return process.env.QA_UPDATE_ROOT ?? REPO_ROOT;
+}
 
 export function readVersion(root = updateRoot()): string {
 	try {
@@ -101,7 +142,7 @@ export function readVersion(root = updateRoot()): string {
 	}
 }
 
-function readPkgName(root = updateRoot()): string | undefined {
+function readPkgName(root: string): string | undefined {
 	try {
 		return JSON.parse(readFileSync(join(root, "package.json"), "utf8")).name;
 	} catch {
@@ -144,40 +185,92 @@ export function isSemver(v: string): boolean {
 	return /^v?\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(v.trim());
 }
 
-function maxVersion(list: string[]): string | undefined {
-	return list.filter(isSemver).sort(compareVersions).at(-1);
-}
+// ---------------------------------------------------------------- install layout
 
-// ---------------------------------------------------------------- install detection
+const real = (p: string) => {
+	try {
+		return realpathSync(p);
+	} catch {
+		return p;
+	}
+};
 
-function piAgentDir() {
-	return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+export function appDir(): string {
+	return paths.app;
 }
 
 export function detectInstall(root = updateRoot()): InstallKind {
 	const forced = process.env.QA_INSTALL_KIND as InstallKind | undefined;
-	if (forced && ["git", "npm-pi", "npm-global", "release"].includes(forced)) return forced;
-	if (existsSync(join(root, ".git"))) return "git";
-	if (root.includes(`${sep}node_modules${sep}`)) return root.startsWith(piAgentDir() + sep) ? "npm-pi" : "npm-global";
-	return "release";
+	if (forced && forced in KIND_LABEL) return forced;
+	const r = real(root);
+	if (existsSync(appDir()) && r.startsWith(real(appDir()) + sep)) return "release";
+	if (existsSync(join(root, ".git"))) return "dev";
+	const pi = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	if (r.includes(`${sep}node_modules${sep}`)) return r.startsWith(real(pi) + sep) ? "npm-pi" : "npm-global";
+	return "unmanaged";
 }
 
-// ---------------------------------------------------------------- helpers
-
-const gitEnv = () => ({
-	...process.env,
-	GIT_TERMINAL_PROMPT: "0",
-	GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new",
-});
-
-async function git(root: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<string> {
-	const { stdout } = await run("git", args, { cwd: root, timeout, env: gitEnv(), maxBuffer: 8 * 1024 * 1024 });
-	return stdout.trim();
+function linkTarget(name: "current" | "previous"): string | undefined {
+	try {
+		return readlinkSync(join(appDir(), name));
+	} catch {
+		return undefined;
+	}
 }
+
+/** Root of the code a restart would launch: app/current for release installs, else the running code. */
+export function activeRoot(root = updateRoot()): string {
+	if (detectInstall(root) === "release" && linkTarget("current")) return real(join(appDir(), "current"));
+	return root;
+}
+
+/** Versions unpacked in the app directory. */
+export function listVersions(): string[] {
+	try {
+		return readdirSync(appDir()).filter(isSemver).sort(compareVersions);
+	} catch {
+		return [];
+	}
+}
+
+/** Atomically point `<app>/<name>` at `<app>/<version>` (symlink + rename). */
+function setLink(name: "current" | "previous", version: string) {
+	const tmp = join(appDir(), `.${name}-${process.pid}-${Date.now()}`);
+	symlinkSync(version, tmp);
+	renameSync(tmp, join(appDir(), name));
+}
+
+/** Make `version` current; the version that was current becomes `previous`. Returns the old current. */
+export function switchTo(version: string): string | undefined {
+	if (!existsSync(join(appDir(), version, "package.json"))) throw new Error(`version ${version} is not installed in ${appDir()}`);
+	const old = linkTarget("current");
+	setLink("current", version);
+	if (old && old !== version) setLink("previous", old);
+	return old;
+}
+
+/** Switch back to `previous`. Returns [from, to]. */
+export function rollback(): [string, string] {
+	const prev = linkTarget("previous");
+	const cur = linkTarget("current");
+	if (!prev || !existsSync(join(appDir(), prev, "package.json"))) throw new Error("没有可回滚的上一个版本");
+	switchTo(prev);
+	return [cur ?? "?", prev];
+}
+
+/** Delete old unpacked versions, keeping current, previous and KEEP_EXTRA more. */
+function prune() {
+	const keep = new Set([linkTarget("current"), linkTarget("previous")]);
+	const rest = listVersions().filter((v) => !keep.has(v));
+	for (const v of rest.slice(0, Math.max(0, rest.length - KEEP_EXTRA))) rmSync(join(appDir(), v), { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------- release lookup
 
 let ghTokenCache: string | undefined | null = null;
-async function githubToken(): Promise<string | undefined> {
+async function githubToken(allowGh: boolean): Promise<string | undefined> {
 	if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) return process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+	if (!allowGh) return undefined;
 	if (ghTokenCache !== null) return ghTokenCache;
 	try {
 		ghTokenCache = (await run("gh", ["auth", "token"], { timeout: 4000 })).stdout.trim() || undefined;
@@ -187,191 +280,41 @@ async function githubToken(): Promise<string | undefined> {
 	return ghTokenCache;
 }
 
-async function getJson(url: string, headers: Record<string, string> = {}): Promise<any> {
-	const res = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+async function getJson(url: string, headers: Record<string, string>, timeoutMs: number): Promise<any> {
+	const res = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(timeoutMs) });
 	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
 	return res.json();
 }
 
-// ---------------------------------------------------------------- sources
-
-async function fromNpm(s: UpdateConfig): Promise<Latest> {
-	const name = s.npmPackage.replace("/", "%2F");
-	const doc = await getJson(`${s.npmRegistry}/${name}/latest`);
-	if (!doc?.version) throw new Error("no version in registry response");
-	// Do not trust a same-named package from someone else: its repository must be ours.
-	const repo = githubSlug(typeof doc.repository === "string" ? doc.repository : doc.repository?.url);
-	if (s.githubRepo && repo?.toLowerCase() !== s.githubRepo.toLowerCase()) {
-		throw new Error(`npm package ${s.npmPackage} belongs to ${repo ?? "an unknown repository"}, not ${s.githubRepo}; ignored`);
-	}
-	return { source: "npm", version: String(doc.version), tarball: doc.dist?.tarball };
-}
-
-async function fromGithub(s: UpdateConfig): Promise<Latest> {
+/** Latest (non-prerelease) GitHub release of `update.githubRepo`. */
+export async function fetchLatestRelease(s: UpdateConfig, opts: { timeoutMs?: number; quick?: boolean } = {}): Promise<ReleaseInfo> {
 	if (!s.githubRepo) throw new Error("update.githubRepo not configured");
-	const token = await githubToken();
-	const rel = await getJson(`${s.githubApi}/repos/${s.githubRepo}/releases/latest`, {
-		accept: "application/vnd.github+json",
-		...(token ? { authorization: `Bearer ${token}` } : {}),
-	});
+	// Unauthenticated works for public repos; a token raises the rate limit / opens private repos.
+	const token = await githubToken(!opts.quick);
+	const rel = await getJson(
+		`${s.githubApi}/repos/${s.githubRepo}/releases/latest`,
+		{ accept: "application/vnd.github+json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+		opts.timeoutMs ?? FETCH_TIMEOUT_MS,
+	);
 	const tag = String(rel?.tag_name ?? "");
 	if (!isSemver(tag)) throw new Error(`latest release tag "${tag}" is not a version`);
-	// Prefer an `npm pack` asset (*.tgz), fall back to GitHub's source tarball.
-	const asset = (rel.assets ?? []).find((a: any) => /\.tgz$/.test(String(a?.name)));
-	return { source: "github", version: tag.replace(/^v/i, ""), tag, tarball: asset ? (asset.url ?? asset.browser_download_url) : rel.tarball_url, url: rel.html_url };
+	return {
+		source: "github",
+		version: tag.replace(/^v/i, ""),
+		tag,
+		name: rel.name || tag,
+		notes: typeof rel.body === "string" ? rel.body.slice(0, 20_000) : undefined,
+		url: rel.html_url,
+		publishedAt: rel.published_at,
+		assets: (rel.assets ?? []).map((a: any) => ({ name: String(a.name), download: String(a.browser_download_url ?? a.url), api: a.url, size: a.size })),
+	};
 }
 
-export async function gitInfo(root: string): Promise<GitInfo> {
-	let fetchError: string | undefined;
-	try {
-		await git(root, ["fetch", "--quiet", "--tags", "--prune"]);
-	} catch (e) {
-		fetchError = shortErr(e);
-	}
-	const head = await git(root, ["rev-parse", "HEAD"]);
-	const branch = await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => undefined);
-	const upstream = branch ? await git(root, ["rev-parse", "--abbrev-ref", "@{u}"]).catch(() => undefined) : undefined;
-	let behind = 0;
-	let ahead = 0;
-	let upstreamVersion: string | undefined;
-	if (upstream) {
-		const [a, b] = (await git(root, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])).split(/\s+/).map(Number);
-		ahead = a ?? 0;
-		behind = b ?? 0;
-		upstreamVersion = await git(root, ["show", "@{u}:package.json"]).then((t) => JSON.parse(t).version as string).catch(() => undefined);
-	}
-	const dirty = (await git(root, ["status", "--porcelain", "--untracked-files=no"])).length > 0;
-	const latestTag = maxVersion((await git(root, ["tag", "-l"]).catch(() => "")).split("\n"));
-	return { head, branch, upstream, behind, ahead, dirty, upstreamVersion, latestTag, fetchError };
+async function fetchLatestNpm(s: UpdateConfig, timeoutMs = FETCH_TIMEOUT_MS): Promise<ReleaseInfo> {
+	const doc = await getJson(`${s.npmRegistry}/${s.npmPackage.replace("/", "%2F")}/latest`, {}, timeoutMs);
+	if (!doc?.version) throw new Error("no version in registry response");
+	return { source: "npm", version: String(doc.version), tarball: doc.dist?.tarball, assets: [] };
 }
-
-async function fromGit(s: UpdateConfig, root: string, kind: InstallKind, info?: GitInfo): Promise<Latest> {
-	if (kind === "git" && info) {
-		if (info.fetchError) throw new Error(`git fetch failed: ${info.fetchError}`);
-		const candidates = [info.upstreamVersion, info.latestTag].filter((v): v is string => !!v && isSemver(v));
-		const version = maxVersion(candidates);
-		if (!version) throw new Error("no upstream branch or version tags");
-		return { source: "git", version: version.replace(/^v/i, ""), tag: info.latestTag && compareVersions(info.latestTag, version) === 0 ? info.latestTag : undefined };
-	}
-	if (!s.gitUrl) throw new Error("update.gitUrl not configured");
-	const out = await git(root, ["ls-remote", "--tags", "--refs", s.gitUrl]);
-	const tags = out.split("\n").map((l) => l.split("refs/tags/")[1] ?? "");
-	const tag = maxVersion(tags);
-	if (!tag) throw new Error(`no version tags in ${s.gitUrl}`);
-	return { source: "git", version: tag.replace(/^v/i, ""), tag };
-}
-
-function shortErr(e: unknown): string {
-	const err = e as { stderr?: string; message?: string };
-	return (String(err.stderr ?? "").trim() || String(err.message ?? e)).split("\n")[0]!.slice(0, 200);
-}
-
-// ---------------------------------------------------------------- check
-
-export async function checkForUpdate(s: UpdateConfig = loadConfig().update, root = updateRoot()): Promise<CheckResult> {
-	const kind = detectInstall(root);
-	const current = readVersion(root);
-	const tried: CheckResult["tried"] = [];
-	const git = kind === "git" ? await gitInfo(root).catch((e) => ({ error: shortErr(e) })) : undefined;
-	const gi = git && "head" in git ? git : undefined;
-	let latest: Latest | undefined;
-	for (const source of s.sources) {
-		try {
-			const l = source === "npm" ? await fromNpm(s) : source === "github" ? await fromGithub(s) : await fromGit(s, root, kind, gi);
-			tried.push({ source, ok: true, version: l.version });
-			latest = l;
-			break;
-		} catch (e) {
-			tried.push({ source, ok: false, error: shortErr(e) });
-		}
-	}
-	const newer = !!latest && compareVersions(latest.version, current) > 0;
-	let available = newer;
-	let blocker: string | undefined;
-	if (kind === "git") {
-		if (!gi) blocker = `git error: ${(git as { error: string }).error}`;
-		else {
-			if (gi.behind > 0) available = true;
-			if (gi.dirty) blocker = "工作区有未提交的改动";
-			else if (gi.branch && !gi.upstream) blocker = `分支 ${gi.branch} 没有上游分支`;
-			else if (gi.upstream && gi.ahead > 0 && gi.behind > 0) blocker = `本地分支与 ${gi.upstream} 已分叉（领先 ${gi.ahead}，落后 ${gi.behind}）`;
-			else if (gi.upstream && newer && gi.behind === 0) blocker = `上游 ${gi.upstream} 尚无 ${latest!.version}（git 安装按上游分支升级）`;
-			else if (!gi.branch && newer && !(gi.latestTag && compareVersions(gi.latestTag, current) > 0)) blocker = "HEAD 处于分离状态，且没有更新的版本 tag";
-		}
-	} else if (newer && kind === "release" && !latest?.tarball) blocker = `来源 ${latest?.source} 没有可下载的发布包`;
-	return { root, kind, current, latest, tried, git: gi, available, blocker: available ? blocker : undefined };
-}
-
-// ---------------------------------------------------------------- install
-
-async function installGit(root: string, c: CheckResult): Promise<void> {
-	const gi = c.git!;
-	if (gi.branch) {
-		await git(root, ["merge", "--ff-only", "--quiet", "@{u}"], INSTALL_TIMEOUT_MS);
-		return;
-	}
-	await git(root, ["checkout", "--quiet", gi.latestTag!], INSTALL_TIMEOUT_MS);
-}
-
-async function download(url: string, file: string) {
-	const token = /api\.github\.com|github\.com/.test(url) ? await githubToken() : undefined;
-	const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
-	if (/\/releases\/assets\/\d+/.test(url)) headers.accept = "application/octet-stream";
-	const res = await fetch(url, { headers, redirect: "follow", signal: AbortSignal.timeout(INSTALL_TIMEOUT_MS) });
-	if (!res.ok) throw new Error(`download failed: HTTP ${res.status} ${url}`);
-	writeFileSync(file, Buffer.from(await res.arrayBuffer()));
-}
-
-/** Release install: unpack the new version next to the current directory, then swap them. */
-async function installRelease(root: string, c: CheckResult): Promise<void> {
-	const tmp = mkdtempSync(join(dirname(root), `.${basename(root)}-upgrade-`));
-	try {
-		const tgz = join(tmp, "pkg.tgz");
-		await download(c.latest!.tarball!, tgz);
-		const out = join(tmp, "x");
-		mkdirSync(out);
-		await run("tar", ["-xzf", tgz, "-C", out], { timeout: INSTALL_TIMEOUT_MS });
-		const dirs = readdirSync(out).map((d) => join(out, d)).filter((d) => statSync(d).isDirectory());
-		const pkgDir = dirs.find((d) => existsSync(join(d, "package.json")));
-		if (!pkgDir) throw new Error("release archive has no package.json");
-		const name = readPkgName(pkgDir);
-		if (name !== readPkgName(root)) throw new Error(`release archive contains ${name}, expected ${readPkgName(root)}`);
-		const version = readVersion(pkgDir);
-		if (compareVersions(version, c.current) <= 0) throw new Error(`release archive is version ${version}, not newer than ${c.current}`);
-		const prev = `${root}.prev`;
-		rmSync(prev, { recursive: true, force: true });
-		renameSync(root, prev);
-		try {
-			renameSync(pkgDir, root);
-		} catch (e) {
-			renameSync(prev, root);
-			throw e;
-		}
-	} finally {
-		rmSync(tmp, { recursive: true, force: true });
-	}
-}
-
-async function installNpm(kind: InstallKind, s: UpdateConfig, c: CheckResult): Promise<void> {
-	if (kind === "npm-pi") await run("pi", ["update", `npm:${s.npmPackage}`], { timeout: INSTALL_TIMEOUT_MS, env: { ...process.env, NODE_NO_WARNINGS: "1" } });
-	else await run("npm", ["install", "-g", `${s.npmPackage}@${c.latest?.source === "npm" ? c.latest.version : "latest"}`], { timeout: INSTALL_TIMEOUT_MS });
-}
-
-/** Install the update found by `checkForUpdate`. Throws on failure. Returns the new version. */
-export async function installUpdate(c: CheckResult, s: UpdateConfig = loadConfig().update): Promise<string> {
-	if (!c.available) return c.current;
-	if (c.blocker) throw new Error(c.blocker);
-	if (c.kind === "git") await installGit(c.root, c);
-	else if (c.kind === "release") await installRelease(c.root, c);
-	else await installNpm(c.kind, s, c);
-	const to = readVersion(c.root);
-	const head = c.kind === "git" ? await git(c.root, ["rev-parse", "HEAD"]).catch(() => undefined) : undefined;
-	if (to === c.current && (c.kind !== "git" || head === c.git?.head)) throw new Error(`安装命令已执行，但版本仍为 ${to}（npm 安装是否锁定了版本？）`);
-	patchState({ installed: { from: c.current, to, at: Date.now(), kind: c.kind, head } });
-	return to;
-}
-
-// ---------------------------------------------------------------- state + lock
 
 export function readState(): UpdateState {
 	try {
@@ -385,10 +328,190 @@ export function patchState(patch: Partial<UpdateState>): UpdateState {
 	const next = { ...readState(), ...patch };
 	try {
 		mkdirSync(paths.home, { recursive: true });
-		writeFileSync(STATE_PATH, `${JSON.stringify(next, null, 2)}\n`);
+		const tmp = `${STATE_PATH}.${process.pid}.tmp`;
+		writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+		renameSync(tmp, STATE_PATH);
 	} catch {}
 	return next;
 }
+
+/**
+ * Latest release, served from the shared cache when it is younger than `maxAgeMs`
+ * (default update.cacheMinutes). Falls back to the stale cache when the lookup fails.
+ */
+export async function getLatest(
+	s: UpdateConfig = loadConfig().update,
+	opts: { maxAgeMs?: number; timeoutMs?: number; quick?: boolean; kind?: InstallKind } = {},
+): Promise<{ latest?: ReleaseInfo; checkedAt?: number; error?: string; cached: boolean }> {
+	const st = readState();
+	const maxAge = opts.maxAgeMs ?? s.cacheMinutes * 60_000;
+	if (st.checkedAt && Date.now() - st.checkedAt < maxAge && (st.latest || st.error)) return { latest: st.latest, checkedAt: st.checkedAt, error: st.error, cached: true };
+	const kind = opts.kind ?? detectInstall();
+	try {
+		const latest = kind === "npm-pi" || kind === "npm-global" ? await fetchLatestNpm(s, opts.timeoutMs) : await fetchLatestRelease(s, opts);
+		const checkedAt = Date.now();
+		patchState({ checkedAt, latest, error: undefined });
+		return { latest, checkedAt, cached: false };
+	} catch (e) {
+		const error = shortErr(e);
+		// Keep the last good answer; remember the failure so we do not hammer the API.
+		patchState({ checkedAt: Date.now(), error });
+		return { latest: st.latest, checkedAt: st.checkedAt, error, cached: false };
+	}
+}
+
+function blockerFor(kind: InstallKind, latest: ReleaseInfo | undefined, s: UpdateConfig): string | undefined {
+	if (kind === "dev") return "开发模式（git 副本）不自动更新：git pull，或运行 install.sh 切换到 Release 安装";
+	if (kind === "unmanaged") return "这份代码不是 Release 安装：运行 install.sh 切换到 Release 安装";
+	if (kind === "release" && latest) {
+		if (!findTarball(latest)) return `Release ${latest.tag ?? latest.version} 没有安装包（quick-agent-${latest.version}.tgz）`;
+		if (s.requireChecksum && !latest.assets.some((a) => a.name === "SHA256SUMS")) return `Release ${latest.tag ?? latest.version} 没有 SHA256SUMS`;
+	}
+	return undefined;
+}
+
+/** Update status of this machine (network only when the cache is stale or `refresh`). Never throws. */
+export async function updateStatus(opts: { refresh?: boolean; quick?: boolean; timeoutMs?: number; machine?: string } = {}): Promise<UpdateStatus> {
+	const s = loadConfig().update;
+	const root = updateRoot();
+	const kind = detectInstall(root);
+	const installed = readVersion(activeRoot(root));
+	const r = await getLatest(s, { maxAgeMs: opts.refresh ? 0 : undefined, quick: opts.quick, timeoutMs: opts.timeoutMs, kind });
+	const available = !!r.latest && compareVersions(r.latest.version, installed) > 0;
+	const blocker = available ? blockerFor(kind, r.latest, s) : undefined;
+	const prev = kind === "release" ? linkTarget("previous") : undefined;
+	return {
+		machine: opts.machine,
+		kind,
+		root,
+		installed,
+		latest: r.latest,
+		available,
+		canInstall: available && !blocker,
+		blocker,
+		previous: prev && existsSync(join(appDir(), prev, "package.json")) ? prev : undefined,
+		checkedAt: r.checkedAt,
+		error: r.error,
+		autoInstall: s.autoInstall,
+	};
+}
+
+/** One-line hint for the CLI, or undefined. */
+export function hintLine(st: UpdateStatus): string | undefined {
+	if (!st.available || !st.latest) return undefined;
+	const v = `v${st.latest.version}`;
+	if (st.kind === "dev") return `new version ${v} available (dev checkout: git pull, or install.sh for a release install)`;
+	if (st.kind === "unmanaged") return `new version ${v} available (install.sh)`;
+	return `new version ${v} available: quick upgrade`;
+}
+
+// ---------------------------------------------------------------- install
+
+export function findTarball(rel: ReleaseInfo): ReleaseAsset | undefined {
+	return rel.assets.find((a) => a.name === `quick-agent-${rel.version}.tgz`) ?? rel.assets.find((a) => /^quick-agent-[\d.]+.*\.tgz$/.test(a.name));
+}
+
+async function fetchAsset(a: ReleaseAsset, timeoutMs = INSTALL_TIMEOUT_MS): Promise<Response> {
+	const token = /github\.com/.test(a.download) || /api\.github\.com/.test(a.api ?? "") ? await githubToken(true) : undefined;
+	// Public repos: the browser URL needs no token. With a token, the API URL also works for private repos.
+	const useApi = !!token && !!a.api && /\/releases\/assets\/\d+/.test(a.api);
+	const res = await fetch(useApi ? a.api! : a.download, {
+		headers: { ...(useApi ? { accept: "application/octet-stream" } : {}), ...(token && useApi ? { authorization: `Bearer ${token}` } : {}) },
+		redirect: "follow",
+		signal: AbortSignal.timeout(timeoutMs),
+	});
+	if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status} ${a.name}`);
+	return res;
+}
+
+/** Stream an asset to `file`, reporting progress; returns its sha256 (hex). */
+async function download(a: ReleaseAsset, file: string, onProgress?: (p: Progress) => void): Promise<string> {
+	const res = await fetchAsset(a);
+	const total = Number(res.headers.get("content-length")) || a.size || undefined;
+	const hash = createHash("sha256");
+	const out = createWriteStream(file);
+	let received = 0;
+	let last = 0;
+	try {
+		for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+			hash.update(chunk);
+			received += chunk.length;
+			if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+			if (Date.now() - last > 200) {
+				last = Date.now();
+				onProgress?.({ step: "download", received, total });
+			}
+		}
+	} finally {
+		await new Promise((r) => out.end(r));
+	}
+	onProgress?.({ step: "download", received, total: total ?? received });
+	return hash.digest("hex");
+}
+
+/** Parse `sha256sum` output ("<hex>  <name>" or "<hex> *<name>"). */
+export function parseSums(text: string): Map<string, string> {
+	const m = new Map<string, string>();
+	for (const line of text.split("\n")) {
+		const x = /^([0-9a-f]{64})\s+\*?(.+?)\s*$/i.exec(line.trim());
+		if (x) m.set(x[2]!, x[1]!.toLowerCase());
+	}
+	return m;
+}
+
+/**
+ * Release install: download quick-agent-<v>.tgz, verify it against SHA256SUMS, unpack to <app>/<v>,
+ * then swap `current` atomically (old version → `previous`). Returns the installed version.
+ */
+export async function installRelease(rel: ReleaseInfo, opts: { onProgress?: (p: Progress) => void; requireChecksum?: boolean } = {}): Promise<string> {
+	const p = opts.onProgress ?? (() => {});
+	const asset = findTarball(rel);
+	if (!asset) throw new Error(`release ${rel.tag ?? rel.version} has no quick-agent-*.tgz asset`);
+	mkdirSync(appDir(), { recursive: true });
+	const tmp = mkdtempSync(join(appDir(), ".tmp-"));
+	try {
+		const tgz = join(tmp, asset.name);
+		p({ step: "download", received: 0, total: asset.size });
+		const sha = await download(asset, tgz, p);
+		p({ step: "verify" });
+		const sumsAsset = rel.assets.find((a) => a.name === "SHA256SUMS");
+		if (sumsAsset) {
+			const expected = parseSums(await (await fetchAsset(sumsAsset, FETCH_TIMEOUT_MS)).text()).get(asset.name);
+			if (!expected) throw new Error(`SHA256SUMS does not list ${asset.name}`);
+			if (expected !== sha) throw new Error(`checksum mismatch for ${asset.name}: expected ${expected.slice(0, 12)}…, got ${sha.slice(0, 12)}…`);
+		} else if (opts.requireChecksum ?? true) throw new Error(`release ${rel.tag ?? rel.version} has no SHA256SUMS`);
+		const out = join(tmp, "x");
+		mkdirSync(out);
+		await run("tar", ["-xzf", tgz, "-C", out], { timeout: INSTALL_TIMEOUT_MS });
+		const pkgDir = existsSync(join(out, "package", "package.json")) ? join(out, "package") : out;
+		const name = readPkgName(pkgDir);
+		if (name !== "quick-agent") throw new Error(`release archive contains ${name ?? "no package.json"}, expected quick-agent`);
+		const version = readVersion(pkgDir);
+		if (version !== rel.version) throw new Error(`release archive is version ${version}, expected ${rel.version}`);
+		p({ step: "switch" });
+		const dest = join(appDir(), version);
+		if (existsSync(dest)) {
+			// Reinstall of the same version: move the old copy aside first (it may be `previous`).
+			if (linkTarget("current") === version) throw new Error(`${version} is already the current version`);
+			rmSync(dest, { recursive: true, force: true });
+		}
+		renameSync(pkgDir, dest);
+		switchTo(version);
+		try {
+			prune();
+		} catch {}
+		return version;
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+}
+
+async function installNpm(kind: InstallKind, s: UpdateConfig, version: string): Promise<void> {
+	if (kind === "npm-pi") await run("pi", ["update", `npm:${s.npmPackage}`], { timeout: INSTALL_TIMEOUT_MS, env: { ...process.env, NODE_NO_WARNINGS: "1" } });
+	else await run("npm", ["install", "-g", `${s.npmPackage}@${version}`], { timeout: INSTALL_TIMEOUT_MS });
+}
+
+// ---------------------------------------------------------------- lock
 
 function pidAlive(pid: number) {
 	try {
@@ -421,12 +544,22 @@ export function acquireLock(): (() => void) | undefined {
 
 // ---------------------------------------------------------------- entry points
 
-/** Explicit upgrade (`quick upgrade`, mesh `update.run`). Never throws. */
-export async function runUpgrade(opts: { check?: boolean; machine?: string } = {}): Promise<UpgradeResult> {
+export function shortErr(e: unknown): string {
+	const err = e as { stderr?: string; message?: string };
+	return (String(err.stderr ?? "").trim() || String(err.message ?? e)).split("\n")[0]!.slice(0, 300);
+}
+
+/**
+ * Explicit upgrade (`quick upgrade`, hub button, mesh `update.run`). Never throws.
+ * `rollback` switches back to the previous release instead.
+ */
+export async function runUpgrade(opts: { check?: boolean; rollback?: boolean; machine?: string; onProgress?: (p: Progress) => void } = {}): Promise<UpgradeResult> {
 	const s = loadConfig().update;
 	const root = updateRoot();
-	const base = { root, kind: detectInstall(root), current: readVersion(root), tried: [], available: false };
-	const fail = (error: string, c: CheckResult = base): UpgradeResult => ({ ...c, machine: opts.machine, checkOnly: !!opts.check, installed: false, ok: false, from: c.current, to: c.current, error });
+	const kind = detectInstall(root);
+	const from = readVersion(activeRoot(root));
+	const res: UpgradeResult = { machine: opts.machine, kind, root, checkOnly: !!opts.check, available: false, installed: false, ok: true, from, to: from };
+	const fail = (error: string) => Object.assign(res, { ok: false, error });
 	let release = acquireLock();
 	for (let i = 0; !release && i < 20; i++) {
 		await new Promise((r) => setTimeout(r, 500));
@@ -434,62 +567,82 @@ export async function runUpgrade(opts: { check?: boolean; machine?: string } = {
 	}
 	if (!release) return fail("另一个升级正在进行中");
 	try {
-		const c = await checkForUpdate(s, root);
-		patchState({ checkedAt: Date.now(), current: c.current, latest: c.latest?.version, source: c.latest?.source, available: c.available, error: c.latest ? undefined : c.tried.map((t) => `${t.source}: ${t.error}`).join("; ") });
-		if (!c.latest && !c.available) return fail(`所有版本来源都不可用: ${c.tried.map((t) => `${t.source}: ${t.error}`).join("; ")}`, c);
-		const out: UpgradeResult = { ...c, machine: opts.machine, checkOnly: !!opts.check, installed: false, ok: true, from: c.current, to: c.current };
-		if (opts.check || !c.available) return out;
-		try {
-			out.to = await installUpdate(c, s);
-			out.installed = true;
-			patchState({ current: out.to, available: false });
-		} catch (e) {
-			out.ok = false;
-			out.error = shortErr(e);
+		if (opts.rollback) {
+			if (kind !== "release") return fail(`${KIND_LABEL[kind]}不支持回滚（只有 Release 安装可以）`);
+			try {
+				opts.onProgress?.({ step: "switch" });
+				const [, to] = rollback();
+				Object.assign(res, { installed: true, to });
+				patchState({ installed: { from, to, at: Date.now(), kind } });
+			} catch (e) {
+				fail(shortErr(e));
+			}
+			return res;
 		}
-		return out;
+		opts.onProgress?.({ step: "check" });
+		const st = await updateStatus({ refresh: true, machine: opts.machine });
+		Object.assign(res, { available: st.available, latest: st.latest?.version, notes: st.latest?.notes, url: st.latest?.url, blocker: st.blocker });
+		if (!st.latest) return fail(`查不到最新版本: ${st.error ?? "unknown error"}`);
+		if (opts.check || !st.available) return res;
+		if (st.blocker) return fail(st.blocker);
+		try {
+			if (kind === "release") res.to = await installRelease(st.latest, { onProgress: opts.onProgress, requireChecksum: s.requireChecksum });
+			else {
+				await installNpm(kind, s, st.latest.version);
+				res.to = readVersion(root);
+				if (res.to === from) throw new Error(`安装命令已执行，但版本仍为 ${from}`);
+			}
+			res.installed = true;
+			patchState({ installed: { from, to: res.to, at: Date.now(), kind } });
+		} catch (e) {
+			fail(shortErr(e));
+		}
+		return res;
 	} finally {
 		release();
 	}
 }
 
 /**
- * Background check at startup (hub / pi / CLI). Throttled by `intervalHours`, time-limited, silent on failure.
- * Returns the upgrade result only when something was installed.
+ * Spawn `quick hub reload` from the active (new) code, detached: restarts the hub and, if it runs,
+ * the Web UI server. Workers live in tmux and are not touched.
  */
-export async function autoUpdate(opts: { trigger: string; log?: (m: string) => void } = { trigger: "?" }): Promise<UpgradeResult | undefined> {
+export function spawnReload(opts: { wait?: boolean; log?: string } = {}): ReturnType<typeof spawn> {
+	const root = activeRoot();
+	const logFile = opts.log ?? paths.log;
+	const out = openSync(logFile, "a");
+	const env: NodeJS.ProcessEnv = { ...process.env, NODE_NO_WARNINGS: "1" };
+	delete env.QA_TASK_ID;
+	if (env.QA_UPDATE_ROOT) env.QA_UPDATE_ROOT = root; // tests: the new copy becomes the running code
+	const child = spawn(process.execPath, ["--import", join(root, "bin", "ts-hooks.mjs"), join(root, "cli", "quick.ts"), "hub", "reload"], {
+		detached: !opts.wait,
+		stdio: ["ignore", out, out],
+		env,
+	});
+	if (!opts.wait) child.unref();
+	closeSync(out);
+	return child;
+}
+
+/** Remember an upgrade job across the hub restart (so the UI can see how it ended). */
+export const JOB_PATH = join(paths.home, "update-job.json");
+export function writeJob(job: unknown) {
 	try {
-		const s = loadConfig().update;
-		if (!s.enabled || !dueForCheck(s)) return undefined;
-		const release = acquireLock();
-		if (!release) return undefined;
-		let c: CheckResult;
-		try {
-			c = await checkForUpdate(s);
-			patchState({ checkedAt: Date.now(), current: c.current, latest: c.latest?.version, source: c.latest?.source, available: c.available, error: c.latest ? undefined : c.tried.map((t) => `${t.source}: ${t.error}`).join("; ") });
-			if (!c.available || !s.autoInstall || c.blocker) {
-				if (c.available) opts.log?.(`[update] ${c.current} → ${c.latest?.version ?? "upstream"} available${c.blocker ? ` (not installed: ${c.blocker})` : ""}`);
-				return undefined;
-			}
-			const to = await installUpdate(c, s);
-			patchState({ current: to, available: false });
-			opts.log?.(`[update] upgraded quick-agent ${c.current} → ${to} (${c.kind}, via ${opts.trigger})`);
-			return { ...c, checkOnly: false, installed: true, ok: true, from: c.current, to };
-		} finally {
-			release();
-		}
-	} catch (e) {
-		patchState({ checkedAt: Date.now(), error: shortErr(e) });
-		opts.log?.(`[update] check failed: ${shortErr(e)}`);
+		writeFileSync(JOB_PATH, `${JSON.stringify(job)}\n`);
+	} catch {}
+}
+export function readJob<T>(): T | undefined {
+	try {
+		return JSON.parse(readFileSync(JOB_PATH, "utf8"));
+	} catch {
 		return undefined;
 	}
 }
 
-export function dueForCheck(s: UpdateConfig = loadConfig().update): boolean {
-	const st = readState();
-	return !st.checkedAt || Date.now() - st.checkedAt >= s.intervalHours * 3600_000;
-}
-
-export function describeSources(tried: CheckResult["tried"]): string {
-	return tried.map((t) => (t.ok ? `${t.source} ✓ ${t.version}` : `${t.source} ✕ ${t.error}`)).join(" · ");
+export function isSymlink(p: string): boolean {
+	try {
+		return lstatSync(p).isSymbolicLink();
+	} catch {
+		return false;
+	}
 }
