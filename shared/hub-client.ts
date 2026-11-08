@@ -5,6 +5,7 @@ import type { UpgradeResult } from "./update.ts";
 import type { CronRun } from "./cron.ts";
 import type { CronView } from "../hub/cron.ts";
 import type { AttentionCounts, AttentionItem, FocusState } from "./attention.ts";
+import type { Project } from "./projects.ts";
 import type { HubEvent, Intake, MachineInfo, MachineView, Task, TaskEvent } from "./types.ts";
 import type { PublicMember, Role, TaskComment, Viewer } from "./team.ts";
 
@@ -27,6 +28,8 @@ export interface CronInput {
 	machine?: string;
 	requires?: string[];
 	cwd?: string;
+	/** Project of the dispatched tasks (id or name). */
+	project?: string;
 	overlap?: "skip" | "queue" | "parallel";
 	catchUp?: "latest" | "skip";
 	silent?: boolean;
@@ -143,6 +146,8 @@ export class HubClient {
 		assignee?: string;
 		reviewer?: string;
 		watchers?: string[];
+		/** Project id or name (default: inferred from cwd / git / page URL / text; unknown names are created). */
+		project?: string;
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}
@@ -184,6 +189,30 @@ export class HubClient {
 	/** Worker → hub state report. needsHuman marks an explicit request for a human decision. */
 	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; needsHuman?: boolean; question?: string; options?: string[] }) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/report`, body).then((r) => r.task);
+	}
+	projects() {
+		return this.request<{ self: string; projects: Project[] }>("GET", "/api/projects");
+	}
+	createProject(body: { name: string; urls?: string[]; paths?: string[]; remotes?: string[]; keywords?: string[]; notes?: string }) {
+		return this.request<{ project: Project }>("POST", "/api/projects", body).then((r) => r.project);
+	}
+	renameProject(id: string, name: string) {
+		return this.request<{ project: Project }>("POST", `/api/projects/${enc(id)}/rename`, { name }).then((r) => r.project);
+	}
+	mergeProject(id: string, into: string) {
+		return this.request<{ project: Project }>("POST", `/api/projects/${enc(id)}/merge`, { into }).then((r) => r.project);
+	}
+	/** Add / remove identification rules of a project. */
+	projectRules(id: string, body: { add?: Partial<Record<"urls" | "paths" | "remotes" | "keywords", string[]>>; remove?: Partial<Record<"urls" | "paths" | "remotes" | "keywords", string[]>>; notes?: string }) {
+		return this.request<{ project: Project }>("POST", `/api/projects/${enc(id)}/rules`, body).then((r) => r.project);
+	}
+	/** Classify tasks never classified (all: every task not set by hand). */
+	backfillProjects(all = false) {
+		return this.request<{ checked: number; changed: number }>("POST", "/api/projects/backfill", { all });
+	}
+	/** Manually move a task to a project ("" = unsorted); remembered across reclassification. */
+	setTaskProject(id: string, project: string) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/project`, { project }).then((r) => r.task);
 	}
 	machines() {
 		return this.request<{ self: string; machines: MachineView[]; links: any }>("GET", "/api/machines");

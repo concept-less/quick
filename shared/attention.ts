@@ -40,6 +40,8 @@ export interface AttentionItem {
 	taskId: string;
 	title: string;
 	machine?: string;
+	/** Project id (hub/projects.ts); absent = unsorted. Projects are the second dimension of the queue. */
+	project?: string;
 	status: Task["status"];
 	level: AttentionLevel;
 	/** Monospace marker for terse renderers, e.g. [ASK] [DONE]. */
@@ -97,7 +99,7 @@ export function attentionOf(t: Task, opts: AttentionOptions = {}): AttentionItem
 	const now = opts.now ?? Date.now();
 	const archiveAfter = opts.archiveAfterMs ?? DEFAULT_ARCHIVE_AFTER_MS;
 	const statusSince = t.statusSince ?? t.updatedAt ?? t.createdAt;
-	const base = { taskId: t.id, title: t.title, machine: t.machine, status: t.status, updatedAt: t.updatedAt };
+	const base = { taskId: t.id, title: t.title, machine: t.machine, ...(t.project ? { project: t.project } : {}), status: t.status, updatedAt: t.updatedAt };
 	const snoozed = !!t.snoozedUntil && t.snoozedUntil > now;
 	const question = t.ask?.question;
 	const options = t.ask?.options?.length ? t.ask.options : undefined;

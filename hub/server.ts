@@ -9,7 +9,8 @@ import { hostname, platform } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig, matchProject, paths, REPO_ROOT, saveConfigPatch } from "../shared/config.ts";
-import { applyResourceEdits, detectResources, mergeResources, normalizeRequires, pickMachineForCwd, ScheduleError } from "../shared/schedule.ts";
+import { applyResourceEdits, candidateMachines, detectResources, mergeResources, normalizeRequires, pickMachineForCwd, ScheduleError } from "../shared/schedule.ts";
+import type { Project } from "../shared/projects.ts";
 import {
 	ACTIVE_STATUSES,
 	ATTENTION_STATUSES,
@@ -30,6 +31,7 @@ import { AGENT, can, personalAttention, teamRow, type Viewer } from "../shared/t
 import { createCron } from "./cron.ts";
 import { createAttention, keyOf } from "./attention.ts";
 import { attentionOf } from "../shared/attention.ts";
+import { createProjects } from "./projects.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -134,6 +136,7 @@ const clients = new Set<SseClient>();
 let attention: ReturnType<typeof createAttention>;
 
 function broadcast(e: HubEvent, filter?: (c: SseClient) => boolean) {
+	if (e.type === "task" && projects) e = { ...e, task: projects.view(e.task) };
 	const frame = `data: ${JSON.stringify(e)}\n\n`;
 	for (const c of clients) if (!filter || filter(c)) c.res.write(frame);
 	// Every task change is re-evaluated by the attention model (which may emit an "attention" event).
@@ -192,6 +195,7 @@ const mesh = new Mesh({
 			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => recent(i)).map((intake) => ({ kind: "intake", data: { intake } })),
 			...team.snapshot(),
 			...cron.snapshot(),
+			...projects.snapshot(),
 		];
 	},
 	onEvent: (kind, data) => {
@@ -212,6 +216,7 @@ const mesh = new Mesh({
 			return true;
 		}
 		if (kind === "cron") return cron.onReplica(data.job);
+		if (kind === "project") return projects.onReplica(data.project);
 		if (kind === "intake") {
 			const i = data.intake as Intake;
 			if (!i || i.machine === SELF) return false;
@@ -230,6 +235,36 @@ const mesh = new Mesh({
 		return fn(params ?? {}, from);
 	},
 });
+
+// ---------------------------------------------------------------- projects (see hub/projects.ts)
+
+/** Persist + replicate a project change of an own task without touching updatedAt (list order stays). */
+function patchTask(t: Task, patch: Partial<Task>, note?: string) {
+	Object.assign(t, patch, { rev: (t.rev ?? 0) + 1 });
+	saveTask(t);
+	const full = note ? recordEvent(t, { kind: "project", text: note }) : undefined;
+	broadcast({ type: "task", task: t, event: full });
+	mesh.flood("task", { task: t, event: full });
+}
+
+const projects = createProjects({
+	self: SELF,
+	file: join(paths.home, "projects.json"),
+	log,
+	tasks,
+	patchTask,
+	broadcast: (e) => broadcast(e),
+	flood: (kind, data) => mesh.flood(kind, data),
+	configRules: () => cfg.projects,
+	repoRoot: REPO_ROOT,
+	uiPort: cfg.uiPort,
+	httpError: (status, msg) => new HttpError(status, msg),
+});
+
+/** Checkout of a project on a machine, if known. */
+function projectDir(p: Project | undefined, machine: string): string | undefined {
+	return p?.dirs.find((x) => x.machine === machine && (machine !== SELF || existsSync(x.path)))?.path;
+}
 
 /** Call a method on a machine (locally when it is us). */
 function call<T = any>(machine: string, method: string, params: any, timeoutMs?: number): Promise<T> {
@@ -395,9 +430,11 @@ async function createTaskLocal(body: any): Promise<Task> {
 	let brief = String(body.brief ?? "").trim();
 	if (!brief) throw new HttpError(400, "brief is required");
 	let cwd = String(body.cwd ?? "").trim();
+	const explicitProject = typeof body.project === "string" && body.project.trim() ? body.project.trim() : undefined;
 	if (!cwd) {
 		const p = matchProject(cfg, body.source?.url);
-		cwd = p && (!p.machine || p.machine === SELF) ? p.cwd : cfg.defaultCwd;
+		const proj = explicitProject ? projects.find(explicitProject) : projects.find(projects.classifyUrl(body.source?.url) ?? "");
+		cwd = p && (!p.machine || p.machine === SELF) ? p.cwd : (projectDir(proj, SELF) ?? cfg.defaultCwd);
 	}
 	if (!existsSync(cwd)) throw new HttpError(400, `cwd does not exist on ${SELF}: ${cwd}`);
 	const id = newId("t", (x) => tasks.has(x) || mirrorTasks.has(x));
@@ -425,6 +462,11 @@ async function createTaskLocal(body: any): Promise<Task> {
 		owner: typeof body.owner === "string" ? body.owner : undefined,
 		...team.newTaskPeople(body),
 	};
+	try {
+		Object.assign(t, projects.classifyOwn(t, explicitProject));
+	} catch (e) {
+		log(`[projects] classify ${id} failed: ${(e as Error).message}`);
+	}
 	tasks.set(id, t);
 	mkdirSync(taskDir(id), { recursive: true });
 	const briefDoc = [
@@ -432,6 +474,7 @@ async function createTaskLocal(body: any): Promise<Task> {
 		"",
 		`- 机器: ${SELF}`,
 		`- 工作目录: ${cwd}`,
+		t.project ? `- 项目: ${projects.get(t.project)?.name ?? t.project}` : "",
 		`- 来源: ${t.source.kind}${t.source.url ? ` (${t.source.url})` : ""}`,
 		attachments.length ? `- 附件:\n${attachments.map((a) => `  - ${a}`).join("\n")}` : "",
 		...team.briefLines(t),
@@ -610,6 +653,7 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		await deliverMessage(t, String(p.text ?? "").trim() || "上一轮没有成功结束。请检查当时的状态和报错，从中断处继续，把任务做完；如果仍然无法继续，用 qa_report 说明原因。");
 		return t;
 	},
+	"task.project": async (p) => projects.move(ownTask(p.id), p.project),
 	"task.screen": async (p) => {
 		const t = ownTask(p.id);
 		if (!t.tmuxTarget || t.closed) return { alive: false, text: "" };
@@ -739,7 +783,7 @@ function findIntake(id: string): Intake {
 	return i;
 }
 function allTasks() {
-	return [...tasks.values(), ...mirrorTasks.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+	return [...tasks.values(), ...mirrorTasks.values()].sort((a, b) => b.updatedAt - a.updatedAt).map((t) => projects.view(t));
 }
 function allIntakes() {
 	return [...intakes.values(), ...mirrorIntakes.values()];
@@ -764,6 +808,15 @@ async function chooseMachine(body: any): Promise<string> {
 			}
 		}
 	}
+	if (!machine && !cwd) {
+		// A project checked out on some machines: prefer the best of those that satisfy the requirements.
+		const proj = body.project ? projects.find(String(body.project)) : projects.find(projects.classifyUrl(url) ?? "");
+		if (proj?.dirs.length) {
+			try {
+				machine = candidateMachines(mesh.machines(), { requires }).find((m) => projectDir(proj, m.id))?.id ?? "";
+			} catch {}
+		}
+	}
 	try {
 		const m = await pickMachineForCwd(mesh.machines(), { machine: machine || undefined, requires, cwd: cwd || undefined }, async (m, dir) => {
 			if (m.self) return existsSync(resolvePath(dir));
@@ -783,6 +836,10 @@ async function apiCreateTask(body: any): Promise<Task> {
 	const params = { ...body };
 	delete params.machine;
 	delete params.requires;
+	if (!String(body.cwd ?? "").trim() && body.project) {
+		const dir = projectDir(projects.find(String(body.project)), machine);
+		if (dir) params.cwd = dir;
+	}
 	if (machine !== SELF && Array.isArray(body.attachments) && body.attachments.length) params.files = readFiles(body.attachments.map(String));
 	const task = await call<Task>(machine, "task.create", params);
 	if (task.machine !== SELF) mirrorTasks.set(task.id, task);
@@ -850,6 +907,21 @@ async function apiClaimIntake(id: string, by: string): Promise<Intake> {
 	const local: Intake = { ...r.intake, screenshots: r.intake.screenshots.map((s) => moved.get(s) ?? s) };
 	mirrorIntakes.set(id, { ...local });
 	return local;
+}
+
+/** Manual project change: stored by the owning hub; remembered here when that hub is too old to store it. */
+async function moveTask(id: string, owner: string, project: unknown): Promise<Task> {
+	try {
+		const task = await call<Task>(owner, "task.project", { id, project });
+		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
+		return projects.view(task);
+	} catch (e) {
+		if (!/unknown method task\.project/.test((e as Error).message) && mesh.reachable(owner)) throw e;
+		projects.override(id, project);
+		const t = projects.view(findTask(id));
+		broadcast({ type: "task", task: t });
+		return t;
+	}
 }
 
 // ---------------------------------------------------------------- intake
@@ -1210,6 +1282,18 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	}
 
 	if (p === "/api/tasks" && m === "GET") return send(res, 200, { tasks: allTasks() });
+
+	if (p === "/api/projects" && m === "GET") return send(res, 200, { self: SELF, projects: projects.list() });
+	if (p === "/api/projects" && m === "POST") return send(res, 200, { project: projects.create(await readJson(req)) });
+	if (p === "/api/projects/backfill" && m === "POST") return send(res, 200, projects.backfill(!!(await readJson(req)).all));
+	const mp = /^\/api\/projects\/([^/]+)\/(rename|merge|rules)$/.exec(p);
+	if (mp && m === "POST") {
+		const key = decodeURIComponent(mp[1]!);
+		const body = await readJson(req);
+		if (mp[2] === "rename") return send(res, 200, { project: projects.rename(key, String(body.name ?? "")) });
+		if (mp[2] === "merge") return send(res, 200, { project: projects.merge(key, String(body.into ?? "")) });
+		return send(res, 200, { project: projects.setRules(key, body) });
+	}
 	if (p === "/api/tasks" && m === "POST") {
 		const body = await readJson(req);
 		// The requester is whoever asks; only the machine token may dispatch on someone's behalf (e.g. schedules).
@@ -1276,6 +1360,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		if (action === "comments" && m === "GET") return send(res, 200, await call(owner, "task.comments", { id, limit: url.searchParams.get("limit") ?? 100 }));
 		if (m !== "POST") throw new HttpError(405, "method not allowed");
 		const body = await readJson(req);
+		if (action === "project") return send(res, 200, { task: await moveTask(id, owner, body.project) });
 		if (action === "comments") {
 			const r = await call<{ task: Task; comment: any }>(owner, "task.comment", { id, text: body.text, toWorker: body.toWorker, by: viewer.root && body.asWorker ? AGENT : (viewer.user ?? "root") });
 			if (r.task.machine !== SELF) mirrorTasks.set(r.task.id, r.task);
@@ -1362,6 +1447,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 loadAll();
 cron.load();
+projects.start();
 // Created after loading so the persisted tasks form its baseline (no interrupts for old news at startup).
 attention = createAttention({
 	file: paths.attention,

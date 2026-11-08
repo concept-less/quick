@@ -185,13 +185,32 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .badge{display:inline-block;min-width:18px;padding:0 5px;background:var(--acc);color:var(--acc-fg);font:600 10.5px/18px var(--mono);text-align:center;letter-spacing:0}
 .badge:empty{display:none}
 .filters{display:flex;gap:0;padding:0 var(--s3) 0 0;flex:0 0 auto;align-items:center;border-bottom:var(--bw) solid var(--line);height:38px}
-.fchip{border:0;border-right:var(--bw) solid var(--line);background:none;height:100%;padding:0 14px;font-size:12.5px;cursor:pointer;color:var(--fg-3);position:relative;transition:color var(--t)}
+.fchip{white-space:nowrap;flex:0 0 auto;border:0;border-right:var(--bw) solid var(--line);background:none;height:100%;padding:0 14px;font-size:12.5px;cursor:pointer;color:var(--fg-3);position:relative;transition:color var(--t)}
 .fchip:hover{color:var(--fg)}
 .fchip.on{color:var(--fg);font-weight:600}
 .fchip.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--fg)}
 #machines{font:11px/1.4 var(--mono);color:var(--fg-2);display:flex;gap:6px 14px;flex-wrap:wrap;padding:8px var(--s3);border-bottom:var(--bw) solid var(--line);background:var(--bg-2)}
 #machines>span{display:inline-flex;align-items:center;gap:6px}
 .scroll{flex:1;overflow-y:auto;min-height:0}
+.psel{height:24px;margin-right:8px;min-width:0;max-width:130px;flex:0 1 auto;font:11.5px var(--mono);color:var(--fg-2);background:var(--bg);border:var(--bw) solid var(--line);border-radius:var(--r);padding:0 4px;cursor:pointer}
+#projbar{display:flex;gap:6px;flex-wrap:wrap;padding:8px var(--s3);border-bottom:var(--bw) solid var(--line)}
+.pchip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border:var(--bw) solid var(--line);background:var(--bg);color:var(--fg);font:11.5px/1 var(--mono);cursor:pointer;max-width:100%}
+.pchip:hover{border-color:var(--line-2)}
+.pchip.on{background:var(--inv-bg);border-color:var(--inv-bg);color:var(--inv-fg)}
+.pchip .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pchip .pname.none{color:var(--fg-3)}
+.pchip b{font-weight:400;color:var(--fg-3)}
+.pchip b.you{font-weight:700;color:var(--acc)}
+.pchip.on b,.pchip.on .pname.none{color:inherit}
+.phead{display:flex;align-items:center;gap:8px;min-width:0;height:26px;padding:0 var(--s3) 0 var(--s4);border-bottom:var(--bw) solid var(--line);cursor:pointer;color:var(--fg-2);font:600 11.5px/1 var(--mono)}
+.phead:hover{background:var(--bg-2);color:var(--fg)}
+.phead .pcar{width:10px;color:var(--fg-3);flex:0 0 auto}
+.phead .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phead .pname.none{color:var(--fg-3)}
+.phead .pc{font-weight:400;color:var(--fg-3)}
+.phead .pmenu{margin-left:auto;border:0;background:none;color:var(--fg-3);cursor:pointer;padding:0 4px;font:600 12px/1 var(--mono)}
+.phead .pmenu:hover{color:var(--fg)}
+.dmeta select{font:12px var(--mono);max-width:100%;background:var(--bg);color:var(--fg);border:var(--bw) solid var(--line);border-radius:var(--r);height:24px}
 .titem{min-width:0;overflow:hidden;padding:12px var(--s3) 12px var(--s4);border-bottom:var(--bw) solid var(--line);cursor:pointer;position:relative;transition:background var(--t)}
 .titem:hover{background:var(--bg-2)}
 .titem.sel{background:var(--bg-3)}
@@ -348,7 +367,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
     <div class="tabs"><button class="tab on" data-tab="tasks">注意力<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span><kbd class="mk2"></kbd></button><button class="tab" data-tab="cron">定时<span class="badge" id="cBadge"></span><kbd class="mk3"></kbd></button></div>
     <div id="pane-tasks" style="display:flex;flex-direction:column;flex:1;min-height:0">
       <div class="filters"><span id="lvls" style="display:contents"></span><input id="tsearch" type="search" aria-label="搜索任务" autocomplete="off"><span class="grow"></span><span class="chip" id="tcount"></span></div>
-      <div id="machines"></div>
+      <div id="projbar" style="display:none"></div><div id="machines"></div>
       <div class="scroll" id="tlist" role="list"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
     </div>
     <div id="pane-intake" style="display:none;flex-direction:column;flex:1;min-height:0"><div class="scroll" id="ilist"><div class="skel"><i></i><i></i></div></div></div>
@@ -428,6 +447,7 @@ let streaming=false;
 const tasks=new Map(),intakes=new Map();let hubLoaded=false,machines=[],selfId='',selTask=null,hubOk=false;
 // attention model from the hub (shared/attention.ts): the only source of "what needs you"
 const attn=new Map();let counts={need:0,skim:0,snoozed:0,inflight:0,archived:0},focus={on:false},showArchived=false;
+let projects=[],projFilter=localStorage.qaProj||'';const pCollapsed=new Set(JSON.parse(localStorage.qaProjCollapsed||'[]'));
 
 /* ---------- chat rendering ---------- */
 const TOOL={qa_dispatch:['↗','派单'],qa_tasks:['≡','任务'],qa_task_read:['▤','读任务'],qa_task_send:['→','追加'],qa_task_cancel:['⊘','中止'],qa_machines:['▣','机器'],qa_remote_fs:['⇄','远程'],read:['▤','读取'],grep:['/','搜索'],find:['?','查找'],ls:['▦','列目录'],bash:['$','bash'],edit:['✎','编辑'],write:['+','写入']};
@@ -690,18 +710,60 @@ function itemHtml(i){const t=tasks.get(i.taskId)||{id:i.taskId,title:i.title,mac
     (i.level==='need'&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'" title="把这个回答发给 worker">'+esc(o)+'</button>').join('')+'</div>':'')+
     (i.level==='need'||i.level==='snoozed'?'<div class="tacts">'+acts.map((a,k)=>'<button class="btn'+(k===0?' primary':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+
     (more?'<button class="tmore" data-more aria-expanded="'+open+'">'+(open?'- 收起汇报':'+ 完整汇报')+'</button>'+(open?'<div class="tfull md">'+md(sum)+'</div>':''):'')+'</div>'}
+/* ---------- projects: second dimension of the attention queue (hub/projects.ts) ---------- */
+function liveProject(id){let p=projects.find(x=>x.id===id);for(let k=0;p&&p.mergedInto&&k<10;k++)p=projects.find(x=>x.id===p.mergedInto);return p&&!p.mergedInto?p:null}
+const projOf=t=>liveProject(t?.project)?.id||'';
+const projName=id=>id?(liveProject(id)?.name||id):'未归类';
+const itemProj=i=>projOf(tasks.get(i.taskId)||{project:i.project});
+function projCounts(){const m=new Map();for(const i of attn.values()){if(i.level==='archived')continue;const id=itemProj(i);if(!m.has(id))m.set(id,{id,need:0,inflight:0,open:0,latest:0});const c=m.get(id);c.open++;if(i.level==='need')c.need++;if(i.level==='inflight')c.inflight++;c.latest=Math.max(c.latest,i.updatedAt||i.since||0)}
+  return [...m.values()].sort((a,b)=>(b.need>0)-(a.need>0)||(b.inflight>0)-(a.inflight>0)||(!a.id)-(!b.id)||b.latest-a.latest)}
+function renderProjFilter(){const sel=$('#pfilter');if(!sel)return;const live=projects.filter(p=>!p.mergedInto).sort((a,b)=>a.name.localeCompare(b.name));
+  if(projFilter&&projFilter!=='~none'&&!liveProject(projFilter))projFilter='';const cs=new Map(projCounts().map(c=>[c.id,c]));
+  const lab=(id,name)=>{const c=cs.get(id);return esc(name)+(c&&(c.need||c.inflight)?' ('+[c.need?'需要你 '+c.need:'',c.inflight?'运行 '+c.inflight:''].filter(Boolean).join(' · ')+')':'')};
+  sel.innerHTML='<option value="">全部项目</option>'+live.map(p=>'<option value="'+esc(p.id)+'">'+lab(p.id,p.name)+'</option>').join('')+'<option value="~none">'+lab('','未归类')+'</option>';sel.value=liveProject(projFilter)?.id||projFilter}
+function renderProjBar(){const el=$('#projbar');if(!el)return;const cs=projCounts();if(cs.length<2&&!projFilter){el.innerHTML='';el.style.display='none';return}el.style.display='';
+  const cur=projFilter==='~none'?'':liveProject(projFilter)?.id;
+  el.innerHTML=cs.map(c=>'<button class="pchip'+(projFilter&&c.id===cur?' on':'')+'" data-p="'+esc(c.id||'~none')+'" title="只看这个项目（再点一次取消）"><span class="pname'+(c.id?'':' none')+'">'+esc(projName(c.id))+'</span>'+(c.need?'<b class="you">需要你 '+c.need+'</b>':'')+(c.inflight?'<b>运行 '+c.inflight+'</b>':'')+(!c.need&&!c.inflight?'<b>'+c.open+'</b>':'')+'</button>').join('');
+  el.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>setProjFilter(projFilter===b.dataset.p||(b.dataset.p!=='~none'&&projFilter&&liveProject(projFilter)?.id===b.dataset.p)?'':b.dataset.p))}
+function setProjFilter(v){projFilter=v;localStorage.qaProj=v;renderProjFilter();_renderTasks()}
+function saveCollapsed(){localStorage.qaProjCollapsed=JSON.stringify([...pCollapsed])}
+function askText(title,value,label){return new Promise(res=>{let done=false;const fin=v=>{if(done)return;done=true;close();res(v)};
+  const close=modal('<h3>'+esc(title)+'</h3><div class="dc"><p>'+esc(label||'')+'</p><input data-v value="'+esc(value||'')+'"></div><div class="df"><button class="btn" data-x>取消</button><button class="btn primary" data-ok>确定</button></div>',(dlg)=>{const i=dlg.querySelector('[data-v]');i.focus();i.select();
+    i.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();fin(i.value.trim())}};dlg.querySelector('[data-ok]').onclick=()=>fin(i.value.trim());dlg.querySelector('[data-x]').onclick=()=>fin(null)},()=>{if(!done){done=true;res(null)}})})}
+function projectMenu(id){const p=liveProject(id);if(!p)return;const others=projects.filter(x=>!x.mergedInto&&x.id!==id).sort((a,b)=>a.name.localeCompare(b.name));
+  const rules=[p.remotes?.length?'git '+p.remotes.join(', '):'',p.dirs?.length?'目录 '+p.dirs.map(d=>d.machine+':'+d.path).join(', '):'',p.urls?.length?'页面 '+p.urls.join(', '):'',p.paths?.length?'路径 '+p.paths.join(', '):'',p.keywords?.length?'关键词 '+p.keywords.join(', '):''].filter(Boolean);
+  const close=modal('<h3>项目 '+esc(p.name)+'</h3><div class="dc"><p>名字</p><input data-name value="'+esc(p.name)+'"><p style="margin-top:14px">合并进另一个项目（它的识别规则和任务都会并过去，之后按新项目归类）</p><select data-into class="btn" style="max-width:100%"><option value="">不合并</option>'+others.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name)+'</option>').join('')+'</select>'+(rules.length?'<p style="margin-top:14px;font:11px/1.6 var(--mono);color:var(--fg-3)">识别规则：<br>'+rules.map(esc).join('<br>')+'</p>':'')+'</div><div class="df"><button class="btn" data-x>取消</button><button class="btn primary" data-ok>保存</button></div>',(dlg,c)=>{
+    dlg.querySelector('[data-x]').onclick=c;dlg.querySelector('[data-name]').focus();
+    dlg.querySelector('[data-ok]').onclick=async()=>{const name=dlg.querySelector('[data-name]').value.trim(),into=dlg.querySelector('[data-into]').value;
+      try{if(into){await api('POST','/api/hub/projects/'+encodeURIComponent(id)+'/merge',{into});toast('已把「'+p.name+'」合并进「'+projName(into)+'」')}
+        else if(name&&name!==p.name){await api('POST','/api/hub/projects/'+encodeURIComponent(id)+'/rename',{name});toast('已重命名为「'+name+'」')}
+        c();await loadProjects()}catch(e){toast(e.message,'error')}}})}
+async function loadProjects(){try{const r=await api('GET','/api/hub/projects');projects=r.projects||[];renderProjFilter();renderTasks()}catch{}}
+// Inside a level, tasks are grouped by project (attention level first, project second). Collapsing a project hides
+// it in every level except 需要你, which always shows.
+function levelHtml(l,list){if(projFilter)return list.map(itemHtml).join('');
+  const m=new Map();for(const i of list){const id=itemProj(i);if(!m.has(id))m.set(id,[]);m.get(id).push(i)}
+  if(m.size<2&&!pCollapsed.has([...m.keys()][0]||'~none'))return list.map(itemHtml).join('');
+  const order=projCounts().map(c=>c.id);const ids=[...m.keys()].sort((a,b)=>((order.indexOf(a)+1)||1e9)-((order.indexOf(b)+1)||1e9));
+  return ids.map(id=>{const its=m.get(id),closed=l!=='need'&&pCollapsed.has(id||'~none');
+    return '<div class="phead'+(closed?' closed':'')+'" data-pid="'+esc(id)+'" role="button" tabindex="0" aria-expanded="'+!closed+'" title="'+(closed?'展开这个项目':'折叠这个项目（需要你的任务仍然显示）')+'"><span class="pcar">'+(closed?'+':'-')+'</span><span class="pname'+(id?'':' none')+'">'+esc(projName(id))+'</span><span class="pc">'+its.length+'</span>'+(id?'<button class="pmenu" data-pmenu title="重命名 / 合并项目">...</button>':'')+'</div>'+(closed?'':its.map(itemHtml).join(''))}).join('')}
 function _renderTasks(){
   if(!hubLoaded)return; // keep the loading skeleton until the first hub snapshot
   const q=($('#tsearch')?.value||'').trim().toLowerCase();
-  const match=i=>{if(!q)return true;const t=tasks.get(i.taskId)||{};return [i.taskId,i.title,i.reason,i.question,t.cwd,i.machine,t.summary,LVL[i.level]].some(v=>String(v||'').toLowerCase().includes(q))};
-  const items=[...attn.values()].filter(match);const by={};for(const l of LEVELS)by[l]=[];for(const i of items)by[i.level]?.push(i);
+  const match=i=>{if(!q)return true;const t=tasks.get(i.taskId)||{};return [i.taskId,i.title,i.reason,i.question,t.cwd,i.machine,t.summary,LVL[i.level],projName(itemProj(i))].some(v=>String(v||'').toLowerCase().includes(q))};
+  const pf=projFilter==='~none'?'':liveProject(projFilter)?.id;
+  const items=[...attn.values()].filter(match).filter(i=>!projFilter||itemProj(i)===pf);const by={};for(const l of LEVELS)by[l]=[];for(const i of items)by[i.level]?.push(i);
   by.need.sort((a,b)=>a.since-b.since);by.snoozed.sort((a,b)=>(a.snoozedUntil||0)-(b.snoozedUntil||0));for(const l of ['skim','inflight','archived'])by[l].sort((a,b)=>b.since-a.since);
   const shown=LEVELS.filter(l=>l!=='archived'||showArchived||q);
-  let h='';for(const l of shown){const list=l==='archived'?by[l].slice(0,30):by[l];if(!list.length)continue;h+='<div class="lvh '+l+'" id="lv-'+l+'" title="'+esc(LVL_HINT[l])+'">'+LVL[l]+' <span class="n">'+by[l].length+'</span></div>'+list.map(itemHtml).join('')}
+  let h='';for(const l of shown){const list=l==='archived'?by[l].slice(0,30):by[l];if(!list.length)continue;h+='<div class="lvh '+l+'" id="lv-'+l+'" title="'+esc(LVL_HINT[l])+'">'+LVL[l]+' <span class="n">'+by[l].length+'</span></div>'+levelHtml(l,list)}
   $('#tlist').innerHTML=h||'<div class="blank"><span class="lbl">没有需要你的事</span>'+(tasks.size?'交出去的事都在进行中或已确认。':'还没有交出去的事。<br>在前台告诉 agent 要做什么，它会派给 worker；只有需要你时才会出现在这里。')+'</div>';
   $('#lvls').innerHTML=LEVELS.map(l=>'<button class="fchip '+l+(l==='archived'&&showArchived?' on':'')+'" data-l="'+l+'" title="'+esc(LVL_HINT[l])+'">'+LVL[l]+(l==='archived'?'':'<b>'+(counts[l]??by[l].length)+'</b>')+'</button>').join('');
   $('#lvls').querySelectorAll('button').forEach(b=>b.onclick=()=>qaShowView(b.dataset.l));
   const run=counts.inflight||0;$('#tcount').textContent=items.length+' 件';$('#tcount').title=run+' 件进行中';
+  $('#tlist').querySelectorAll('.phead').forEach(h=>{const gid=h.dataset.pid||'~none';const tog=()=>{pCollapsed.has(gid)?pCollapsed.delete(gid):pCollapsed.add(gid);saveCollapsed();_renderTasks()};
+    h.onclick=e=>{if(e.target.closest('[data-pmenu]'))return;tog()};h.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();tog()}};
+    const mb=h.querySelector('[data-pmenu]');if(mb)mb.onclick=e=>{e.stopPropagation();projectMenu(h.dataset.pid)}});
+  renderProjBar();renderProjFilter();
   $('#tlist').querySelectorAll('.titem').forEach(el=>{const id=el.dataset.id,i=attn.get(id);
     el.querySelectorAll('[data-act]').forEach(b=>{b.onclick=e=>{e.stopPropagation();act(id,b.dataset.act)};b.onkeydown=e=>e.stopPropagation()});
     el.querySelectorAll('[data-opt]').forEach(b=>{b.onclick=e=>{e.stopPropagation();const o=i?.options?.[+b.dataset.opt];if(o&&confirm('把「'+o+'」作为回答发给 '+id+'？'))act(id,'answer',o)};b.onkeydown=e=>e.stopPropagation()});
@@ -737,7 +799,7 @@ async function openTask(id){
   d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(t.title)+'</h3>'+(i?'<span class="mark">'+esc(i.mark)+'</span>':'')+'</div><div class="dbody">'+
     (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div><div class="ar">'+esc(i.reason)+'</div>'+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
       (acts.length?'<div class="tacts">'+acts.map(a=>'<button class="btn'+(a.id==='cancel'?' danger':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+'</div>':'')+
-    '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+(t.activity&&ACTIVE.includes(t.status)?'<dt>当前</dt><dd class="mono">'+esc(t.activity)+'</dd>':'')+'</dl>'+
+    '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+(t.activity&&ACTIVE.includes(t.status)?'<dt>当前</dt><dd class="mono">'+esc(t.activity)+'</dd>':'')+'</dl>'+
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
     '<div class="dsec send"><h4>'+(i?.level==='need'?'回答 worker':'追加指令')+'</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>'+
     '<details class="dsec" id="briefSec"><summary>任务简报</summary><pre class="pre">'+esc(t.brief)+'</pre></details>'+
@@ -747,6 +809,8 @@ async function openTask(id){
   d.querySelector('[data-back]').onclick=closeTask;
   d.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>act(t.id,b.dataset.act));
   d.querySelectorAll('[data-opt]').forEach(b=>b.onclick=()=>{const o=i?.options?.[+b.dataset.opt];if(o)act(t.id,'answer',o)});
+  const ps=d.querySelector('[data-proj]');if(ps)ps.onchange=async()=>{let v=ps.value;if(v==='~new'){v=await askText('新建项目','','把 '+t.id+' 放进一个新项目');if(!v){ps.value=projOf(t);return}}
+    try{const r=await api('POST','/api/hub/tasks/'+encodeURIComponent(t.id)+'/project',{project:v});tasks.set(r.task.id,r.task);await loadProjects();toast(t.id+' 已移到「'+projName(projOf(r.task))+'」');openTask(t.id)}catch(e){toast(e.message,'error');ps.value=projOf(t)}};
   d.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{const a=b.dataset.a;
     if(a==='close'&&!confirm('关闭 '+t.id+' 的 worker 窗口？'))return;
     try{if(a==='send'){const text=ta.value.trim();if(!text)return;await api('POST','/api/hub/tasks/'+t.id+'/message',{text});ta.value='';toast('已发送给 '+t.id)}
@@ -804,7 +868,8 @@ async function loadCron(){try{const r=await api('GET','/api/hub/cron');crons.cle
 /* ---------- hub ---------- */
 function setHub(ok){hubOk=ok;$('#hubDot').className='dot '+(ok?'on':'off');$('#hubText').textContent=ok?'hub 已连接':'hub 离线'}
 async function loadHub(){
-  try{const [tr,mr,ir,ar]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/intake'),api('GET','/api/hub/attention?archived=200')]);
+  try{const [tr,mr,ir,ar,pr]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/intake'),api('GET','/api/hub/attention?archived=200'),api('GET','/api/hub/projects').catch(()=>({projects:[]}))]);
+    projects=pr.projects||[];
     tasks.clear();for(const t of tr.tasks)tasks.set(t.id,t);attn.clear();for(const i of ar.items||[])attn.set(i.taskId,i);counts=ar.counts||counts;focus=ar.focus||focus;selfId=mr.self||'';machines=mr.machines||[];intakes.clear();for(const i of ir.intake||[])intakes.set(i.id,i);
     hubLoaded=true;renderMachines();renderTasks();renderIntakes();for(let i=0;i<nodes.length;i++)renderMsg(i);loadCron();
   }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off;$('#ilist').innerHTML=off}}
@@ -819,6 +884,7 @@ function onHub(e){
   else if(e.type==='attention.state'){counts=e.counts;focus=e.focus;setCounts();api('GET','/api/hub/attention?archived=200').then(r=>{attn.clear();for(const i of r.items||[])attn.set(i.taskId,i);renderTasks()}).catch(()=>{})}
   else if(e.type==='machines'){machines=e.machines;renderMachines()}
   else if(e.type==='cron'){if(e.job.deleted)crons.delete(e.job.id);else{const prev=crons.get(e.job.id);crons.set(e.job.id,{...prev,...e.job,describe:e.job.describe||prev?.describe,tasks:e.job.tasks||prev?.tasks||[],running:e.job.running??prev?.running})}renderCron();clearTimeout(cronTimer);cronTimer=setTimeout(loadCron,800)}
+  else if(e.type==='projects'){projects=e.projects||[];renderProjFilter();renderTasks()}
   else if(e.type==='intake'){const isNew=!intakes.has(e.intake.id);intakes.set(e.intake.id,e.intake);renderIntakes();if(isNew&&e.intake.status==='pending')toast('新的浏览器评论：'+e.intake.comment.slice(0,80))}
 }
 

@@ -138,7 +138,7 @@ export function createCron(d: CronDeps) {
 	function applyOptions(j: CronJob, p: any) {
 		if (typeof p.title === "string" && p.title.trim()) j.title = p.title.trim();
 		if (typeof p.brief === "string" && p.brief.trim()) j.brief = p.brief.trim();
-		for (const k of ["machine", "cwd"] as const) {
+		for (const k of ["machine", "cwd", "project"] as const) {
 			if (p[k] === null || p[k] === "") delete j[k];
 			else if (typeof p[k] === "string") j[k] = p[k].trim();
 		}
@@ -179,6 +179,7 @@ export function createCron(d: CronDeps) {
 			cwd: j.cwd,
 			machine: j.machine,
 			requires: j.requires,
+			...(j.project ? { project: j.project } : {}),
 			source: { kind: "cron", cronId: j.id, cronHub: d.self, ...(j.silent ? { silent: true } : {}) },
 			...(j.requester ? { requester: j.requester } : {}),
 		};

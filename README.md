@@ -208,7 +208,9 @@ npm 发布是可选的：`scripts/release.sh minor --npm`（默认不发布）�
 CLI（任何终端都能用）：
 
 ```bash
-quick attention                # 注意力队列：需要你 / 待扫 / 稍后 / 不用管（quick a；quick ls 是一行一个的版本）
+quick attention                # 注意力队列：需要你 / 待扫 / 稍后 / 不用管，每级内按项目分组（quick a；quick ls 是一行一个的版本）
+quick ls --project quick-agent  # 只看一个项目；--by-project 先按项目分组
+quick projects                 # 项目列表与识别规则（见「项目」）
 quick show <id>                # 查看注意力、汇报、简报
 quick send <id> "回答或追加指令"  # worker 窗口关了也会带着完整上下文重新拉起
 quick ack <id>                 # 知道了
@@ -266,6 +268,39 @@ quick cron pause|resume|run|rm <id>
 
 数据存放在 `~/.quick-agent/cron.json`（原子写入），hub 重启后自动恢复。测试：`npm test` 覆盖解析器、下次运行时间（含时区和 DST）、重叠与补跑决策；`test/cron-e2e.sh` 用隔离的 hub（`/tmp/qa-cron`、端口 17795、tmux 会话 `qa-cronT`，worker 是 PATH 里的假 `pi`，不花模型费用）验证 `--in 5s` 派单、`--every 10s` 重叠跳过、静默归档、暂停后不再触发、hub 重启后恢复和补跑。
 
+## 项目
+
+多个项目的任务会自动整理到各自的「项目」下，不用手动归类。项目保存在 hub 的 `~/.quick-agent/projects.json`，在 mesh 里同步；每个任务记录自己的 `project`（没有 = 未归类）。
+
+**自动归类**（创建任务时由执行它的机器判断，按优先级）：
+
+1. 派单时显式指定的项目（`qa_dispatch` / `quick new --project` / API 的 `project`；名字不存在会新建）。
+2. cwd 所在的 git 仓库：先按 remote（`git@github.com:o/r.git`、`https://github.com/o/r` 等都归一化成 `github.com/o/r`），所以不同机器、不同目录的同一个仓库属于同一个项目；没有 remote 时按主工作树目录。git worktree 会认回主仓库（如 `~/qa-wt/*` 认回 `~/quick-agent`）。第一次见到的仓库自动建一个以主目录名命名的项目。
+3. 路径规则（前缀，最长匹配），以及各机器上已知的项目目录；对还没升级的旧 hub 发来的任务，再按目录名猜（`/Users/me/quick-agent`、`~/quick-agent-t2d42` → quick-agent）。
+4. 浏览器评论的页面 URL（子串、host 或 `/正则/`）。
+5. 标题和简报的轻量文本匹配：项目名 / id / 关键词在标题里出现一次，或在简报里出现三次以上；两个项目打平就不猜。
+
+都不命中就归到「未归类」。归类时会顺带学习识别规则：git remote、本机的仓库目录、页面的 host（GitHub 之类的公共站点记到 `owner/repo`）。quick-agent 自己的仓库会预置 Web UI 地址（`127.0.0.1:<uiPort>`）。`config.json` 里旧的 `projects`（URL → 工作目录）会合并进对应项目：URL 成为页面规则，`cwd` 成为该机器上的项目目录。
+
+**存量任务**：hub 启动时自动给没归过类的任务归类（只改 `project`，不改更新时间和排序）；`quick projects backfill --all` 重新归类所有不是手动设置的任务。新建项目、改规则、合并之后，按文本 / 路径 / URL 弱匹配（或未归类）的任务会自动重新判断。
+
+**手动调整会被记住**：手动改过项目的任务（Web UI 任务详情里的「项目」下拉框，或 `quick projects move`）不会再被自动归类覆盖。合并后旧 id 作为别名保留，之后命中旧项目的任务也会进到新项目里。
+
+```bash
+quick projects                             # 列表：需要你 / 运行 / 总数，以及 git、目录、页面、关键词规则
+quick ls --project quick-agent             # 只看一个项目（none = 未归类）；quick attention 每级内按项目分组
+quick projects move t35a9 tokenjoy         # 手动改任务的项目（不存在就新建；none = 未归类）
+quick projects rename relay-website 官网    # 改名（id 不变）
+quick projects merge tokenjoy relay-website  # 合并：规则和任务都并过去
+quick projects create 文档 --path ~/docs --url docs.example.com --keyword 文档
+quick projects rule quick-agent add keyword "pi TUI"   # add|rm url|path|remote|keyword
+quick new --project relay-website "标题" "简报"          # 不传 --cwd 时用该项目在选中机器上的目录
+```
+
+**界面**：Web UI（Electron 客户端用同一套页面）里项目是注意力队列的第二维度，不取代「需要你」优先：队列仍按 需要你 / 待扫 / 稍后 / 不用管 分级，每一级里再按项目分小组（有需要你处理的项目在前，其次是有运行中任务的项目）。队列上方的项目条显示每个项目「需要你」和运行中的数量，点一下只看这个项目（筛选栏的下拉框也可以）。点项目小标题可以折叠这个项目，折叠后它在「需要你」里的任务仍然显示；小标题右侧的「...」可以重命名或合并项目；任务详情里的「项目」下拉框可以手动改项目。前台的 `qa_tasks` 也按「级别 · 项目」分组输出并给出每个项目的计数，系统提示里的项目列表从 hub 获取（hub 不可用时退回 config.json 的映射）。
+
+只传 `project` 不传 `cwd` 派单时，hub 优先选有这个项目目录的机器（在满足 `requires` 的机器里按优先级），并用那台机器上的项目目录。项目可以带 `members`（团队成员）和 `notes`，定时任务等其他入口创建任务时也可以传 `project`。
+
 ## Web UI（注意力队列 + 前台 agent）
 
 ```bash
@@ -276,7 +311,7 @@ quick ui status | url | logs | stop | restart
 
 `quick ui` 会先确保 hub 在运行，再拉起一个常驻的 Web UI 进程（`ui/server.ts`，日志 `~/.quick-agent/ui.log`），然后打开 `http://127.0.0.1:7790/?token=…`。
 
-- **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。点开任务可以看注意力详情、最新汇报、简报，回答或追加指令。
+- **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，每一级里按项目分组（见「项目」），按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。点开任务可以看注意力详情、最新汇报、简报，回答或追加指令。
 - **前台 agent**：右侧是一个持续的前台，交代新的事、问"有什么需要我的"都在这里。回复流式显示，工具调用显示为卡片，派单卡片带任务 ID 和实时状态，点击任务 ID 打开详情。回复过程中继续发消息会排到本轮之后（Alt+Enter 插入当前轮），可以随时「停止」。支持粘贴图片，`/tasks`、`/qa on|off` 等扩展命令照常可用。顶栏可以切换模型和思考级别。
 - **只有一个前台**：没有会话列表，没有新建/切换/重命名；刷新页面或重启 `quick ui` 都接着同一段对话，上下文由自动压缩控制长度。（内部实现：前台通过 pi SDK 托管在 Web UI 进程里，加载同一个 quick-agent 扩展，对话持久化成 `~/.quick-agent/ui-sessions/` 下的 pi 会话文件；这是实现细节，不对人展示。调试时可用隐藏参数 `quick ui restart --fresh-front` 从空对话开始。）
 - **汇报与评论**：worker 的汇报按注意力进入前台对话（见「汇报怎么送到前台」）。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。「浏览器评论」标签页列出所有评论，以及它们对应的任务。
@@ -566,7 +601,7 @@ quick team board                                 # 团队视图：所有进行�
   "update": { "enabled": true, "autoInstall": false, "cacheMinutes": 10 },   // 见「升级与发布」
   "defaultCwd": "/home/simon",
   "projects": [
-    // 浏览器评论按 URL 匹配工作目录（子串，或 /正则/）
+    // 浏览器评论按 URL 匹配工作目录（子串，或 /正则/）；hub 启动时合并进 ~/.quick-agent/projects.json 的项目（见「项目」）
     { "match": "localhost:5173", "cwd": "/home/simon/my-app", "notes": "Vite + React，组件在 src/components", "machine": "cloud" }
   ]
 }
@@ -584,6 +619,9 @@ hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/handoff.ts               任务跨机器交接：编排、分块传输、目标端应用/回滚
 hub/cron.ts                  定时任务：持久化、触发定时器、mesh 复制、cron.* 方法（只由所属 hub 触发）
+hub/projects.ts              项目：持久化、任务自动归类与回填、手动改名/合并/移动、mesh 同步
+shared/projects.ts           项目归类逻辑（git remote/worktree、路径、URL、文本）与分组排序
+cli/projects.ts              quick projects / 按项目分组的 quick ls
 hub/workspace.ts             交接用的工作区快照（git bundle/diff/untracked 或 tar）、manifest 校验、撤销
 hub/attention.ts             注意力：计算变化、决定打扰、合批待扫摘要、持久化专注模式（团队模式下按人）
 hub/team.ts                  团队：成员名册（mesh 复制）、身份、邀请、任务上的人、评论、点名
@@ -600,7 +638,7 @@ scripts/release.sh           维护者发布脚本；.github/workflows/release.y
 shared/schedule.ts           机器资源探测与派单选机器（资源 + 优先级）
 shared/team.ts               团队规则：角色权限、@提及解析、球在谁手里、按人的注意力（纯函数）
 shared/cron.ts               定时规则：5 段 cron 解析、下次运行时间（时区/DST）、间隔/一次性、重叠与补跑决策
-test/                        npm test（团队协作端到端、升级逻辑、多机升级模拟、调度选择、两机派单、定时规则）；*-e2e.sh 端到端测试
+test/                        npm test（团队协作端到端、升级逻辑、多机升级模拟、调度选择、两机派单、定时规则、项目归类与回填）；*-e2e.sh 端到端测试
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
 extensions/front.ts          前台角色
 extensions/worker.ts         worker 角色
@@ -610,14 +648,14 @@ docs/browser-extension/      插件隐私政策与上架材料
 scripts/pack-extension.sh    打包上架用 zip（dist/）
 ```
 
-运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`cron.json`（本机 hub 所属的定时计划）、`hub.log`、`attention.json`（专注模式、摘要间隔、待发摘要）。内部细节：worker 的上下文是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`（`quick show <id> --debug` 显示路径），Web UI 前台的对话保存在 `ui-sessions/`；正常使用不需要关心它们，接管 worker 用 `quick attach`。
+运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`projects.json`（项目）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`cron.json`（本机 hub 所属的定时计划）、`hub.log`、`attention.json`（专注模式、摘要间隔、待发摘要）。内部细节：worker 的上下文是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`（`quick show <id> --debug` 显示路径），Web UI 前台的对话保存在 `ui-sessions/`；正常使用不需要关心它们，接管 worker 用 `quick attach`。
 
 ## Hub API（Bearer token）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
-| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, attachments?, source?, reviewer?, assignee?, watchers?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器；发起人取自 token |
+| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, project?, attachments?, source?, reviewer?, assignee?, watchers?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器；发起人取自 token |
 | POST | `/api/tasks/:id/message` | `{text}` 回答或追加指令（worker 窗口关了会带着完整上下文重新拉起） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 知道了 |
 | POST | `/api/tasks/:id/snooze`、`/retry` | 稍后提醒 `{minutes}` / 重试 |
@@ -627,6 +665,10 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | GET | `/api/me`、`/api/team` | 你是谁；成员名册（含各自的机器，owner 还能看到未用的邀请） |
 | POST | `/api/team/members`、`/api/team/members/:id` | 加人（返回一次性 token）/ `{role, name, resetToken, remove}` |
 | POST | `/api/team/invites`、`/api/team/join` | 生成邀请码（owner）/ 用邀请码加入（不需要 token） |
+| POST | `/api/tasks/:id/project` | `{project}` 手动改任务的项目（`""` = 未归类），之后不再自动归类 |
+| GET/POST | `/api/projects` | 项目列表 / `{name, urls?, paths?, remotes?, keywords?, notes?}` 新建 |
+| POST | `/api/projects/:id/rename`、`/merge`、`/rules` | `{name}` 改名 / `{into}` 合并 / `{add?, remove?, notes?, members?}` 改识别规则 |
+| POST | `/api/projects/backfill` | `{all?}` 给本机任务归类（all：重新归类所有非手动设置的） |
 | POST | `/api/tasks/:id/handoff` | `{to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}` 把任务交接到另一台机器（异步） |
 | POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定 |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
@@ -651,4 +693,4 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 ## 后续可以做的
 
 - 更多入口：IM 机器人、Git 评论、CI 失败。
-- 收件箱优先级、按项目分组、汇报摘要推送。
+- 收件箱优先级、汇报摘要推送。

@@ -44,6 +44,8 @@ export interface CronJob {
 	machine?: string;
 	requires?: string[];
 	cwd?: string;
+	/** Project of the tasks it dispatches (shared/projects.ts; default: inferred per run). */
+	project?: string;
 	enabled: boolean;
 	overlap: OverlapPolicy;
 	catchUp: CatchUpPolicy;

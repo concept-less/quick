@@ -16,6 +16,7 @@ import { openAttach, planAttach, runForeground } from "../shared/attach.ts";
 import { assignCmd, commentCmd, TEAM_HELP, teamCmd } from "./team.ts";
 import { formatDuration, formatWall } from "../shared/cron.ts";
 import type { CronView } from "../hub/cron.ts";
+import { printAttention, projectsCmd } from "./projects.ts";
 
 const cfg = loadConfig();
 const hub = new HubClient(cfg);
@@ -96,10 +97,10 @@ const HELP = `quick — quick-agent
   quick ui stop|restart|status|url|logs
   quick hub start|stop|restart|reload|status|logs
                             reload = 用当前安装的版本平滑重启 hub 和 Web UI 服务（worker 不受影响）
-  quick attention [-a]      注意力队列：需要你 / 待扫 / 稍后 / 不用管（别名 quick a；-a 含已归档）
-  quick ls [-a]             同上，按任务一行一个（-a 含已归档）
+  quick attention [-a] [--project P]   注意力队列：需要你 / 待扫 / 稍后 / 不用管，每级内按项目分组（别名 quick a；-a 含已归档）
+  quick ls [-a] [--project P] [--by-project]   同上，按任务一行一个并标出项目；--project 只看一个项目（none = 未归类），--by-project 先按项目分组
   quick show <id>           查看任务的注意力、汇报、简报
-  quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] <title> <brief...>
+  quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] [--project P] <title> <brief...>
                             不经前台直接派单（不指定机器时按资源+优先级自动选机器）
   quick send <id> <message> 回答 worker 的问题或追加指令（窗口已关会带着完整上下文重新拉起）
   quick retry <id>          让停下/失败的 worker 从中断处重试
@@ -112,12 +113,17 @@ const HELP = `quick — quick-agent
   quick snooze <id> [分钟]  稍后提醒（默认 60 分钟；0 = 现在就放回来）
   quick focus [分钟|off]    专注模式：只有「需要你」会打扰，完成汇总留到结束（不带分钟 = 直到关闭）
   quick cron add (--cron "0 9 * * *" | --every 2h | --at "2026-11-09 09:00" | --in 30m) [--tz 时区]
-                [--machine M] [--requires a,b] [--cwd DIR] [--overlap skip|queue|parallel] [--catch-up latest|skip]
+                [--machine M] [--requires a,b] [--cwd DIR] [--project P] [--overlap skip|queue|parallel] [--catch-up latest|skip]
                 [--silent] [--paused] <标题> <简报...>
                             定时计划：到点后 hub 自动派一个 worker 任务（简报里可用 {{date}} {{time}} {{n}}）
   quick cron ls [-a]        列出定时计划（-a 含已结束的一次性计划）
   quick cron show <id>      计划详情与最近运行
   quick cron rm|pause|resume|run <id>   删除 / 暂停 / 恢复 / 立即运行一次
+  quick projects            项目列表（需要你 / 运行中 / 全部计数、识别规则）
+  quick projects rename <项目> <新名字> | merge <项目> <并入项目> | move <任务> <项目|none>
+  quick projects create <名字> [--url U] [--path P] [--remote R] [--keyword K]
+  quick projects rule <项目> add|rm url|path|remote|keyword <值>
+  quick projects backfill [--all]   给未归类过的任务归类（--all 重新归类所有非手动设置的任务）
   quick machines            mesh 中的机器、资源、优先级与链路状态
   quick machine [show] [M]  查看机器的资源标签（探测 + 配置）与优先级
   quick machine set [--machine M] [--priority N] [--resources a,b] [--add t]... [--remove t]... [--notes 文本] [--desc 描述] [--owner 成员id|none]
@@ -527,13 +533,8 @@ async function main() {
 			console.log(countsLine(q.counts, q.focus));
 			const items = q.items.filter((i) => all || i.level !== "archived");
 			if (!items.length) return console.log("没有需要你的事，也没有进行中的任务");
-			let level = "";
-			for (const i of items) {
-				if (grouped && i.level !== level) console.log(`\n${LEVEL_LABEL[(level = i.level) as AttentionItem["level"]]}`);
-				console.log(`${grouped ? "  " : `${LEVEL_LABEL[i.level].padEnd(4, "　")} `}${attnLine(i)}`);
-				if (grouped && i.question) console.log(`             \x1b[2m问题: ${i.question}${i.options?.length ? `  选项: ${i.options.join(" / ")}` : ""}\x1b[0m`);
-			}
-			return;
+			// Attention level first, project second (cli/projects.ts).
+			return printAttention(hub, items, attnLine, { grouped, project: flag(rest, "--project"), byProject: rest.includes("--by-project") });
 		}
 		case "snooze": {
 			const id = rest[0] ?? die("usage: quick snooze <id> [minutes]");
@@ -572,6 +573,13 @@ async function main() {
 				cwd = args[i + 1] ?? die("--cwd needs a value");
 				args.splice(i, 2);
 			}
+			const pi = args.indexOf("--project");
+			let project: string | undefined;
+			if (pi >= 0) {
+				project = args[pi + 1] ?? die("--project needs a value");
+				args.splice(pi, 2);
+				if (i < 0) cwd = ""; // the project's checkout on the chosen machine
+			}
 			const requires = normalizeRequires(flags(args, "--requires").join(","));
 			if (requires.length && i < 0) cwd = ""; // resource-based pick: use the chosen machine's default cwd unless --cwd is given
 			let machine: string | undefined;
@@ -588,7 +596,7 @@ async function main() {
 			const [title, ...brief] = args;
 			if (!title || !brief.length) die("usage: quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] <title> <brief...>");
 			// cwd defaults to the current directory: the hub picks the best machine on which it exists.
-			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, reviewer, assignee, watchers: watchers.length ? watchers : undefined, source: { kind: "cli" } });
+			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, reviewer, assignee, watchers: watchers.length ? watchers : undefined, source: { kind: "cli" }, project });
 			return console.log(attnLine(attentionOf(t)));
 		}
 		case "send": {
@@ -606,6 +614,9 @@ async function main() {
 			return handoffCmd(rest);
 		case "attach":
 			return attach(rest[0] ?? die("usage: quick attach <id>"));
+		case "projects":
+		case "project":
+			return projectsCmd(hub, rest);
 		case "machines": {
 			const r = await hub.machines();
 			const first = rankMachines(r.machines.filter((m) => m.online))[0]?.id;
@@ -741,7 +752,7 @@ async function cronCmd(args: string[]) {
 			return i >= 0;
 		};
 		const input: Parameters<typeof hub.createCron>[0] = { title: "", brief: "", createdBy: "cli" };
-		for (const [f, k] of [["--cron", "cron"], ["--every", "every"], ["--at", "at"], ["--in", "in"], ["--tz", "tz"], ["--machine", "machine"], ["--cwd", "cwd"], ["--hub", "hub"]] as const) {
+		for (const [f, k] of [["--cron", "cron"], ["--every", "every"], ["--at", "at"], ["--in", "in"], ["--tz", "tz"], ["--machine", "machine"], ["--cwd", "cwd"], ["--hub", "hub"], ["--project", "project"]] as const) {
 			const v = flag(a, f);
 			if (v !== undefined) (input as any)[k] = v;
 		}
@@ -754,7 +765,7 @@ async function cronCmd(args: string[]) {
 		if (bool("--silent")) input.silent = true;
 		if (bool("--paused")) input.enabled = false;
 		// Like `quick new`: default cwd is the current directory unless a machine/resources are given.
-		if (!input.cwd && !input.machine && !req.length && !input.hub) input.cwd = process.cwd();
+		if (!input.cwd && !input.machine && !req.length && !input.hub && !(input as any).project) input.cwd = process.cwd();
 		const unknown = a.find((x) => x.startsWith("--"));
 		if (unknown) die(`unknown option ${unknown}`);
 		const [title, ...brief] = a;

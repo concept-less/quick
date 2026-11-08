@@ -79,12 +79,16 @@ export interface Task extends TaskPeople {
 	handoffs?: { from: string; to: string; fromCwd: string; toCwd: string; at: number }[];
 	/** Note for the worker, prepended to the next message it receives (e.g. after a handoff). */
 	pendingNote?: string;
+	/** Project id (shared/projects.ts); absent = unsorted. */
+	project?: string;
+	/** How the project was determined ("manual" / "explicit" are never reclassified); absent = not classified yet. */
+	projectVia?: string;
 }
 
 export interface TaskEvent {
 	ts: number;
 	taskId: string;
-	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment";
+	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment" | "project";
 	text?: string;
 	/** Team member (or "agent") who caused the event, when known. */
 	by?: string;
@@ -176,4 +180,6 @@ export type HubEvent =
 	/** Focus mode / counts changed without a specific task. */
 	| { type: "attention.state"; counts: AttentionCounts; focus: FocusState; ts: number }
 	| { type: "update.available"; machine: string; version: string; ts: number }
-	| { type: "update.job"; machine: string; job: { step: string; from: string; to?: string; error?: string; message?: string; received?: number; total?: number } };
+	| { type: "update.job"; machine: string; job: { step: string; from: string; to?: string; error?: string; message?: string; received?: number; total?: number } }
+
+	| { type: "projects"; projects: import("./projects.ts").Project[] };
