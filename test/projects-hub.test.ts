@@ -3,7 +3,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -24,6 +24,11 @@ function repo(dir: string, remote?: string) {
 }
 
 const qa = repo(join(TMP, "quick-agent"), "git@github.com:concept-less/quick.git");
+// Run the hub from the named fixture, not the developer/Actions checkout. The hub
+// seeds its own repository as a project; CI clones this repo as "quick", while a
+// maintainer may call it anything. Neither name may leak into these fixtures.
+for (const dir of ["hub", "shared"]) cpSync(join(REPO, dir), join(qa, dir), { recursive: true });
+cpSync(join(REPO, "package.json"), join(qa, "package.json"));
 const wt = join(TMP, "qa-wt", "projects");
 git(qa, "worktree", "add", "-q", wt, "-b", "wt/projects");
 const clone = repo(join(TMP, "quick-agent-t2d42"), "https://github.com/concept-less/quick");
@@ -53,7 +58,7 @@ async function api(method: string, path: string, body?: any) {
 	return json;
 }
 async function start() {
-	hub = spawn(process.execPath, [join(REPO, "hub", "server.ts")], { env, stdio: "ignore" });
+	hub = spawn(process.execPath, [join(qa, "hub", "server.ts")], { env, stdio: "ignore" });
 	for (let i = 0; i < 60; i++) {
 		await new Promise((r) => setTimeout(r, 150));
 		try {
