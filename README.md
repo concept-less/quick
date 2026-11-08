@@ -199,20 +199,31 @@ quick version        # 应显示「Release 安装，~/.quick-agent/app/X.Y.Z」
 ### 维护者：发布新版本
 
 ```bash
-scripts/release.sh minor --dry-run    # 先看看：在 dist/release/ 生成产物和更新说明，不提交不推送
-scripts/release.sh minor              # patch | minor | major | X.Y.Z
+scripts/release.sh minor --dry-run    # 隔离预览 committed HEAD → dist/release-preview/版本/，不提交/推送/安装
+scripts/release.sh minor              # 手动排队：patch | minor | major | X.Y.Z（发布最新 origin/main）
 ```
 
-`scripts/release.sh` 依次：检查在 main 上、工作区干净、与 origin/main 一致、`npm test` 通过 → 同步版本号（`package.json`、`electron/package.json` 和 lock、`browser/manifest.json`）→ 从上一个 tag 以来的提交生成 `CHANGELOG.md` 的新一节（`--notes 文件` 可以在前面加一段说明）→ 提交 `release vX.Y.Z` 并打 tag → 推送 main 和 tag → 生成产物并 `gh release create`：
+**自动发布**：每次 `origin/main` 的新 push 触发 [release Action](https://github.com/concept-less/quick/actions/workflows/release.yml)，不是监视未提交文件。自动默认 patch；手动命令只是 `workflow_dispatch --ref main`，与自动流程共用 `quick-release-main` 全流程锁，不在开发/hub 目录构建。短时间连续 push 合并为最多一个 pending run，锁内重新 fetch 最新 main；被合并的提交随最终 source SHA 一起进入 Release（可从 git ancestry/更新说明追溯，不为每一个中间 SHA 单独发布）。已公开的 source SHA 重跑幂等跳过。
+
+**版本策略**：从仓库版本和全部已保留 `vX.Y.Z` tags 取最大版本，再递增（显式版本必须更大）。cloud 在独立 checkout 先跑 `npm test`，然后同步 package/Electron lock/manifest 版本、生成 CHANGELOG，创建以 source main SHA 为 parent 的 **release-only commit/tag**。只 push tag，**不向 main push bump/changelog commit**，因此不会自触发循环，也不会与人的 main push 冲突。main 的 package 版本可以落后；安装包和 tag 中的版本是权威版本。Release notes、tag trailer 和 `release.json` 记录 source SHA、构建 commit、Action URL 和 cloud runner。
+
+**先 draft，后公开**：cloud 完成 core/插件产物后创建 draft；同一 workflow 的 GitHub macOS runner 从该不可变 tag 构建桌面。收齐下列产物，验证 cloud checksum 和 provenance，生成完整 checksum 并复验后，才将 draft 公开并设为 latest。updater 不会看到半成品。不发 npm，也不升级任何 hub/UI/worker。
 
 | 产物 | 说明 |
 |---|---|
 | `quick-agent-X.Y.Z.tgz` | `npm pack` 的包，`install.sh` 和 `quick upgrade` 安装的就是它 |
 | `quick-agent-extension-X.Y.Z-chrome.zip` / `-firefox.zip` | 浏览器插件 |
-| `quick-agent-X.Y.Z-arm64.dmg` / `-arm64-mac.zip` | macOS 桌面客户端，由 GitHub Actions（`.github/workflows/release.yml`，macos runner）在 Release 发布后构建并上传 |
-| `SHA256SUMS` | 以上所有文件的 sha256，Actions 上传 mac 产物时会补上它们的校验和 |
+| `quick-agent-X.Y.Z-arm64.dmg` / `-arm64-mac.zip` | GitHub macOS runner 构建，ad-hoc 签名、未公证；不在 Linux 构建 dmg |
+| `release.json` | version、source SHA、release commit、Action URL、cloud runner、构建时间 |
+| `SHA256SUMS` | core、两个插件、两个桌面包、release.json 全部文件的 sha256 |
 
-npm 发布是可选的：`scripts/release.sh minor --npm`（默认不发布）。mac 产物要重新构建时：Actions → release → Run workflow，填 tag。
+**cloud 识别与安全边界**：唯一专用 runner `quick-release-cloud`，要求 `[self-hosted, linux, x64, quick-release-cloud]`。部署于 `/home/simon/.local/share/quick-release-runner`，构建只在其 `_work/quick/quick`，不触碰 `/home/simon/quick-agent` 或已安装 app。仓库外 `ops/trust-gate.sh` 作为 `ACTIONS_RUNNER_HOOK_JOB_STARTED` 在 checkout 前 fail-closed 校验本机 `/etc/machine-id` hash、repository、main ref、push/manual 事件、精确 workflow ref；拒绝 PR、fork、tag、非可信分支和其他 workflow。仓库外部贡献者 workflow 设置为 **all_external_contributors 需批准**；不要批准任何将 PR 代码送到 cloud 的 workflow，不要为 PR 添加该标签或开启 pull_request_target。main 写权限就是在 cloud 执行代码的信任边界，请限制维护者并保护 main。runner 无长期 GitHub PAT，job 使用临时 `GITHUB_TOKEN`（cloud/mac 仅 contents:write，失败通知 job 无写权限）；凭证不进入产物/日志。
+
+**服务运维**：user systemd 单元 `~/.config/systemd/user/quick-release-runner.service`（已 enable，用户 linger），`systemctl --user status|stop|start quick-release-runner`，日志 `journalctl --user -u quick-release-runner`。停服务不会停止 hub/worker；临时停用自动发版可禁用 GitHub release workflow。runner 的 ops 门禁/通知脚本源文件在 `scripts/cloud-runner-gate.sh`、`scripts/cloud-release-notify.mjs`，升级部署需维护者将其复制到仓库外 ops 目录；不要用来自 PR 的脚本替换。网络代理取本机 `127.0.0.1:7890`，无外网监听/新入站密钥；注册令牌仅一次性使用。机器更换需重新校验 machine-id、注册标签。runner 支持自身更新，版本也可通过 Actions runner 管理页核查。
+
+**失败/重试**：测试失败不创建 Release；后续失败保留 draft，不改已运行版本。失败通知 job 通过 cloud 本机既有 hub 鉴权接口派一个“只汇报 blocked、不改代码”的通知 worker，进入「需要你」，按 Action run ID 去重；成功不派单、不通知。如果 runner/hub 离线，通知无法送达，仍以 GitHub Actions 红色状态/订阅邮件为兜底。到 Action 页面选择 **Re-run all jobs** 可继续同一 source 的 draft（macOS 产物可重复覆盖）；发布成功后重跑直接跳过。若 cloud 资产缺失/上传中断，脚本 fail-closed，维护者检查草稿后删除不完整 draft 再重跑；孤立 tag 保留占用版本，不覆写 tag、不 force。不要手工提前公开草稿。旧的 `--npm`、`--no-push`、`--notes` 入口已拒绝，避免绕过锁；本地预览用 `--dry-run`。
+
+**用户看到更新的延迟**：先等 cloud 测试、排队、macOS 下载依赖/构建（通常数分钟，受 GitHub runner 排队和网络影响，不保证即时）。公开后 CLI 下次执行会检查，缓存默认 10 分钟（非 TTY/worker 不打印）；hub 后台默认每 10 分钟检查，UI 每 5 分钟刷新版本状态，所以在线 UI 最坏约再等 15 分钟（失败/离线更久）。版本面板手动刷新/`quick upgrade --check` 可主动检查。可将 `update.cacheMinutes` 调低到 1（注意 GitHub API 限流）；没有新增 webhook 入站口或广播安装。**仍必须由用户点击升级**，本流程从不设置 `autoInstall`、从不执行安装/重启；用户自己设置的 autoInstall 属于原有可选配置。
 
 测试：`npm test`（全部在临时目录、临时端口里进行：版本比较、缓存、下载校验、原子切换和回滚的单测；4 个临时 hub 加一个假 GitHub API 模拟多机升级，包括「发现新版本 → 升级 → 重启 → 版本变化」，期间 tmux 里的 worker 一直在向 hub 汇报、一次请求都不失败）。浏览器端到端演示：`PLAYWRIGHT_CORE=…/playwright-core CHROMIUM=…/chrome node test/e2e-ui-upgrade.mjs --shots DIR`（隔离 hub + Web UI，headless 浏览器点「升级」，验证页面自动刷新到新版本、worker 不受影响）。
 

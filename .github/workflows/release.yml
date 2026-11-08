@@ -1,57 +1,80 @@
-# Adds the macOS desktop app (Electron .dmg + .zip) to a GitHub Release.
-#
-# scripts/release.sh creates the release with the core assets (quick-agent-X.Y.Z.tgz, browser
-# extension zips, SHA256SUMS); publishing it triggers this workflow, which builds the app on a
-# macOS runner, uploads quick-agent-X.Y.Z-arm64.dmg / quick-agent-X.Y.Z-arm64-mac.zip and adds
-# their checksums to SHA256SUMS. Re-run for an existing tag: Actions → release → Run workflow.
+# Only trusted main can ever reach cloud. PRs/forks/tags never schedule this workflow.
 name: release
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "release tag, e.g. v0.4.0"
+      bump:
+        description: 'patch / minor / major / explicit X.Y.Z (must exceed all tags)'
+        default: patch
         required: true
 permissions:
-  contents: write
+  contents: read
+# Shared by automatic pushes, manual dispatches and retries. Never cancel a build in flight.
+# GitHub keeps at most one pending run, coalescing bursts; prepare fetches latest main under lock.
 concurrency:
-  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  group: quick-release-main
+  cancel-in-progress: false
 jobs:
+  cloud:
+    if: github.repository == 'concept-less/quick' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, linux, x64, quick-release-cloud]
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      skip: ${{ steps.prepare.outputs.skip }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Test, reserve version, build core and extensions, create draft
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BUMP: ${{ inputs.bump || 'patch' }}
+        run: node scripts/auto-release.mjs prepare
   macos:
+    needs: cloud
+    if: needs.cloud.outputs.skip != 'true'
     runs-on: macos-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ needs.cloud.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
-      - uses: actions/setup-node@v4
+          ref: ${{ needs.cloud.outputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - name: install electron deps
+      - name: Install and check Electron
         working-directory: electron
-        run: npm ci
-      - name: check
-        working-directory: electron
-        run: npm run check
-      - name: build dmg + zip (ad-hoc signed, not notarized)
+        run: npm ci && npm run check
+      - name: Build dmg + zip (ad-hoc signed, not notarized)
         working-directory: electron
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        # publish config only so electron-builder can write its update metadata; nothing is published by it
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --mac dmg zip --arm64 --publish never -c.publish.provider=github -c.publish.owner=concept-less -c.publish.repo=quick
-      - name: upload to the release
+      - name: Upload desktop assets to draft
         working-directory: electron/dist
-        run: |
-          set -euo pipefail
-          files=$(ls *.dmg *-mac.zip)
-          echo "$files"
-          gh release upload "$TAG" $files --clobber -R "$GITHUB_REPOSITORY"
-          mkdir -p "$RUNNER_TEMP/sums"
-          gh release download "$TAG" -p SHA256SUMS -D "$RUNNER_TEMP/sums" -R "$GITHUB_REPOSITORY" || touch "$RUNNER_TEMP/sums/SHA256SUMS"
-          new=$(shasum -a 256 $files)
-          { grep -v -F -f <(printf '%s\n' $files | sed 's/^/  /') "$RUNNER_TEMP/sums/SHA256SUMS" || true; echo "$new"; } > "$RUNNER_TEMP/SHA256SUMS"
-          cat "$RUNNER_TEMP/SHA256SUMS"
-          gh release upload "$TAG" "$RUNNER_TEMP/SHA256SUMS" --clobber -R "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" ./*.dmg ./*-mac.zip --clobber -R "$GITHUB_REPOSITORY"
+      - name: Verify every asset, provenance and checksum, then publish
+        run: node scripts/auto-release.mjs finalize
+  attention:
+    needs: [cloud, macos]
+    if: always() && github.repository == 'concept-less/quick' && github.ref == 'refs/heads/main' && (needs.cloud.result == 'failure' || needs.macos.result == 'failure' || needs.cloud.result == 'cancelled' || needs.macos.result == 'cancelled')
+    runs-on: [self-hosted, linux, x64, quick-release-cloud]
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      # Installed outside the checkout. Has local hub auth, never a GitHub secret.
+      - name: Route failure to quick-agent attention (deduplicated per run)
+        run: node /home/simon/.local/share/quick-release-runner/ops/notify.mjs "$GITHUB_RUN_ID"
