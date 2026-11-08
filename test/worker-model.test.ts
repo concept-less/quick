@@ -8,7 +8,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { checkModelSpec, cleanPiEnv, parseModelList } from "../shared/worker-model.ts";
+import { checkModelSpec, cleanPiEnv, parseModelList, stderrWarnings } from "../shared/worker-model.ts";
 
 const TABLE = (rows: string[]) => ["provider   model                     context  max-out  thinking  images", ...rows].join("\n") + "\n";
 
@@ -25,6 +25,9 @@ test("parseModelList reads the pi --list-models table", () => {
 		["tokenjoy", "gpt-6.1-sol", false],
 	]);
 	assert.deepEqual(parseModelList("No models available\n"), []);
+	const [m] = parseModelList(TABLE(["tokenjoy  claude-opus-5-5  1M  128K  yes  yes"]));
+	assert.deepEqual(m, { provider: "tokenjoy", id: "claude-opus-5-5", thinking: true, context: "1M", maxOut: "128K", images: true });
+	assert.deepEqual(stderrWarnings("\x1b[33mWarning: x\x1b[39m\n\n[tokenjoy-discovery] cached\n"), ["Warning: x", "[tokenjoy-discovery] cached"]);
 });
 
 test("checkModelSpec: exact provider/id, thinking only where supported, near matches in the error", () => {
@@ -215,6 +218,10 @@ test("errors are explicit and save nothing: unknown model, bad thinking, no perm
 	const g = (await api(A, "root-ha", "GET", "/api/worker-model?refresh=1")).json;
 	assert.match(g.listError, /boom/);
 	assert.equal(g.effectiveKnown, undefined);
+	// the last good list stays visible, marked stale
+	assert.equal(g.stale, true);
+	assert.equal(g.models.length, 3);
+	assert.ok(g.listedAt > 0);
 	rmSync(join(A.bin, "fail"));
 	// team member without the owner role
 	const owner = (await api(A, "root-ha", "POST", "/api/team/members", { id: "simon", name: "Simon", machineOwner: true })).json;

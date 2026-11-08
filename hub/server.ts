@@ -662,18 +662,22 @@ function configureMachine(p: any, from: string): MachineInfo {
 // ---------------------------------------------------------------- worker default model (config.json workerModel)
 
 const MODEL_LIST_TTL_MS = 60_000;
-let modelList: { at: number; models: PiModel[] } | undefined;
+/** Last successful `pi --list-models` of this machine (kept when a later listing fails). */
+let modelList: { at: number; models: PiModel[]; warnings: string[] } | undefined;
+/** Error of the most recent listing attempt (cleared by the next success). */
+let modelListError: { at: number; message: string } | undefined;
 let modelListing: Promise<PiModel[]> | undefined;
-/** Models of this machine's pi (cached for a minute; `refresh` forces a new `pi --list-models`). */
+/** Models of this machine's pi (cached for a minute; `refresh` forces a new `pi --list-models`). Rejects when the listing fails. */
 async function piModels(refresh = false): Promise<PiModel[]> {
-	if (!refresh && modelList && Date.now() - modelList.at < MODEL_LIST_TTL_MS) return modelList.models;
+	if (!refresh && modelList && !modelListError && Date.now() - modelList.at < MODEL_LIST_TTL_MS) return modelList.models;
 	modelListing ??= listPiModels().then(
-		(models) => {
-			modelList = { at: Date.now(), models };
-			return models;
+		(r) => {
+			modelList = { at: Date.now(), models: r.models, warnings: r.warnings };
+			modelListError = undefined;
+			return r.models;
 		},
 		(e) => {
-			modelList = undefined;
+			modelListError = { at: Date.now(), message: (e as Error).message };
 			throw e;
 		},
 	).finally(() => (modelListing = undefined));
@@ -684,10 +688,16 @@ async function piModels(refresh = false): Promise<PiModel[]> {
 async function workerModelInfo(refresh = false) {
 	let models: PiModel[] = [];
 	let listError: string | undefined;
+	let stale = false;
 	try {
 		models = await piModels(refresh);
 	} catch (e) {
 		listError = (e as Error).message;
+		// Keep showing the last good list, marked as stale, instead of an empty picker.
+		if (modelList) {
+			models = modelList.models;
+			stale = true;
+		}
 	}
 	const effective = cfg.workerModel ?? cfg.model;
 	const known = (spec: string) => checkModelSpec(spec, models).ok;
@@ -700,8 +710,11 @@ async function workerModelInfo(refresh = false) {
 		source: cfg.workerModel ? "workerModel" : "model",
 		/** Does the effective model exist in this machine's pi? (undefined when the list failed) */
 		effectiveKnown: listError ? undefined : known(effective),
-		models: models.map((m) => ({ provider: m.provider, id: m.id, thinking: m.thinking })),
+		models: models.map((m) => ({ provider: m.provider, id: m.id, thinking: m.thinking, context: m.context, maxOut: m.maxOut, images: m.images })),
 		listError,
+		/** models is the last successful list (listedAt), not a fresh one. */
+		stale,
+		listWarnings: modelList?.warnings.length ? modelList.warnings : undefined,
 		listedAt: modelList?.at,
 	};
 }

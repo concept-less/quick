@@ -8,7 +8,16 @@ export interface PiModel {
 	id: string;
 	/** Supports a thinking level suffix (":high" …). */
 	thinking: boolean;
+	/** Context window / max output as printed by pi ("200K", "1M"). */
 	context?: string;
+	maxOut?: string;
+	images?: boolean;
+}
+
+export interface PiModelList {
+	models: PiModel[];
+	/** Non-fatal messages pi printed while listing (e.g. a provider extension fell back to its cached catalog). */
+	warnings: string[];
 }
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -26,11 +35,11 @@ export function parseModelList(out: string): PiModel[] {
 			continue;
 		}
 		if (!header || cols.length < 5) continue;
-		const [provider, id, context, , thinking] = cols;
+		const [provider, id, context, maxOut, thinking, images] = cols;
 		const key = `${provider}/${id}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		models.push({ provider: provider!, id: id!, thinking: thinking === "yes", context });
+		models.push({ provider: provider!, id: id!, thinking: thinking === "yes", context, maxOut, images: images === "yes" });
 	}
 	return models;
 }
@@ -43,15 +52,25 @@ export function cleanPiEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Process
 	return out;
 }
 
+/** Readable stderr lines of a pi run (no ANSI, no blank lines, at most `max`). */
+export function stderrWarnings(stderr: string, max = 5): string[] {
+	return String(stderr)
+		.replace(/\x1b\[[0-9;]*m/g, "")
+		.split(/\r?\n/)
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.slice(0, max);
+}
+
 /** Run `pi --list-models` (QA_PI_BIN overrides the binary, for tests). Rejects with a readable message. */
-export function listPiModels(timeoutMs = 45_000): Promise<PiModel[]> {
+export function listPiModels(timeoutMs = 45_000): Promise<PiModelList> {
 	const bin = process.env.QA_PI_BIN || "pi";
 	return new Promise((resolve, reject) => {
 		execFile(bin, ["--list-models"], { env: cleanPiEnv(), timeout: timeoutMs, maxBuffer: 8 << 20, cwd: process.env.HOME || "/" }, (err, stdout, stderr) => {
 			if (err) return reject(new Error(`pi --list-models 失败：${(err as any).killed ? "超时" : String(stderr || err.message).trim().split("\n").slice(-2).join(" ")}`));
 			const list = parseModelList(String(stdout));
-			if (!list.length) return reject(new Error("pi --list-models 没有返回任何可用模型（检查 provider 配置或 API key）"));
-			resolve(list);
+			if (!list.length) return reject(new Error(`pi --list-models 没有返回任何可用模型（检查 provider 配置或 API key）${stderr ? `：${stderrWarnings(String(stderr), 2).join(" ")}` : ""}`));
+			resolve({ models: list, warnings: stderrWarnings(String(stderr)) });
 		});
 	});
 }

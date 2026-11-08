@@ -661,6 +661,8 @@ quick team board                                 # 团队视图：所有进行�
 
 **worker 默认模型**：Web UI 顶栏的「WORKER <模型>」按钮（和右侧「前台」对话模型分开）打开设置面板，列出 mesh 里每台在线机器：生效的模型、来源（`workerModel` 设置 / 继承 `model`）、这台机器自己 `pi --list-models` 的可用模型（有思考能力的模型可选思考级别）。可以单台保存、恢复继承，或「应用到所有机器」（每台按自己的模型列表校验，部分失败会逐台列出，失败的机器不改）。保存由目标机器的 hub 校验后写入它的 config.json 并立即生效：之后新派发和恢复的 worker 用新模型，运行中的 worker 不受影响，前台模型不变。修改需要 owner 权限（`machine.configure`）。API：`GET /api/worker-model[?all=1|machine=id][&refresh=1]`，`POST /api/worker-model {"model": "provider/id[:thinking]" | null, "machine"?: id, "machines"?: [id…] | "all"}`。巡检 reviewer 没有设置 `watchdog.model` 时也跟随 worker 默认模型。
 
+**模型列表从哪来**：前台下拉框和 WORKER 面板都只列出这台机器的 pi 当前可用的模型（有可用认证的 provider；前台用进程内的 pi SDK，worker 面板用 `pi --list-models`，同一台机器的配置一致），按 provider 分组，悬停可看上下文、输出上限、是否可思考、是否支持图片；WORKER 面板每台机器有搜索框。`models.json` 里手写的模型列表是静态的，网关新增的模型不会自动出现：要动态发现，给 provider 配一个用 `pi.registerProvider` + `refreshModels` 的扩展（pi 官方方式，见 pi 文档 custom-provider.md）。前台的「↻」和 WORKER 面板的「刷新列表」会触发 pi 的目录刷新（重新读取 models.json、调用各 provider 的 refreshModels）；某个 provider 刷新失败时保留上次的列表并提示失败原因，不会清空，也不会切换正在用的模型。
+
 修改配置后需要运行 `quick hub restart`，并在 pi 里执行 `/reload` 或新开一个 pi，才会生效。
 
 ## 目录结构

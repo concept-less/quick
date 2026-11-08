@@ -434,6 +434,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
   <span class="chip hide-m" id="hubChip"><span class="dot" id="hubDot"></span><span id="hubText">hub</span></span>
   <select class="btn hide-m" id="modelSel" title="前台对话模型（只影响这里的对话，不影响 worker）"></select>
   <select class="btn hide-m" id="thinkSel" title="思考级别" style="max-width:140px"></select>
+  <button class="btn icon hide-m" id="modelRefresh" title="刷新前台模型列表（重新读取 models.json 和各 provider 的实时模型目录）">↻</button>
   <div id="mobtabs" role="tablist" aria-label="视图"><button data-v="side" role="tab">注意力</button><button data-v="chat" role="tab">对话</button><button id="mobToggle" hidden></button></div>
   <button class="btn icon hide-m" id="keysBtn" title="快捷键 (?)">?</button>
   <button class="btn icon" id="themeBtn" title="主题：跟随系统">◐</button>
@@ -727,9 +728,21 @@ function renderHeader(){
   if(S.model){const v=S.model.provider+'/'+S.model.id;const sel=$('#modelSel');if(![...sel.options].some(o=>o.value===v))sel.insertAdjacentHTML('afterbegin','<option value="'+esc(v)+'">'+esc(S.model.name||S.model.id)+'</option>');sel.value=v}
   const ts=$('#thinkSel');if(S.thinkingLevel){if(![...ts.options].some(o=>o.value===S.thinkingLevel))ts.insertAdjacentHTML('beforeend','<option value="'+esc(S.thinkingLevel)+'">思考 '+esc(S.thinkingLevel)+'</option>');ts.value=S.thinkingLevel}
 }
-let modelsLoaded=false;
-async function loadModels(){if(modelsLoaded)return;modelsLoaded=true;try{const r=await api('GET','/api/models');const sel=$('#modelSel');sel.innerHTML=r.models.map(m=>'<option value="'+esc(m.provider+'/'+m.id)+'">'+esc(m.name||m.id)+'</option>').join('');$('#thinkSel').innerHTML=(r.levels||[]).map(l=>'<option value="'+esc(l)+'">思考 '+esc(l)+'</option>').join('');renderHeader()}catch{}}
+let modelsLoaded=false,modelsBusy=false;
+const fmtTok=n=>!n?'?':n>=1e6?(+(n/1e6).toFixed(1))+'M':Math.round(n/1e3)+'K';
+/** Front chat models of this machine, grouped by provider; force = pi catalog refresh first (failures keep the old list). */
+async function loadModels(force){if((modelsLoaded&&!force)||modelsBusy)return;modelsLoaded=true;modelsBusy=true;const rb=$('#modelRefresh');if(rb)rb.disabled=true;
+  try{const r=await api('GET','/api/models'+(force?'?refresh=1':''));const sel=$('#modelSel');const by={};for(const m of r.models)(by[m.provider]??=[]).push(m);
+    const cur=S.model?.provider||r.current?.provider||'';const provs=Object.keys(by).sort((a,b)=>(b===cur)-(a===cur)||a.localeCompare(b));
+    const meta=m=>[m.name&&m.name!==m.id?m.name:'',fmtTok(m.contextWindow)+' 上下文',fmtTok(m.maxTokens)+' 输出',m.reasoning?'可思考':'不思考',(m.input||[]).includes('image')?'图片':''].filter(Boolean).join(' · ');
+    sel.innerHTML=provs.map(p=>'<optgroup label="'+esc(p+' · '+by[p].length)+'">'+by[p].sort((a,b)=>a.id.localeCompare(b.id)).map(m=>'<option value="'+esc(m.provider+'/'+m.id)+'" title="'+esc(meta(m))+'">'+esc(m.id)+'</option>').join('')+'</optgroup>').join('');
+    const sum=provs.map(p=>p+' '+by[p].length).join(' · ');
+    sel.title='前台对话模型（只影响这里的对话，不影响 worker）\n本机 pi 可用 '+r.models.length+' 个：'+sum+(r.refresh?'\n上次刷新 '+new Date(r.refresh.at).toLocaleTimeString():'');
+    $('#thinkSel').innerHTML=(r.levels||[]).map(l=>'<option value="'+esc(l)+'">思考 '+esc(l)+'</option>').join('');renderHeader();
+    if(force){const errs=Object.entries(r.refresh?.errors||{});if(errs.length||r.refresh?.aborted)toast('模型列表刷新未完全成功，失败的 provider 仍显示上次的列表：'+errs.map(([k,v])=>k+': '+v).join('；')+(r.refresh?.aborted?'（超时）':''),'error',9000);else toast('前台模型列表已刷新：'+r.models.length+' 个（'+sum+'）')}
+  }catch(x){modelsLoaded=false;if(force)toast('刷新模型列表失败，仍显示上次的列表：'+x.message,'error')}finally{modelsBusy=false;if(rb)rb.disabled=false}}
 $('#modelSel').onchange=e=>{const v=e.target.value;const i=v.indexOf('/');api('POST','/api/model',{provider:v.slice(0,i),id:v.slice(i+1)}).then(()=>toast('已切换模型 '+v)).catch(x=>toast(x.message,'error'))};
+$('#modelRefresh').onclick=()=>loadModels(true);
 $('#thinkSel').onchange=e=>api('POST','/api/model',{thinkingLevel:e.target.value}).catch(x=>toast(x.message,'error'));
 // narrow screens: one column with a [任务 | 对话] switch (tasks first, like the wide layout)
 function setMob(side){document.body.classList.toggle('show-side',side);document.querySelectorAll('#mobtabs [data-v]').forEach(b=>{const on=(b.dataset.v==='side')===side;b.classList.toggle('on',on);b.setAttribute('aria-selected',on)})}

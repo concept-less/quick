@@ -48,6 +48,7 @@
 #qaWmP .ed{display:flex;gap:6px;margin-top:8px}
 #qaWmP select{height:26px;border:1px solid var(--line-2,#000);border-radius:0;background:var(--bg,#fff);color:inherit;font:12px var(--mono,monospace);min-width:0}
 #qaWmP select.mdl{flex:1}
+#qaWmP input.flt{height:26px;width:120px;border:1px solid var(--line-2,#000);border-radius:0;background:var(--bg,#fff);color:inherit;font:12px var(--mono,monospace);padding:0 6px;min-width:0}
 #qaWmP .btn{height:26px;padding:0 10px;font-size:12px;white-space:nowrap}
 #qaWmP .ft{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--line-2,#000);font:11px var(--mono,monospace);color:var(--fg-3,#888)}
 #qaWmP .ft .grow{flex:1}
@@ -60,6 +61,7 @@
 	const msgs = {}; // machine -> { ok, text }
 	const busy = new Set();
 	const draft = {}; // machine -> { base, level }
+	const filters = {}; // machine -> search text of its model picker
 
 	function mount() {
 		const header = document.querySelector("header");
@@ -101,6 +103,12 @@
 			const row = panel.querySelector(`.m[data-m="${CSS.escape(m)}"]`);
 			draft[m] = { base: row.querySelector("select.mdl").value, level: row.querySelector("select.lvl")?.value || "" };
 			render();
+		});
+		panel.addEventListener("input", (e) => {
+			const f = e.target.closest("input.flt[data-m]");
+			if (!f) return;
+			filters[f.dataset.m] = f.value;
+			applyFilter(f.dataset.m);
 		});
 		document.body.appendChild(panel);
 		document.addEventListener("click", () => panel.classList.remove("open"));
@@ -145,13 +153,40 @@
 		return base ? (level ? `${base}:${level}` : base) : "";
 	}
 
+	const provSummary = (models) => {
+		const n = {};
+		for (const x of models) n[x.provider] = (n[x.provider] || 0) + 1;
+		return Object.entries(n).map(([p, c]) => `${p} ${c}`).join(" · ");
+	};
+	const metaText = (x) => [x.context && `${x.context} 上下文`, x.maxOut && `${x.maxOut} 输出`, x.thinking ? "可思考" : "不思考", x.images ? "图片" : ""].filter(Boolean).join(" · ");
+
+	/** Hide picker options that do not match the machine's search text (the selected one stays visible). */
+	function applyFilter(machine) {
+		const row = panel.querySelector(`.m[data-m="${CSS.escape(machine)}"]`);
+		const sel = row?.querySelector("select.mdl");
+		if (!sel) return;
+		const q = String(filters[machine] || "").trim().toLowerCase();
+		let shown = 0;
+		for (const o of sel.querySelectorAll("option")) {
+			const hit = !q || !o.value || o.selected || o.value.toLowerCase().includes(q);
+			o.hidden = !hit;
+			if (hit && o.value) shown++;
+		}
+		for (const g of sel.querySelectorAll("optgroup")) g.hidden = ![...g.querySelectorAll("option")].some((o) => !o.hidden);
+		const f = row.querySelector("input.flt");
+		if (f) f.title = q ? `匹配 ${shown} 个` : "";
+	}
+
 	function machineHtml(m) {
 		const msg = msgs[m.machine];
 		const msgHtml = msg ? `<div class="sub ${msg.ok ? "okm" : "err"}">${esc(msg.text)}</div>` : "";
 		if (m.error) return `<div class="m" data-m="${esc(m.machine)}"><div class="r"><span class="id">${esc(m.machine)}${m.self ? " · 本机" : ""}</span></div><div class="sub err">${esc(m.error)}</div>${msgHtml}</div>`;
 		const src = m.source === "workerModel" ? "workerModel 设置" : `未设置 workerModel，继承 model`;
 		const known = m.effectiveKnown === false ? `<div class="sub err">这台机器的 pi 里找不到 ${esc(m.effective)}，新 worker 可能启动失败</div>` : "";
-		const list = m.listError ? `<div class="sub err">无法列出模型：${esc(m.listError)}</div>` : "";
+		const when = m.listedAt ? new Date(m.listedAt).toLocaleTimeString() : "";
+		const list = m.listError
+			? `<div class="sub err">${m.stale ? `刷新模型列表失败，下面是 ${esc(when)} 的上次列表：` : "无法列出模型："}${esc(m.listError)}</div>`
+			: m.listWarnings?.length ? `<div class="sub">pi 提示：${esc(m.listWarnings.join(" / "))}</div>` : "";
 		let editor = "";
 		if (data.canEdit && m.models?.length) {
 			const sel = chosen(m);
@@ -161,16 +196,16 @@
 			const hasBase = !base || m.models.some((x) => `${x.provider}/${x.id}` === base);
 			const opts = `<option value=""${base ? "" : " selected"}>继承 model（${esc(m.model)}）</option>` +
 				(hasBase ? "" : `<option value="${esc(base)}" selected>${esc(base)}（不在列表）</option>`) +
-				Object.entries(byProv).map(([p, xs]) => `<optgroup label="${esc(p)}">${xs.map((x) => { const v = `${x.provider}/${x.id}`; return `<option value="${esc(v)}"${v === base ? " selected" : ""}>${esc(v)}</option>`; }).join("")}</optgroup>`).join("");
+				Object.entries(byProv).map(([p, xs]) => `<optgroup label="${esc(`${p} · ${xs.length}`)}">${xs.map((x) => { const v = `${x.provider}/${x.id}`; return `<option value="${esc(v)}" title="${esc(metaText(x))}"${v === base ? " selected" : ""}>${esc(v)}</option>`; }).join("")}</optgroup>`).join("");
 			const meta = m.models.find((x) => `${x.provider}/${x.id}` === base);
 			const lvl = meta?.thinking ? `<select class="lvl" data-m="${esc(m.machine)}" title="思考级别"><option value="">思考 默认</option>${LEVELS.map((l) => `<option value="${l}"${l === level ? " selected" : ""}>思考 ${l}</option>`).join("")}</select>` : "";
 			const dirty = sel !== (m.workerModel || "");
 			const b = busy.has(m.machine);
-			editor = `<div class="ed"><select class="mdl" data-m="${esc(m.machine)}" aria-label="${esc(m.machine)} worker 模型">${opts}</select>${lvl}<button class="btn primary" data-act="save" data-m="${esc(m.machine)}"${dirty && !b ? "" : " disabled"}>${b ? "保存中…" : "保存"}</button></div>`;
+			editor = `<div class="ed"><input class="flt" type="search" data-m="${esc(m.machine)}" placeholder="搜索 ${m.models.length} 个" aria-label="${esc(m.machine)} 搜索模型" value="${esc(filters[m.machine] || "")}"><select class="mdl" data-m="${esc(m.machine)}" aria-label="${esc(m.machine)} worker 模型">${opts}</select>${lvl}<button class="btn primary" data-act="save" data-m="${esc(m.machine)}"${dirty && !b ? "" : " disabled"}>${b ? "保存中…" : "保存"}</button></div>`;
 		}
 		return `<div class="m" data-m="${esc(m.machine)}">
 <div class="r"><span class="id">${esc(m.machine)}${m.self ? " · 本机" : ""}</span><span class="v">生效 <b>${esc(m.effective)}</b></span></div>
-<div class="sub">${esc(src)}${m.frontModel ? ` · 前台 frontModel ${esc(m.frontModel)}` : ""}${m.models ? ` · ${m.models.length} 个可用模型` : ""}</div>${known}${list}${editor}${msgHtml}</div>`;
+<div class="sub">${esc(src)}${m.frontModel ? ` · 前台 frontModel ${esc(m.frontModel)}` : ""}${m.models ? ` · ${m.models.length} 个可用模型${m.models.length ? `（${esc(provSummary(m.models))}）` : ""}` : ""}</div>${known}${list}${editor}${msgHtml}</div>`;
 	}
 
 	function render() {
@@ -183,8 +218,15 @@
 		const foot = data.canEdit && s && !s.error && others.length
 			? `<div class="ft"><span class="grow">把本机这一行的选择（${esc(spec || `继承 model`)}）写到所有 ${data.machines.length} 台机器，每台按自己的模型列表校验</span><button class="btn" data-act="all"${anyBusy ? " disabled" : ""}>应用到所有机器</button></div>`
 			: "";
+		const focused = document.activeElement?.matches?.("#qaWmP input.flt") ? document.activeElement.dataset.m : "";
 		panel.innerHTML = `<div class="hd"><span class="t">Worker 默认模型</span><span class="s">${lastError ? `<span class="err">${esc(lastError)}</span>` : loading ? "加载中…" : ""}</span><button class="btn" data-act="refresh"${loading ? " disabled" : ""}>刷新列表</button></div>
 <div class="wnote">新派发和之后恢复的 worker 用这里的模型；运行中的 worker 不会被打断。前台对话模型是另一个设置，不受影响。${data.canEdit ? "" : " 只读：需要 owner 权限才能修改。"}</div>${data.machines.map(machineHtml).join("")}${foot}`;
+		for (const m of Object.keys(filters)) applyFilter(m);
+		if (focused) {
+			const f = panel.querySelector(`input.flt[data-m="${CSS.escape(focused)}"]`);
+			f?.focus();
+			f?.setSelectionRange(f.value.length, f.value.length);
+		}
 	}
 
 	async function refresh(force) {
@@ -233,7 +275,11 @@
 	}
 
 	async function act(a, machine) {
-		if (a === "refresh") return refresh(true);
+		if (a === "refresh") {
+			// Same pi config on this machine: refresh the front chat model list too (app.html loadModels).
+			if (typeof window.loadModels === "function") void window.loadModels(true);
+			return refresh(true);
+		}
 		if (a === "save") {
 			const m = data.machines.find((x) => x.machine === machine);
 			if (m) return save([machine], chosen(m));

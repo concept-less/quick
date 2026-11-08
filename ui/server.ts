@@ -424,10 +424,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	}
 	if (p.startsWith("/api/hub/")) return proxyHub(req, res, `/api/${p.slice("/api/hub/".length)}${url.search}`);
 
-	if (m === "GET" && p === "/api/models") {
-		const list = await runtime.session.modelRuntime.getAvailable();
-		return send(res, 200, { models: list.map((x: any) => ({ provider: x.provider, id: x.id, name: x.name })), levels: runtime.session.getAvailableThinkingLevels() });
-	}
+	if (m === "GET" && p === "/api/models") return send(res, 200, await frontModels(url.searchParams.get("refresh") === "1"));
 	if (m !== "POST") throw new HttpError(404, "not found");
 	const body = await readJson(req);
 	switch (p) {
@@ -470,6 +467,52 @@ input{width:100%;height:38px;padding:0 12px;border:1px solid var(--fg);border-ra
 button{margin-top:12px;width:100%;height:38px;border:1px solid var(--fg);border-radius:0;background:var(--fg);color:var(--inv);font:inherit;font-weight:600;cursor:pointer}button:hover{background:var(--acc);border-color:var(--acc);color:#fff}
 .e{color:var(--acc);border-left:3px solid var(--acc);padding-left:10px}</style></head>
 <body><form method="get" action="/"><h2>quick-agent</h2><div class="b"><p>请输入访问 token（终端运行 <code>quick token</code>，或直接用 <code>quick ui</code> 打开）。</p>${bad ? '<p class="e">token 不正确</p>' : ""}<input name="token" autofocus placeholder="token" aria-label="token"><button>进入</button></div></form></body></html>`;
+}
+
+// ---------------------------------------------------------------- front model list
+
+/** Result of the last catalog refresh (pi ModelRuntime.refresh: models.json reload + provider refreshModels). */
+let modelsRefresh: { at: number; errors: Record<string, string>; aborted: boolean } | undefined;
+let modelsRefreshing: Promise<void> | undefined;
+
+/**
+ * Models the front agent can switch to: pi's available models of this machine (providers with usable auth), with
+ * capability metadata. `refresh` first runs pi's official catalog refresh (reloads models.json, asks provider
+ * extensions with refreshModels for their live list); a failing provider keeps its previous list and is reported.
+ */
+async function frontModels(refresh: boolean) {
+	const rt = runtime.session.modelRuntime;
+	if (refresh) {
+		modelsRefreshing ??= (async () => {
+			try {
+				const r = await rt.refresh({ allowNetwork: true, force: true, signal: AbortSignal.timeout(25_000) });
+				const errors: Record<string, string> = {};
+				for (const [k, e] of r?.errors ?? []) errors[k] = String((e as Error)?.message ?? e);
+				modelsRefresh = { at: Date.now(), errors, aborted: !!r?.aborted };
+			} catch (e) {
+				modelsRefresh = { at: Date.now(), errors: { "*": (e as Error).message }, aborted: false };
+			}
+			log(`[models] refresh: ${Object.keys(modelsRefresh.errors).length ? JSON.stringify(modelsRefresh.errors) : "ok"}${modelsRefresh.aborted ? " (timed out)" : ""}`);
+		})().finally(() => (modelsRefreshing = undefined));
+		await modelsRefreshing;
+	}
+	const list = await rt.getAvailable();
+	const s = runtime.session;
+	return {
+		models: list.map((x: any) => ({
+			provider: x.provider,
+			id: x.id,
+			name: x.name,
+			reasoning: !!x.reasoning,
+			input: x.input,
+			contextWindow: x.contextWindow,
+			maxTokens: x.maxTokens,
+		})),
+		levels: s.getAvailableThinkingLevels(),
+		current: s.model ? { provider: s.model.provider, id: s.model.id } : undefined,
+		refresh: modelsRefresh,
+		loadError: rt.getError?.() || undefined,
+	};
 }
 
 const server = createServer((req, res) => {
