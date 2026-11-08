@@ -200,8 +200,9 @@ test("isolation: workers and the reviewer only know the temporary hub; the real 
 		const vars = Object.fromEntries(readFileSync(f, "utf8").split("\n").filter((l) => l.startsWith("QA_")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 		assert.equal(vars.QA_HOME, HOME);
 		assert.equal(vars.QA_TASK_ID, id, "the worker's own task, not the outer one");
-		assert.equal(vars.QA_HUB_URL, undefined);
-		assert.equal(vars.QA_TOKEN, undefined);
+		assert.equal(vars.QA_HUB_URL, `http://127.0.0.1:${PORT}`, "only the isolated hub");
+		assert.equal(vars.QA_TOKEN, readFileSync(join(HOME,"tasks",id,"worker.token"),"utf8").trim(), "restricted own-worker token");
+		assert.notEqual(vars.QA_TOKEN, TOKEN, "never inherit hub root identity");
 	}
 	const reviewers = readFileSync(join(TMP, "reviewer-env.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
 	assert.ok(reviewers.length >= 3, `reviewer runs: ${reviewers.length}`);
