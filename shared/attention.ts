@@ -176,7 +176,10 @@ export function interruptFor(prev: AttentionItem | undefined, next: AttentionIte
 	if (next.level === "need") {
 		if (!prev) return reportedNow ? "now" : "none"; // first sight of a replica / at startup: not news
 		if (prev.level !== "need") return "now";
-		if (reportedNow && (prev.reason !== next.reason || prev.since !== next.since)) return "now";
+		// Same reason while already in "need": never re-interrupt, even if since moved (each idle
+		// report refreshes statusSince — without this a failing worker retry loop spams the human).
+		if (prev.reason === next.reason) return "none";
+		if (reportedNow) return "now";
 		return "none";
 	}
 	if (next.level === "skim" && (!prev || prev.level !== "skim")) return prev || reportedNow ? "digest" : "none";
