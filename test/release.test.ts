@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, rmSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync, rmSync, appendFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -112,6 +112,33 @@ test('driver successful cloud build only pushes immutable release tag and create
     execFileSync('sha256sum',['-c','SHA256SUMS'],{cwd:join(f.repo,'dist/release'),stdio:'ignore'});
     appendFileSync(join(f.repo,'dist/release/quick-agent-0.4.2.tgz'),'tampered');
     assert.throws(()=>execFileSync('sha256sum',['-c','SHA256SUMS'],{cwd:join(f.repo,'dist/release'),stdio:'ignore'}));
+  } finally {f.close();}
+});
+
+test('finalizer checks core integrity, builds complete sums and only then publishes', () => {
+  const f=fixture(); try {
+    const assets=join(f.root,'assets'); mkdirSync(assets);
+    const names=requiredAssets('0.4.2');
+    for(const name of names) writeFileSync(join(assets,name),'test-asset');
+    writeFileSync(join(assets,'release.json'),JSON.stringify({version:'0.4.2',source:f.source,commit:f.source}));
+    const cloud=names.filter(n=>!n.endsWith('.dmg')&&!n.endsWith('-mac.zip'));
+    const sums=cloud.map(n=>execFileSync('shasum',['-a','256',n],{cwd:assets,encoding:'utf8'}).trim()).join('\n')+'\n';
+    writeFileSync(join(assets,'SHA256SUMS'),sums);
+    const data=JSON.stringify({isDraft:true,assets:[...names,'SHA256SUMS'].map(name=>({name})),body:`<!-- quick-source:${f.source} -->`});
+    f.stub('gh', `case "$1 $2" in
+      'release view') echo '${data}' ;;
+      'release download') cp '${assets}/'* "$5/" ;;
+      'release upload') cp "$4" '${f.root}/complete-sums' ;;
+      'release edit') test -f '${f.root}/complete-sums' && touch '${f.root}/published' ;;
+      *) exit 99 ;;
+    esac`);
+    const finalize=()=>spawnSync(process.execPath,['scripts/auto-release.mjs','finalize'],{cwd:f.repo,env:{...f.env,TAG:'v0.4.2'},encoding:'utf8'});
+    const good=finalize(); assert.equal(good.status,0,good.stderr); assert.ok(existsSync(join(f.root,'published')));
+    const complete=readFileSync(join(f.root,'complete-sums'),'utf8');
+    for(const name of names) assert.ok(complete.includes(name));
+    rmSync(join(f.root,'published')); rmSync(join(f.root,'complete-sums'));
+    appendFileSync(join(assets,'quick-agent-0.4.2.tgz'),'tampered');
+    const bad=finalize(); assert.notEqual(bad.status,0); assert.ok(!existsSync(join(f.root,'published'))); assert.ok(!existsSync(join(f.root,'complete-sums')));
   } finally {f.close();}
 });
 

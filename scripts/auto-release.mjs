@@ -8,7 +8,17 @@ import { REPO, trusted, releaseForSource, nextVersion, requiredAssets, verifyAss
 const env = process.env;
 const run = (cmd, args, opts = {}) => (execFileSync(cmd, args, { encoding: 'utf8', ...opts }) ?? '').trim();
 const git = (...args) => run('git', args);
-const gh = (...args) => run('gh', [...args, '-R', REPO]);
+const retry = (operation) => {
+  for (let attempt = 0; ; attempt++) {
+    try { return operation(); }
+    catch (error) {
+      if (attempt === 3) throw error;
+      console.warn(`GitHub operation failed; retry ${attempt + 1}/3 in ${2 ** attempt}s`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000 * 2 ** attempt);
+    }
+  }
+};
+const gh = (...args) => retry(() => run('gh', [...args, '-R', REPO]));
 const output = (key,value) => appendFileSync(env.GITHUB_OUTPUT, `${key}=${value}\n`);
 const runUrl = `https://github.com/${REPO}/actions/runs/${env.GITHUB_RUN_ID}`;
 const mode = process.argv[2];
@@ -17,7 +27,7 @@ if (mode === 'prepare') {
   // Fetch under the workflow lock: coalesce all queued pushes to the current main tip.
   git('fetch', 'origin', 'main', '--tags');
   git('checkout', '--detach', 'origin/main');
-  const releases = JSON.parse(run('gh', ['api', '--paginate', '--slurp', `repos/${REPO}/releases?per_page=100`])).flat();
+  const releases = JSON.parse(retry(() => run('gh', ['api', '--paginate', '--slurp', `repos/${REPO}/releases?per_page=100`]))).flat();
   // A retry of the same Action resumes its original source, even if main advanced.
   const previousRun = releases.find(r => r.body?.includes(`Build: ${runUrl}\n`));
   const pinnedSource = previousRun?.body?.match(/<!-- quick-source:([a-f0-9]{40}) -->/)?.[1];
