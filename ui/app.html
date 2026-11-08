@@ -46,13 +46,17 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .dot.live{background:var(--acc);animation:blink 1.4s steps(2,start) infinite}
 @keyframes blink{to{visibility:hidden}}
 /* ---------- layout ---------- */
-#main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 440px;min-height:0}
+/* tasks (#side) on the LEFT, front-agent chat on the right — at every width */
+#main{flex:1;display:grid;grid-template-columns:440px minmax(0,1fr);min-height:0}
 #chat{display:flex;flex-direction:column;min-width:0;min-height:0}
-#side{min-width:0;border-left:var(--bw) solid var(--line-2);background:var(--bg);display:flex;flex-direction:column;min-height:0;position:relative}
-#mobtabs{display:none}
-@media (max-width:1100px){#main{grid-template-columns:minmax(0,1fr) 380px}}
+#side{order:-1;min-width:0;border-right:var(--bw) solid var(--line-2);background:var(--bg);display:flex;flex-direction:column;min-height:0;position:relative}
+#mobtabs{display:none;border:var(--bw) solid var(--line-2);height:30px}
+#mobtabs button{border:0;background:none;padding:0 12px;cursor:pointer;font:600 11px/1 var(--mono);letter-spacing:.08em;color:var(--fg-3)}
+#mobtabs button+button{border-left:var(--bw) solid var(--line-2)}
+#mobtabs button.on{background:var(--inv-bg);color:var(--inv-fg)}
+@media (max-width:1100px){#main{grid-template-columns:380px minmax(0,1fr)}}
 @media (max-width:900px){
-  #main{grid-template-columns:minmax(0,1fr)}#side{border-left:0;display:none}
+  #main{grid-template-columns:minmax(0,1fr)}#side{border-right:0;display:none}
   body.show-side #side{display:flex}body.show-side #chat{display:none}
   #mobtabs{display:flex}.hide-m{display:none!important}
   .brand{padding:0 var(--s3)}.sess{flex:1;max-width:none}
@@ -165,7 +169,10 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 #skBtn{height:24px;padding:0 8px;font:11px/1 var(--mono);color:var(--fg-3);border-color:var(--line)}
 #skBtn:hover{color:var(--fg)}
 .tab kbd{border:0;background:none;padding:0;color:inherit;opacity:.55;font-size:10px}
-#tsearch{height:26px;width:150px;min-width:0;flex:0 1 150px;margin-left:8px;padding:0 8px;border:var(--bw) solid var(--line);background:var(--surface);font:12px var(--mono);outline:0;transition:border-color var(--t)}
+.filters .grow{display:none}.fchip{white-space:nowrap;padding:0 12px!important}#tcount{white-space:nowrap;margin-left:8px}
+@media (max-width:1100px){#tcount{display:none}}
+@media (max-width:900px){.tab kbd{display:none}}
+#tsearch{height:26px;width:auto;min-width:60px;flex:1 1 auto;margin-left:8px;padding:0 8px;border:var(--bw) solid var(--line);background:var(--surface);font:12px var(--mono);outline:0;transition:border-color var(--t)}
 #tsearch:focus{border-color:var(--line-2)}
 #tsearch::placeholder{color:var(--fg-3)}
 .keys-t{width:100%;border-collapse:collapse;font-size:13px}.keys-t td{padding:7px 0;border-bottom:var(--bw) solid var(--line)}.keys-t td:last-child{text-align:right;white-space:nowrap}.keys-t kbd{margin-left:3px}
@@ -287,7 +294,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
   <span class="chip hide-m" id="hubChip"><span class="dot" id="hubDot"></span><span id="hubText">hub</span></span>
   <select class="btn hide-m" id="modelSel" title="模型"></select>
   <select class="btn hide-m" id="thinkSel" title="思考级别" style="max-width:140px"></select>
-  <div id="mobtabs"><button class="btn" id="mobToggle">任务</button></div>
+  <div id="mobtabs" role="tablist" aria-label="视图"><button data-v="side" role="tab">任务</button><button data-v="chat" role="tab">对话</button><button id="mobToggle" hidden></button></div>
   <button class="btn icon hide-m" id="keysBtn" title="快捷键 (?)">⌨</button>
   <button class="btn icon" id="themeBtn" title="主题：跟随系统">◐</button>
   <a class="btn icon hide-m" id="dashLink" target="_blank" title="hub 面板（旧版）">↗</a>
@@ -585,7 +592,11 @@ $('#sessBtn').onclick=async()=>{
     dlg.querySelector('[data-a=rename]').onclick=async()=>{const n=prompt('会话名称',S.sessionName||'');close();if(n!=null)await api('POST','/api/sessions/name',{name:n})};
   });
 };
-$('#mobToggle').onclick=()=>{document.body.classList.toggle('show-side');$('#mobToggle').textContent=document.body.classList.contains('show-side')?'对话':'任务'};
+// narrow screens: one column with a [任务 | 对话] switch (tasks first, like the wide layout)
+function setMob(side){document.body.classList.toggle('show-side',side);document.querySelectorAll('#mobtabs [data-v]').forEach(b=>{const on=(b.dataset.v==='side')===side;b.classList.toggle('on',on);b.setAttribute('aria-selected',on)})}
+$('#mobToggle').onclick=()=>setMob(!document.body.classList.contains('show-side'));
+document.querySelectorAll('#mobtabs [data-v]').forEach(b=>b.onclick=()=>{setMob(b.dataset.v==='side');if(b.dataset.v==='chat')input.focus()});
+setMob(true);
 
 /* ---------- extension dialogs ---------- */
 const openDialogs=new Map();

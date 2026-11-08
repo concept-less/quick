@@ -4,7 +4,7 @@
    grid, mono micro-labels, no gradients, no soft shadows.
 
    Used by:
-   - ui/app.html + login page (inlined by ui/server.ts at /*@tokens*/)
+   - ui/app.html + login page (inlined by ui/server.ts at the @tokens marker)
    - browser/popup.html (browser/tokens.css, a copy)
    - browser/content.js shadow DOM (browser/tokens.js, generated)
    Edit only this file, then run scripts/sync-tokens.sh
