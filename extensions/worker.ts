@@ -12,6 +12,8 @@ const WORKER_RULES = `你是 quick-agent 工作流中的 **负责人 worker**。
 - 完成后必须调用 qa_report(status="done")。summary 用简洁的中文写：做了什么、改了哪些文件、如何验证的、遗留问题。这是人类在收件箱里看到的内容，必须能独立看懂。
 - 进度：开始动手前先用 qa_progress 上报计划（plan，3–8 个人能看懂的步骤，例如「改代码」「跑测试」「发布 Release」，可给每步 expected_minutes），之后每完成一步或切换阶段时再调一次（current=正在做第几步，note=一句人话说明现在到哪了，例如「正在发布 v0.4.1：已打 tag，等 CI 构建 dmg」）。只在关键节点上报，不要每个命令都报；进度不会打扰人类，只在人类主动查看时显示。几分钟内就能做完的小任务可以不报计划。
 - 较长任务中途也可以用 qa_report(status="progress") 汇报关键结论（不要频繁）。
+- 简报开头写着「预期用时」。开始动手、看清任务后，如果明显估错了（例如远比预想的大），用 qa_expect(expected="1h30m", reason="…") 修正一次，必须写清理由；只能修正一次。超出预期较多时 hub 会派独立巡检来看你是否跑偏或卡住。
+- 收到以【巡检纠偏】开头的追加指令时，它来自独立的只读巡检：认真对照简报重新判断，按建议调整；确认它判断错了就用 qa_report(status="progress") 说明理由再继续。
 - 之后可能收到以【quick-agent 追加指令】开头的消息，把它当作同一任务的延续，处理完再次 qa_report。
 - 团队协作：简报里可能写着发起人、负责人和验收人（成员 id）。qa_report 的汇报和提问会自动交给该拍板的人。需要问某个具体的人、或让别人知道某件事时，用 qa_comment 在任务下评论并写 @成员id（例如 @alice）；收到以【团队评论】开头的消息时，那是队友在任务下写给你的。`;
 
@@ -22,6 +24,8 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	let cancelRequested = false;
 	let lastActivityAt = 0;
 	let current: ExtensionContext | undefined;
+	/** Only the interactive pi the hub spawned in tmux is the worker; a print-mode pi that merely inherited QA_TASK_ID (a script, a probe) must never report. */
+	let enabled = true;
 
 	const report = (body: Parameters<HubClient["report"]>[1]) => hub?.report(taskId, body).catch(() => undefined);
 
@@ -98,6 +102,23 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	});
 
 	pi.registerTool({
+		name: "qa_expect",
+		label: "Revise expected time",
+		description:
+			"Revise the expected (active) time of your quick-agent task, once, with a reason. Use it early, when you see the original estimate in the brief is clearly wrong. The hub sends an independent read-only reviewer when a task runs well over its expectation.",
+		promptSnippet: "Revise the task's expected time once, with a reason",
+		parameters: Type.Object({
+			expected: Type.String({ description: 'New total expected time of the whole task, e.g. "45m", "2h"' }),
+			reason: Type.String({ description: "Why (Chinese, one or two sentences)" }),
+		}),
+		async execute(_id, params) {
+			if (!hub) throw new Error("hub client not initialised");
+			const t = await hub.report(taskId, { expect: { expected: params.expected, reason: params.reason } });
+			return { content: [{ type: "text", text: `Expected time is now ${params.expected} (${t.expect?.source ?? "?"}).` }], details: {} };
+		},
+	});
+
+	pi.registerTool({
 		name: "qa_comment",
 		label: "Comment on task",
 		description:
@@ -116,6 +137,10 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	});
 
 	pi.on("session_start", async (_e, ctx) => {
+		if (!ctx.hasUI) {
+			enabled = false;
+			return;
+		}
 		current = ctx;
 		hub = new HubClient();
 		abort?.abort();
@@ -145,6 +170,7 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
+		if (!enabled) return;
 		event.systemPromptOptions.sections.quick_agent_worker = WORKER_RULES;
 	});
 
@@ -154,7 +180,7 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	});
 
 	pi.on("tool_execution_start", async (event) => {
-		if (event.toolName === "qa_report" || event.toolName === "qa_progress") return;
+		if (event.toolName === "qa_report" || event.toolName === "qa_progress" || event.toolName === "qa_expect") return;
 		const now = Date.now();
 		if (now - lastActivityAt < 1500) return;
 		lastActivityAt = now;

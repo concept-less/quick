@@ -19,6 +19,7 @@ import { assignCmd, commentCmd, TEAM_HELP, teamCmd } from "./team.ts";
 import { formatDuration, formatWall } from "../shared/cron.ts";
 import type { CronView } from "../hub/cron.ts";
 import { printAttention, projectsCmd } from "./projects.ts";
+import { EXPECT_SOURCE_LABEL, reviewLine, timingOf } from "../shared/watchdog.ts";
 
 const cfg = loadConfig();
 const hub = new HubClient(cfg);
@@ -66,7 +67,7 @@ function attnLine(i: AttentionItem, t?: Task) {
 	const ago = Math.round((Date.now() - i.since) / 60000);
 	const where = i.machine && i.machine !== cfg.machine.id ? `@${i.machine}` : "";
 	const when = i.snoozedUntil ? `至 ${new Date(i.snoozedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : `${ago}m`;
-	return `${i.mark.padEnd(10)} ${(i.taskId + where).padEnd(6)} ${i.title}  \x1b[2m${when} · ${i.reason.slice(0, 90)}${t && i.options?.length ? ` · 选项: ${i.options.join(" / ")}` : ""}\x1b[0m`;
+	return `${i.mark.padEnd(10)} ${(i.taskId + where).padEnd(6)} ${i.title}  \x1b[2m${when}${i.timing ? ` · ${i.timing}` : ""} · ${i.reason.slice(0, 90)}${t && i.options?.length ? ` · 选项: ${i.options.join(" / ")}` : ""}\x1b[0m`;
 }
 function countsLine(c: AttentionCounts, f: FocusState) {
 	return `需要你 ${c.need} · 待扫 ${c.skim} · 稍后 ${c.snoozed} · 不用管 ${c.inflight}${f.on ? ` · 专注中${f.until ? ` 至 ${new Date(f.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}` : ""}`;
@@ -101,9 +102,10 @@ const HELP = `quick — quick-agent
                             reload = 用当前安装的版本平滑重启 hub 和 Web UI 服务（worker 不受影响）
   quick attention [-a] [--project P]   注意力队列：需要你 / 待扫 / 稍后 / 不用管，每级内按项目分组（别名 quick a；-a 含已归档）
   quick ls [-a] [--project P] [--by-project]   同上，按任务一行一个并标出项目；--project 只看一个项目（none = 未归类），--by-project 先按项目分组
-  quick show <id>           查看任务的注意力、进度、汇报、简报
+  quick show <id>           查看任务的注意力、进度、用时/预期、巡检、汇报、简报
   quick log <id> [-f] [-n N] 工作记录：worker 的输出、命令和结果、追加指令（-f 持续跟随）
-  quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] [--project P] <title> <brief...>
+  quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] [--project P] [--expected 30m] [--no-watchdog] <title> <brief...>
+  quick watch <id> [on|off|now|expect 30m]   巡检：开/关（如长时间轮询的任务）、立即巡检一次、改预期用时
                             不经前台直接派单（不指定机器时按资源+优先级自动选机器）
   quick send <id> <message> 回答 worker 的问题或追加指令（窗口已关会带着完整上下文重新拉起）
   quick retry <id>          让停下/失败的 worker 从中断处重试
@@ -581,7 +583,12 @@ async function main() {
 			const { task: t, events } = await hub.getTask(id, 30);
 			const a = attentionOf(t);
 			console.log(`${a.mark} ${t.id} [${LEVEL_LABEL[a.level]}] ${t.title}\n  注意力: ${a.reason}${a.options?.length ? `\n  选项: ${a.options.join(" / ")}` : ""}\n  可以: ${a.actions.map((x) => x.label).join(" / ") || "-"}\n  cwd: ${t.cwd}\n  接管: quick attach ${t.id}${ACTIVE_STATUSES.includes(t.status) ? `\n  当前: ${progressLine(t) || "-"}` : ""}${rest.includes("--debug") ? `\n  [debug] activity ${t.activity ?? "-"}` : ""}${rest.includes("--debug") ? `\n  [debug] tmux ${t.tmuxTarget ?? "-"} · resume file ${t.sessionFile ?? "-"}` : ""}`);
+			if (t.expect) {
+				const tm = timingOf(t);
+				console.log(`  用时: ${tm.label}（已用 / 预期，${EXPECT_SOURCE_LABEL[t.expect.source]}${t.expect.reason ? `：${t.expect.reason}` : ""}）${tm.mark ? ` ${tm.mark}` : ""}${t.watch?.off ? " · 巡检已关闭" : ""}`);
+			}
 			if (ACTIVE_STATUSES.includes(t.status) || t.progress?.steps?.length) console.log(`\n── 进度 ──\n${progressText(t)}`);
+			if (t.watch?.reviews?.length) console.log(`\n── 巡检 ──\n${t.watch.reviews.slice(-5).map((r) => `${new Date(r.at).toLocaleTimeString()} ${reviewLine(r)}${r.evidence ? `\n  依据: ${r.evidence}` : ""}${r.advice ? `\n  建议: ${r.advice}` : ""}${r.error ? `\n  错误: ${r.error}` : ""}`).join("\n")}`);
 			console.log(`\n── 汇报 ──\n${t.summary ?? "(暂无)"}`);
 			console.log(`\n── 事件 ──\n${events.map((e) => `${new Date(e.ts).toLocaleTimeString()} ${e.kind}${e.status ? `→${e.status}` : ""} ${(e.text ?? "").split("\n")[0]?.slice(0, 120)}`).join("\n")}`);
 			console.log(`\n── 简报 ──\n${t.brief}`);
@@ -589,10 +596,23 @@ async function main() {
 			if (a.level === "skim") await hub.ack(id);
 			return;
 		}
+		case "watch": {
+			const [id, op = "show", val] = rest;
+			if (!id) die("usage: quick watch <id> [on|off|now|expect 30m]");
+			const body = op === "on" ? { off: false } : op === "off" ? { off: true } : op === "now" ? { now: true } : op === "expect" ? { expected: val ?? die("usage: quick watch <id> expect 30m") } : op === "show" ? undefined : die(`unknown: ${op} (on|off|now|expect)`);
+			const t = body ? await hub.watch(id, body) : (await hub.getTask(id, 0)).task;
+			const tm = timingOf(t);
+			console.log(`${t.id} 用时 ${tm.label}${tm.mark ? ` ${tm.mark}` : ""} · 巡检${t.watch?.off ? "已关闭" : "开启"}${op === "now" ? " · 已发起一次巡检" : ""}`);
+			for (const r of t.watch?.reviews?.slice(-5) ?? []) console.log(`  ${new Date(r.at).toLocaleTimeString()} ${reviewLine(r)}`);
+			return;
+		}
 		case "new": {
 			await hubStart(true);
 			let cwd = process.cwd();
 			const args = [...rest];
+			const expected = flag(args, "--expected");
+			const noWatchdog = args.includes("--no-watchdog");
+			if (noWatchdog) args.splice(args.indexOf("--no-watchdog"), 1);
 			const i = args.indexOf("--cwd");
 			if (i >= 0) {
 				cwd = args[i + 1] ?? die("--cwd needs a value");
@@ -621,7 +641,7 @@ async function main() {
 			const [title, ...brief] = args;
 			if (!title || !brief.length) die("usage: quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] <title> <brief...>");
 			// cwd defaults to the current directory: the hub picks the best machine on which it exists.
-			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, reviewer, assignee, watchers: watchers.length ? watchers : undefined, source: { kind: "cli" }, project });
+			const t = await hub.createTask({ title, brief: brief.join(" "), cwd: cwd || undefined, machine, requires: requires.length ? requires : undefined, reviewer, assignee, watchers: watchers.length ? watchers : undefined, source: { kind: "cli" }, project, expected, ...(noWatchdog ? { watch: false } : {}) });
 			return console.log(attnLine(attentionOf(t)));
 		}
 		case "send": {

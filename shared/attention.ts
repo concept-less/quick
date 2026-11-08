@@ -17,6 +17,7 @@
 // Pure module: no I/O, safe to import from the hub, the extensions and the CLI.
 import type { Task } from "./types.ts";
 import { progressLine } from "./progress.ts";
+import { timingOf, VERDICT_LABEL } from "./watchdog.ts";
 
 export type AttentionLevel = "need" | "skim" | "snoozed" | "inflight" | "archived";
 export const ATTENTION_LEVELS: AttentionLevel[] = ["need", "skim", "snoozed", "inflight", "archived"];
@@ -58,6 +59,10 @@ export interface AttentionItem {
 	/** What the human can do from here, most relevant first. */
 	actions: AttentionAction[];
 	updatedAt: number;
+	/** Active tasks: "已用 / 预期", e.g. "12m / 20m" (shared/watchdog.ts). */
+	timing?: string;
+	/** Active task is over its expectation (mark [OVER]; never interrupts by itself). */
+	over?: boolean;
 }
 
 export interface AttentionCounts {
@@ -108,8 +113,17 @@ export function attentionOf(t: Task, opts: AttentionOptions = {}): AttentionItem
 
 	if (t.status === "cancelled") return archived("已取消", t.updatedAt);
 	if (ACTIVE.includes(t.status)) {
+		// The watchdog (shared/watchdog.ts) escalated: a decision is needed although the worker keeps running.
+		const pending = t.status !== "handoff" ? t.watch?.pending : undefined;
+		if (pending) {
+			const reason = `巡检请你决定：${VERDICT_LABEL[pending.verdict] ?? pending.verdict}`;
+			const opts = pending.options?.length ? pending.options : undefined;
+			if (snoozed) return { ...base, level: "snoozed", mark: "[LATER]", reason, since: t.snoozedAt ?? pending.at, snoozedUntil: t.snoozedUntil, question: pending.question, options: opts, actions: act("unsnooze", "reply", "ack") };
+			return { ...base, level: "need", mark: "[CHECK]", reason, since: Math.max(pending.at, t.snoozedUntil && t.snoozedUntil <= now ? t.snoozedUntil : 0), question: pending.question, options: opts, actions: act("reply", "snooze", "ack", "cancel", "attach") };
+		}
 		const reason = t.status === "handoff" ? `交接中：${firstLine(t.activity) || "迁移到另一台机器"}` : t.status === "starting" ? "已交出去，正在启动" : `进行中：${firstLine(progressLine(t)) || "worker 在做"}`;
-		return { ...base, level: "inflight", mark: t.status === "handoff" ? "[MOVE]" : "[RUN]", reason, since: statusSince, actions: t.status === "handoff" ? [] : act("reply", "cancel", "attach") };
+		const tm = t.status === "handoff" ? undefined : timingOf(t, now);
+		return { ...base, level: "inflight", mark: t.status === "handoff" ? "[MOVE]" : tm?.over ? "[OVER]" : "[RUN]", reason, since: statusSince, actions: t.status === "handoff" ? [] : act("reply", "cancel", "attach"), ...(tm ? { timing: tm.label, over: tm.over } : {}) };
 	}
 	if (t.closed && !t.unread) return archived("窗口已关闭");
 	if (NEED_STATUSES.includes(t.status)) {
@@ -175,5 +189,5 @@ export function focusActive(f: FocusState | undefined, now = Date.now()): boolea
 
 /** Short text for one item, e.g. `[ASK] t1234 修复登录页 — worker 在等你决定：要不要…`. */
 export function itemLine(i: AttentionItem): string {
-	return `${i.mark} ${i.taskId} ${i.title} — ${i.reason}`;
+	return `${i.mark} ${i.taskId} ${i.title} — ${i.reason}${i.timing ? ` (${i.timing})` : ""}`;
 }

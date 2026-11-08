@@ -3,6 +3,7 @@ import type { TaskPeople } from "./team.ts";
 import type { CronJob } from "./cron.ts";
 import type { TaskProgress } from "./progress.ts";
 import type { AttentionCounts, AttentionItem, AttentionLevel, FocusState, Interrupt } from "./attention.ts";
+import type { TaskClock, TaskExpect, TaskWatch } from "./watchdog.ts";
 
 export type TaskStatus =
 	| "starting" // tmux window spawned, worker not yet connected
@@ -86,12 +87,18 @@ export interface Task extends TaskPeople {
 	project?: string;
 	/** How the project was determined ("manual" / "explicit" are never reclassified); absent = not classified yet. */
 	projectVia?: string;
+	/** Expected active time (shared/watchdog.ts): dispatch estimate, default by kind, one worker revision, watchdog updates. */
+	expect?: TaskExpect;
+	/** Active-time clock kept by the owning hub (time starting/running, not waiting on a human). */
+	clock?: TaskClock;
+	/** Watchdog reviews of this task (巡检) and its state. */
+	watch?: TaskWatch;
 }
 
 export interface TaskEvent {
 	ts: number;
 	taskId: string;
-	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment" | "project" | "progress";
+	kind: "created" | "status" | "activity" | "report" | "message" | "cancel" | "close" | "ack" | "snooze" | "session" | "handoff" | "assign" | "comment" | "project" | "progress" | "expect" | "watch";
 	text?: string;
 	/** Team member (or "agent") who caused the event, when known. */
 	by?: string;

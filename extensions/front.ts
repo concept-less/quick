@@ -19,6 +19,7 @@ import { createTeamFront, TEAM_TOOLS } from "./team-tools.ts";
 import { formatWall } from "../shared/cron.ts";
 import type { CronView } from "../hub/cron.ts";
 import { attentionOf, itemLine, LEVEL_LABEL, type AttentionCounts, type AttentionItem, type FocusState } from "../shared/attention.ts";
+import { EXPECT_SOURCE_LABEL, reviewLine, timingOf } from "../shared/watchdog.ts";
 import { classify, findProject, groupByProject, resolveProject, type Project } from "../shared/projects.ts";
 
 const QA_TOOLS = ["qa_dispatch", "qa_cron", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
@@ -33,6 +34,7 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
 1. 理解任务：只做最少量的澄清。只有在缺少关键信息、无法写出可执行简报时才提问，而且一次问完。
 2. 组装上下文：允许快速读取少量文件、grep/ls 确认工作目录和相关位置，但不要深入调研，不要动手实现。
 3. 派单：调用 qa_dispatch 把任务交给一个独立的负责人 worker。brief 必须自包含：目标、背景、相关文件/位置、约束、验收标准，以及你掌握的全部上下文（含截图路径、元素选择器、页面 URL）。worker 看不到你和人类的对话。
+3a. 估时：派单时必须用 qa_dispatch 的 expected 给出 worker 完成它的预计用时（如 "15m"、"40m"、"2h"），按任务规模诚实估计：改一处文案/小 bug 10–20m，一个普通功能或修复 30–60m，跨模块的新机制、发布、调研 1–3h。实际用时明显超出时 hub 会自动派独立巡检检查它是否跑偏或卡住，只有真正需要人类决定时才进「需要你」。长时间轮询/等待外部事件的任务（例如盯一个 CI、每隔一段时间看一次）传 watch=false 关闭巡检。
 4. 派完立刻用一两句话回复（任务 ID、标题、工作目录），结束本轮，不要等待 worker。
 5. 一次请求包含多个互相独立的任务时，分别派单。属于已有任务的追加需求，用 qa_task_send 发给对应 worker，不要新建任务。
 6. 人类问进度或"有什么需要我的"时用 qa_tasks（按注意力排好：需要你 / 待扫 / 稍后 / 不用管）/ qa_task_read；要求中止时用 qa_task_cancel。
@@ -365,6 +367,8 @@ export function setupFront(pi: ExtensionAPI) {
 			project: Type.Optional(
 				Type.String({ description: "Project id or name (see the project list). Omit to let the hub infer it from the cwd's git repository, path rules, page URL or title. Unknown names create a new project." }),
 			),
+			expected: Type.Optional(Type.String({ description: 'Your estimate of how long the worker needs (active time), e.g. "15m", "45m", "2h". Always give one; it drives the overtime watchdog.' })),
+			watch: Type.Optional(Type.Boolean({ description: "false turns the watchdog (overtime / stuck reviews) off for this task, e.g. long polling or waiting jobs" })),
 		}),
 		async execute(_id, p) {
 			void loadProjects(0);
@@ -381,6 +385,8 @@ export function setupFront(pi: ExtensionAPI) {
 				assignee: p.assignee,
 				watchers: p.watchers,
 				project: p.project,
+				expected: p.expected,
+				watch: p.watch,
 				source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
 			});
 			tasks.set(task.id, task);
@@ -529,6 +535,9 @@ export function setupFront(pi: ExtensionAPI) {
 				`tmux: ${task.tmuxTarget ?? "-"}`,
 				ACTIVE_STATUSES.includes(task.status) || task.progress?.steps?.length ? `--- progress ---\n${progressText(task)}` : "",
 				task.activity ? `raw activity: ${task.activity}` : "",
+				task.expect ? `time: ${timingOf(task).label} (已用 / 预期, ${EXPECT_SOURCE_LABEL[task.expect.source]}${task.expect.reason ? `: ${task.expect.reason}` : ""})${timingOf(task).mark ? ` ${timingOf(task).mark}` : ""}${task.watch?.off ? " · 巡检已关闭" : ""}` : "",
+				task.watch?.pending ? `watchdog asks the human: ${task.watch.pending.question}${task.watch.pending.options?.length ? ` (options: ${task.watch.pending.options.join(" / ")})` : ""}` : "",
+				task.watch?.reviews?.length ? `--- 巡检 ---\n${task.watch.reviews.slice(-5).map((r) => `${new Date(r.at).toLocaleTimeString()} ${reviewLine(r)}${r.evidence ? `\n  依据: ${r.evidence}` : ""}${r.advice ? `\n  建议: ${r.advice}` : ""}${r.error ? `\n  错误: ${r.error}` : ""}`).join("\n")}` : "",
 				team.people(task) ? `people:${team.people(task)}` : "",
 				`--- summary ---\n${task.summary ?? "(none yet)"}`,
 				comments?.length ? `--- comments ---\n${comments.slice(-10).map((c) => `${new Date(c.ts).toLocaleTimeString()} ${c.author}: ${c.text.slice(0, 400)}`).join("\n")}` : "",

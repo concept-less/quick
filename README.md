@@ -63,6 +63,30 @@ worker 需要人类决定时必须显式上报：`qa_report(status="needs_input"
 - 字段：`progress.steps[]{title, state: done|active|todo, expectedMinutes?}`、`note`、`percent`、`eta`、`now`（活动的人话）、`recent[]`（里程碑）、`startedAt`、`updatedAt`（只在计划/步骤/说明有实质变化时更新，活动不刷新它，可用来判断多久没有进展）、`nowAt`（最近一次活动）。任务完成时步骤全部标为完成；完成后再追加指令开始新一轮时进度重置。
 - **工作记录**（`shared/transcript.ts`）：任务详情里「工作记录」区完整展示 worker 做了什么：每轮的输出和思考、每个工具调用（命令、读写了哪个文件）和结果（默认截断，可看全文；edit 显示 diff）、收到的追加指令、汇报和进度上报。连续的同类动作（几次 read、同一条命令反复执行）折叠成一行。只有展开这个区时才拉取（`GET /api/tasks/:id/transcript`，跨机器经 mesh 读取所属机器上的记录）；运行中自动追加新条目、停在底部跟随，往上翻时不会被拉回去，「更早的记录」分页加载。已完成的任务同样能回看。追加指令输入框常驻在详情底部（Enter 发送），发出的指令立即出现在记录里，worker 的回应随后出现；窗口关了也能发，hub 会带着完整上下文恢复 worker。CLI：`quick log <id> [-f] [-n N]`。
 
+### 预期时间与巡检（超时了才看一眼，必要时才找你）
+
+很多任务实际耗时远超预期，却没人发现它在兜圈子。hub 给每个任务一个预期时间，明显超时、长时间没有进展或者出现重复模式时，自动派一个独立的只读检查 agent 审视它；检查本身不打扰你，只有真正需要你拍板时才进「需要你」。设计和理由见 [`docs/watchdog.md`](docs/watchdog.md)。
+
+- **预期时间**（`task.expect`）：前台派单时必须估时（`qa_dispatch` 的 `expected`，如 `"20m"`；`quick new --expected 30m`）。没给就按任务类型取默认值（小改动 15m、普通 30m、发布/调研/新机制等大任务 60m、定时任务 15m，可在配置里改）。worker 看清任务后可以用 `qa_expect` 带理由修正一次。只计 worker 实际在做的时间（starting/running），等你回答的时间不算。卡片上显示「已用 / 预期」（如 `12m / 20m`），超时后加粗、标记变成 `[OVER]`，不发通知。
+- **触发巡检**（hub 定时检查，默认每 30 秒）：已用超过预期的 1.5x，之后 3x、6x……（预期被更新后重新从 1.5x 算）；进度（`progress.updatedAt` / 汇报）20 分钟没变；最近的工具调用里出现重复模式：同一条命令得到同样的结果、同一个错误反复出现、等待/轮询结果一直不变、来回改同一处。同一任务两次巡检之间至少隔 10 分钟（冷却），同一次停滞、同一个重复模式只查一次，最多同时跑 2 个检查。
+- **检查 agent**：`pi -p` 跑的独立进程，只有 read/grep/find/ls 工具，不能改代码，不能中止任务，环境里不带任何 quick-agent 身份（`QA_*` 全部去掉）。hub 把材料整理给它：简报、预期和已用时间、进度、最新汇报、检测到的重复模式、最近 40 次工具调用和输出、git 状态和 diff 统计、之前的巡检；需要时它可以自己去读 worker 的内部记录。它在标准输出的最后一行给出结论 JSON，hub 解析。结论五选一：`ON_TRACK`（正常，只是比预估难，给新预估）、`DRIFTING`（偏离简报）、`STUCK`（死胡同或循环）、`BAD_APPROACH`（方法有问题，给替代方案）、`NEEDS_HUMAN`（缺信息或要拍板）。
+- **处理**：`ON_TRACK` 静默更新预期，只在任务的「巡检」区记一行；`DRIFTING` / `STUCK` / `BAD_APPROACH` 把具体建议作为追加指令（`【巡检纠偏】…`）发给原 worker，冷却后复查一次，仍有问题就升级给你；`NEEDS_HUMAN` 直接升级。升级后任务进「需要你」，标记 `[CHECK]`，带一句问题和选项；你回答（会连同巡检的问题一起转给 worker）、点「知道了」或任务停下后自动消失。是否中止只由你决定。
+- **可见性**：任务详情的「巡检」区列出每次巡检的时间、结论、触发原因、依据和建议，进度区和信息区显示「已用 / 预期」和预期来源，可以「关闭巡检」或「现在巡检」。`quick show <id>`、`quick watch <id> [on|off|now|expect 30m]`、前台的 `qa_task_read` 都能看到。
+- **按任务关闭**：长时间轮询/等待的任务派单时传 `watch: false`（`qa_dispatch watch=false`、`quick new --no-watchdog`），或者之后 `quick watch <id> off`。
+
+配置（`config.json` 的 `watchdog`，全部可选）：
+
+```json
+"watchdog": {
+  "enabled": true, "multipliers": [1.5, 3, 6], "cooldownMinutes": 10, "stallMinutes": 20,
+  "repeatThreshold": 4, "repeatWindow": 30, "model": "tokenjoy/claude-sonnet-5-5", "thinking": "low",
+  "timeoutMinutes": 8, "maxCorrections": 1, "maxConcurrent": 2, "tickSeconds": 30,
+  "defaults": { "small": 15, "normal": 30, "large": 60, "cron": 15 }
+}
+```
+
+`model` 不写时用 `workerModel` / `model`，建议换成便宜快一点的模型。`QA_WATCHDOG=off` 临时关闭整个巡检。测试：`npm test`（`test/watchdog.test.ts` 触发条件、冷却、重复模式、结论处理；`test/watchdog-hub.test.ts` 隔离 hub + 假 worker + 假检查 agent 的完整流程和环境隔离）；`test/watchdog-e2e.mjs` 用真实的检查 agent 跑一遍（兜圈子的假 worker 得到 STUCK → 纠偏 → 再 STUCK → 需要你；正常但慢的假 worker 得到 ON_TRACK，不打扰人），可选 `--shots DIR` 截图。
+
 ### 汇报怎么送到前台
 
 汇报按任务和注意力送达，不依赖是哪个前台派的单：
@@ -196,9 +220,10 @@ npm 发布是可选的：`scripts/release.sh minor --npm`（默认不发布）�
 
 | 情况 | 角色 |
 |---|---|
-| 环境变量里有 `QA_TASK_ID`（由 hub 拉起的进程） | **worker**：完整工具集，外加 `qa_report`、`qa_progress`（进度）、`qa_comment` |
+| 环境变量里有 `QA_TASK_ID`（由 hub 拉起的进程） | **worker**：完整工具集，外加 `qa_report`、`qa_progress`（进度）、`qa_expect`（修正预期）、`qa_comment` |
+| 环境变量里有 `QA_WATCH_TASK`（hub 拉起的巡检 agent） | 不加载任何角色（只读检查，结论走标准输出） |
 | 交互式 pi（终端 TUI，或 RPC 客户端如桌面端） | **前台**（默认开启） |
-| `pi -p …` / `--mode json` | 不受影响，就是普通 pi |
+| `pi -p …` / `--mode json` | 不受影响，就是普通 pi（即使环境里带着 `QA_TASK_ID` 也不会当 worker 汇报） |
 | `pi --qa-off` 或 `QA_ROLE=off pi` | 普通 pi（仍然显示任务状态） |
 
 在 pi 里可以随时切换：`/qa off` 切成普通 pi（恢复 bash/edit/write），`/qa on` 切回前台。
@@ -629,6 +654,7 @@ hub/server.ts                hub（零依赖 Node HTTP + SSE + tmux）
 hub/mesh.ts                  多机互联：链路、ssh 隧道、路由、复制、RPC
 hub/handoff.ts               任务跨机器交接：编排、分块传输、目标端应用/回滚
 hub/cron.ts                  定时任务：持久化、触发定时器、mesh 复制、cron.* 方法（只由所属 hub 触发）
+hub/watchdog.ts              巡检：活动时钟、定时检查、拉起只读检查 agent（pi -p，read/grep/find/ls）、按结论纠偏或升级
 hub/projects.ts              项目：持久化、任务自动归类与回填、手动改名/合并/移动、mesh 同步
 shared/projects.ts           项目归类逻辑（git remote/worktree、路径、URL、文本）与分组排序
 cli/projects.ts              quick projects / 按项目分组的 quick ls
@@ -648,6 +674,7 @@ scripts/release.sh           维护者发布脚本；.github/workflows/release.y
 shared/schedule.ts           机器资源探测与派单选机器（资源 + 优先级）
 shared/team.ts               团队规则：角色权限、@提及解析、球在谁手里、按人的注意力（纯函数）
 shared/cron.ts               定时规则：5 段 cron 解析、下次运行时间（时区/DST）、间隔/一次性、重叠与补跑决策
+shared/watchdog.ts           预期时间与巡检的纯逻辑：默认预期、活动时钟、触发条件与冷却、重复模式检测、结论解析与处理
 test/                        npm test（团队协作端到端、升级逻辑、多机升级模拟、调度选择、两机派单、定时规则、项目归类与回填）；*-e2e.sh 端到端测试
 extensions/quick-agent.ts    pi 扩展入口（package.json 的 pi.extensions），按角色分流
 extensions/front.ts          前台角色
@@ -665,7 +692,7 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/tasks`、`/api/tasks/:id?events=N` | 任务列表 / 任务详情 |
-| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, project?, attachments?, source?, reviewer?, assignee?, watchers?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器；发起人取自 token |
+| POST | `/api/tasks` | `{title, brief, cwd?, machine?, requires?, project?, attachments?, source?, reviewer?, assignee?, watchers?, expected?, watch?}` 创建任务并拉起 worker；不传 machine 时按 requires + 优先级选机器；发起人取自 token |
 | POST | `/api/tasks/:id/message` | `{text}` 回答或追加指令（worker 窗口关了会带着完整上下文重新拉起） |
 | POST | `/api/tasks/:id/cancel`、`/close`、`/ack` | 中止 / 关闭窗口 / 知道了 |
 | POST | `/api/tasks/:id/snooze`、`/retry` | 稍后提醒 `{minutes}` / 重试 |
@@ -680,7 +707,8 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/projects/:id/rename`、`/merge`、`/rules` | `{name}` 改名 / `{into}` 合并 / `{add?, remove?, notes?, members?}` 改识别规则 |
 | POST | `/api/projects/backfill` | `{all?}` 给本机任务归类（all：重新归类所有非手动设置的） |
 | POST | `/api/tasks/:id/handoff` | `{to, cwd?, noWorkspace?, abort?, waitSec?, onConflict?}` 把任务交接到另一台机器（异步） |
-| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定；`{kind:"progress", progress:{plan?, current?, done?, note?, percent?, eta?}}` 更新进度 |
+| POST | `/api/tasks/:id/report` | worker 上报状态、汇报、活动；`{needsHuman, question, options}` 显式请求人类决定；`{kind:"progress", progress:{plan?, current?, done?, note?, percent?, eta?}}` 更新进度；`{expect:{expected, reason}}` worker 修正一次预期 |
+| POST | `/api/tasks/:id/watch` | 巡检：`{off: true\|false}` 按任务开关，`{expected: "30m"}` 改预期，`{now: true}` 立即巡检一次 |
 | GET | `/api/tasks/:id/transcript` | 工作记录：`?after=N` 增量（N 之后的条目），`?before=N&limit=M` 往前翻页，都不带 = 最新一页，`?full=N` 某条不截断的全文；返回 `{entries[], total, pendingFrom?, available}` |
 | GET | `/api/tasks/:id/screen` | worker 终端的实时画面（tmux capture） |
 | GET | `/api/machines` | mesh 中的机器、路由与链路状态（含各机器版本、resources、priority） |

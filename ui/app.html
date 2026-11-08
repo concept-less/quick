@@ -224,6 +224,14 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .tsub{font-size:12px;color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 .tago{font-size:11px;line-height:1;color:var(--fg-3);flex:0 0 auto}
 .tidm{font:11px/1 var(--mono);color:var(--fg-3);flex:0 0 auto}
+.tdur{font:11px/1 var(--mono);color:var(--fg-3);flex:0 0 auto;white-space:nowrap}
+.tdur.over{color:var(--fg);font-weight:600}
+.watch{margin:0;padding:0;list-style:none;font-size:12px}
+.watch li{padding:6px 0;border-top:var(--bw) solid var(--line)}
+.watch li:first-child{border-top:0}
+.watch .wh{display:flex;gap:8px;align-items:baseline;font:11px/1.5 var(--mono);color:var(--fg-2)}
+.watch .wv{font-weight:600;color:var(--fg)}
+.watch .wt{color:var(--fg-2);margin-top:2px}
 /* finished cards: one-line conclusion, one-click 知道了, full report folded */
 .ackb{flex:0 0 auto;height:24px;padding:0 10px;border:var(--bw) solid var(--inv-bg);background:var(--inv-bg);color:var(--inv-fg);font:600 12px/1 var(--sans);cursor:pointer;white-space:nowrap;transition:background var(--t),border-color var(--t)}
 .ackb:hover,.ackb:focus-visible{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
@@ -435,6 +443,13 @@ const api=async(m,p,b)=>{const r=await fetch(p,{method:m,headers:b?{'content-typ
 const ago=t=>{const s=(Date.now()-t)/1000;return s<60?'刚刚':s<3600?Math.floor(s/60)+' 分钟前':s<86400?Math.floor(s/3600)+' 小时前':Math.floor(s/86400)+' 天前'};
 const ST={starting:'启动中',running:'运行中',idle:'空闲',needs_input:'需要输入',blocked:'受阻',done:'完成',failed:'失败',cancelled:'已取消',exited:'已退出',pending:'待处理',claimed:'已认领',dispatched:'已派单',dismissed:'已忽略'};
 const ACTIVE=['starting','running'],ATTN=['idle','needs_input','blocked','done','failed','exited'];
+/* expected time (shared/watchdog.ts): active time used vs expected; [OVER] is a quiet mark, never a notification */
+function fmtMin(m){if(!isFinite(m))return '?';if(m<1)return Math.max(0,Math.round(m*60))+'s';if(m<10&&Math.abs(m-Math.round(m))*60>=5)return Math.floor(m)+'m'+String(Math.round(m%1*60)).padStart(2,'0')+'s';m=Math.round(m);return m<60?m+'m':Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')+'m'}
+function timing(t){if(!t||!t.expect)return null;const c=t.clock,now=Date.now();const ms=c?c.activeMs+(c.activeSince!=null?Math.max(0,now-c.activeSince):0):(ACTIVE.includes(t.status)?now-(t.statusSince||t.createdAt):0);
+  const used=ms/60000,exp=t.expect.minutes;return {used,exp,over:used>exp,label:fmtMin(used)+' / '+fmtMin(exp)}}
+const EXP_SRC={dispatch:'派单预估',default:'按类型默认',worker:'worker 修正',watchdog:'巡检更新'};
+const WTRIG={overtime:'超时',stalled:'无进展',repeat:'重复模式',followup:'纠偏后复查',manual:'手动'};
+const WACT={silent:'静默更新预期',corrected:'已把建议发给 worker',escalated:'已交给你决定',error:'巡检失败'};
 const stPill=s=>'<span class="st '+esc(s)+'">'+esc(ST[s]||s)+'</span>';
 
 /* ---------- theme ---------- */
@@ -753,9 +768,10 @@ function itemHtml(i){const t=tasks.get(i.taskId)||{id:i.taskId,title:i.title,mac
   const sum=t.summary||'',line=i.level==='skim'?firstSentence(sum)||i.reason:i.reason,more=(i.level==='skim'||i.level==='need')&&sum&&sum.trim()!==line,open=more&&expanded.has(i.taskId);
   const when=i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since);
   const acts=(i.actions||[]).filter(a=>i.level!=='inflight'||a.id!=='attach').slice(0,i.level==='need'?4:3);
+  const tm=(i.level==='inflight'||i.level==='need')&&ACTIVE.includes(t.status)?timing(t):null,mark=i.level==='inflight'&&i.mark!=='[MOVE]'?(tm?.over?'[OVER]':'[RUN]'):i.mark;
   return '<div class="titem '+i.level+(i.taskId===selTask?' sel':'')+'" data-id="'+esc(i.taskId)+'" tabindex="0" role="listitem" aria-label="'+esc(LVL[i.level]+' '+i.title+' '+i.reason)+'">'+
-    '<div class="trow"><span class="mark">'+esc(i.mark)+'</span><span class="ttitle">'+esc(i.title)+'</span>'+(i.level==='skim'?'<button class="ackb" data-act="ack" title="知道了：确认并归档">知道了</button>':'')+'</div>'+
-    '<div class="trow"><span class="tidm">'+esc(i.taskId)+'</span>'+mtag(t)+'<span class="tsub'+(i.level==='need'||i.level==='skim'?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+esc(when)+'</span></div>'+
+    '<div class="trow"><span class="mark">'+esc(mark)+'</span><span class="ttitle">'+esc(i.title)+'</span>'+(i.level==='skim'?'<button class="ackb" data-act="ack" title="知道了：确认并归档">知道了</button>':'')+'</div>'+
+    '<div class="trow"><span class="tidm">'+esc(i.taskId)+'</span>'+mtag(t)+(tm?'<span class="tdur'+(tm.over?' over':'')+'" title="已用 / 预期">'+esc(tm.label)+'</span>':'')+'<span class="tsub'+(i.level==='need'||i.level==='skim'?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+esc(when)+'</span></div>'+
     (i.level==='inflight'&&t.progress?.steps?.length?cardBar(t):'')+
     (i.level==='need'&&i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+
     (i.level==='need'&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'" title="把这个回答发给 worker">'+esc(o)+'</button>').join('')+'</div>':'')+
@@ -852,6 +868,7 @@ async function openTask(id){
   d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(t.title)+'</h3>'+(i?'<span class="mark">'+esc(i.mark)+'</span>':'')+'</div><div class="dbody">'+
     (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div>'+(showProg?(ACTIVE.includes(t.status)?'':'<div class="ar">'+esc(i.reason)+'</div>')+'<div id="dprog">'+progHtml(t,i)+'</div>':'<div class="ar">'+esc(i.reason)+'</div>')+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
       (acts.length?'<div class="tacts">'+acts.map(a=>'<button class="btn'+(a.id==='cancel'?' danger':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+'</div>':'')+
+    watchHtml(t)+
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
     '<details class="dsec" id="tlogSec"'+(tlIsOpen()?' open':'')+'><summary>工作记录<span class="grow"></span><span class="tlc"></span></summary><div id="tlog" data-id="'+esc(t.id)+'"></div></details>'+
     '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+'</dl>'+
@@ -867,6 +884,7 @@ async function openTask(id){
   ta.onkeydown=e=>{if(isSendKey(e)){e.preventDefault();d.querySelector('[data-a=send]').click()}};applySendKey();
   d.querySelector('[data-back]').onclick=closeTask;
   d.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>act(t.id,b.dataset.act));
+  d.querySelectorAll('[data-watch]').forEach(b=>b.onclick=async()=>{const w=b.dataset.watch;try{const r=await api('POST','/api/hub/tasks/'+encodeURIComponent(t.id)+'/watch',w==='now'?{now:true}:{off:w==='off'});tasks.set(r.task.id,r.task);toast(w==='now'?'已发起巡检，结果只记在这里':w==='off'?'已关闭巡检':'已开启巡检');openTask(t.id)}catch(e){toast(e.message,'error')}});
   d.querySelectorAll('[data-opt]').forEach(b=>b.onclick=()=>{const o=i?.options?.[+b.dataset.opt];if(o)act(t.id,'answer',o)});
   const ps=d.querySelector('[data-proj]');if(ps)ps.onchange=async()=>{let v=ps.value;if(v==='~new'){v=await askText('新建项目','','把 '+t.id+' 放进一个新项目');if(!v){ps.value=projOf(t);return}}
     try{const r=await api('POST','/api/hub/tasks/'+encodeURIComponent(t.id)+'/project',{project:v});tasks.set(r.task.id,r.task);await loadProjects();toast(t.id+' 已移到「'+projName(projOf(r.task))+'」');openTask(t.id)}catch(e){toast(e.message,'error');ps.value=projOf(t)}};
@@ -881,6 +899,12 @@ async function openTask(id){
 /** Browser-comment screenshots (copied into the task's attachments by the hub). */
 function taskShots(t){const shots=(t.attachments||[]).map((f,n)=>({f,n})).filter(x=>/\.(png|jpe?g|webp|gif)$/i.test(x.f));if(!shots.length||t.source?.kind!=='browser'&&!/\/intake\//.test(shots[0].f))return '';
   return '<div class="dsec"><h4>截图</h4><div class="dshots">'+shots.map(x=>'<img class="zoomable" loading="lazy" alt="" title="'+esc(x.f)+'" src="/api/hub/tasks/'+encodeURIComponent(t.id)+'/attachment?n='+x.n+'">').join('')+'</div></div>'}
+function watchMeta(t){const tm=timing(t);if(!tm)return '';
+  return '<dt>用时</dt><dd><span class="mono'+(tm.over?' tdur over':'')+'">'+(tm.over?'[OVER] ':'')+esc(tm.label)+'</span> <span class="tsub">已用 / 预期 · '+esc(EXP_SRC[t.expect.source]||t.expect.source)+(t.expect.reason?'：'+esc(t.expect.reason):'')+'</span></dd>'+
+    '<dt>巡检</dt><dd>'+(t.watch?.off?'已关闭 <button class="btn" data-watch="on">开启</button>':(t.watch?.running?'正在巡检…':'开启')+' <button class="btn" data-watch="off" title="例如长时间轮询或等待的任务">关闭</button>'+(ACTIVE.includes(t.status)&&!t.watch?.running?' <button class="btn" data-watch="now">现在巡检</button>':''))+'</dd>'}
+function watchHtml(t){const rs=(t.watch?.reviews||[]).slice(-6).reverse();if(!rs.length)return '';
+  return '<div class="dsec"><h4>巡检</h4><ul class="watch">'+rs.map(r=>'<li><div class="wh"><span>'+esc(hm(r.at))+'</span><span class="wv">['+esc(r.verdict||'ERROR')+']</span><span>'+esc(WTRIG[r.trigger]||r.trigger)+'</span><span class="grow"></span><span>'+esc(WACT[r.action]||r.action)+(r.expected&&r.action==='silent'?' · 新预估 '+fmtMin(r.expected):'')+'</span></div>'+
+    '<div class="wt">'+esc(r.detail)+'</div>'+(r.evidence?'<div class="wt">依据：'+esc(r.evidence)+'</div>':'')+(r.advice&&r.action!=='silent'?'<div class="wt">建议：'+esc(r.advice)+'</div>':'')+(r.error?'<div class="wt">'+esc(r.error)+'</div>':'')+'</li>').join('')+'</ul></div>'}
 function closeTask(){tlStop();const was=selTask;selTask=null;detailSeq++;const d=$('#detail');const hadFocus=d.contains(document.activeElement);d.classList.remove('on');d.dataset.id='';_renderTasks();if(hadFocus&&was)document.querySelector('.titem[data-id="'+CSS.escape(was)+'"]')?.focus()}
 let detailTimer=0;function refreshDetailSoon(){clearTimeout(detailTimer);detailTimer=setTimeout(()=>{if(selTask&&!document.activeElement?.closest?.('#detail'))openTask(selTask)},400)}
 
@@ -894,7 +918,7 @@ function progHtml(t,i){const p=t.progress||{},steps=p.steps||[],act=ACTIVE.inclu
   if(act){const fromReason=(i?.reason||'').replace(/^进行中：/,''),now=p.now||(steps.length?'':fromReason),main=p.note||now||'worker 在做';
     h+='<div class="pnow">'+esc(main)+'</div>'+(p.note&&now&&now!==p.note?'<div class="pnow2">此刻：'+esc(now)+'</div>':'')}
   const start=p.startedAt||t.statusSince||t.createdAt,end=act?Date.now():(t.statusSince||t.updatedAt);
-  const meta=[(act?'已用 ':'用时 ')+dur(end-start)];
+  const tm=timing(t),meta=[tm?(act?'已用 ':'用时 ')+fmtMin(tm.used)+' / 预期 '+fmtMin(tm.exp)+(tm.over?' [OVER]':''):(act?'已用 ':'用时 ')+dur(end-start)];
   if(act){if(p.percent!=null)meta.push(p.percent+'%');if(p.eta)meta.push('预计还要 '+p.eta);meta.push('更新于 '+ago(Math.max(p.updatedAt||0,p.nowAt||0)||t.updatedAt))}
   h+='<div class="pmeta">'+esc(meta.join(' · '))+'</div>';
   if(act&&p.recent?.length)h+='<div class="precent">最近：'+esc(p.recent.slice(-4).map(m=>m.text).join(' / '))+'</div>';

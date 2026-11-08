@@ -32,6 +32,8 @@ import { createAttention, keyOf } from "./attention.ts";
 import { createProjects } from "./projects.ts";
 import { applyActivity, applyProgress, finishProgress, restartProgress } from "../shared/progress.ts";
 import { readTranscript } from "../shared/transcript.ts";
+import { createWatchdog } from "./watchdog.ts";
+import { EXPECT_SOURCE_LABEL, fmtMinutes } from "../shared/watchdog.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -84,6 +86,7 @@ function loadAll() {
 			t.rev ??= 0;
 			if (t.machine === SELF) {
 				handoff.recoverOnLoad(t);
+				watchdog.onLoad(t);
 				tasks.set(t.id, t);
 			}
 		} catch {}
@@ -291,6 +294,7 @@ function recordEvent(t: Task, ev: Omit<TaskEvent, "ts" | "taskId">) {
 
 function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "taskId">) {
 	const prev = t.status;
+	watchdog?.beforeUpdate(t, patch, ev);
 	Object.assign(t, patch, { updatedAt: Date.now(), rev: (t.rev ?? 0) + 1 });
 	if (patch.status && patch.status !== prev) {
 		t.statusSince = t.updatedAt;
@@ -528,6 +532,7 @@ async function createTaskLocal(body: any): Promise<Task> {
 		owner: typeof body.owner === "string" ? body.owner : undefined,
 		...team.newTaskPeople(body),
 	};
+	watchdog.onCreate(t, body);
 	try {
 		Object.assign(t, projects.classifyOwn(t, explicitProject));
 	} catch (e) {
@@ -542,6 +547,7 @@ async function createTaskLocal(body: any): Promise<Task> {
 		`- 工作目录: ${cwd}`,
 		t.project ? `- 项目: ${projects.get(t.project)?.name ?? t.project}` : "",
 		`- 来源: ${t.source.kind}${t.source.url ? ` (${t.source.url})` : ""}`,
+		t.expect ? `- 预期用时: ${fmtMinutes(t.expect.minutes)}（${EXPECT_SOURCE_LABEL[t.expect.source]}；可以用 qa_expect 带理由修正一次）` : "",
 		attachments.length ? `- 附件:\n${attachments.map((a) => `  - ${a}`).join("\n")}` : "",
 		...team.briefLines(t),
 		"",
@@ -588,8 +594,10 @@ function recordFailedTask(body: any, reason: string): Task {
 	return update(t, {}, { kind: "status", status: "failed", text: reason });
 }
 
-async function deliverMessage(t: Task, text: string) {
+async function deliverMessage(t: Task, text: string, opts?: { watchdog?: boolean }) {
 	if (handoff.interceptMessage(t, text)) return;
+	// A human message answers an open watchdog escalation (with its context) and resets the correction count.
+	if (!opts?.watchdog) text = watchdog.onHumanMessage(t, text);
 	if (t.pendingNote) {
 		text = `${t.pendingNote}\n\n---\n${text}`;
 		t.pendingNote = undefined;
@@ -711,7 +719,7 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		// (and settles it in the attention model: archived, snooze cleared).
 		const t = ownTask(p.id);
 		const r = team.ack(t, p.viewer);
-		const settle = r.holder ? { unread: false, ackedAt: Date.now(), snoozedUntil: undefined, snoozedAt: undefined } : {};
+		const settle = r.holder ? { unread: false, ackedAt: Date.now(), snoozedUntil: undefined, snoozedAt: undefined, ...watchdog.onAck(t) } : {};
 		return update(t, { ...r.patch, ...settle }, { kind: "ack", ...(p.viewer?.user ? { by: p.viewer.user } : {}) });
 	},
 	// 稍后提醒: minutes > 0 hides the task from need/skim until then; 0 / null brings it back now.
@@ -854,6 +862,17 @@ const cron = createCron({
 	httpError: (status, msg) => new HttpError(status, msg),
 });
 Object.assign(methods, cron.methods);
+const watchdog = createWatchdog({
+	tasks,
+	config: () => cfg.watchdog,
+	defaultModel: () => cfg.workerModel ?? cfg.model,
+	taskDir,
+	update,
+	deliverMessage: (t, text, opts) => deliverMessage(t, text, opts),
+	log,
+	httpError: (status, msg) => new HttpError(status, msg),
+});
+Object.assign(methods, watchdog.methods);
 
 // ---------------------------------------------------------------- global (mesh-wide) views
 
@@ -1444,6 +1463,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 				const planned = Array.isArray(body.progress.plan) && r.progress.steps?.length;
 				progressNote = planned ? `计划：${r.progress.steps!.map((x) => x.title).join(" / ")}` : r.milestones.length ? r.milestones.join("；") : undefined;
 			}
+			// Worker revises its expectation once, with a reason (qa_expect).
+			if (body.expect) {
+				Object.assign(patch, watchdog.workerExpect(t, body.expect));
+				return send(res, 200, { task: update(t, patch, { kind: "expect", text: `worker 修正预期为 ${fmtMinutes(patch.expect!.minutes)}：${patch.expect!.reason}` }) });
+			}
 			// Explicit attention request from the worker: a human decision is required.
 			if (body.needsHuman) {
 				const question = String(body.question ?? body.summary ?? "").trim();
@@ -1493,7 +1517,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			if (r.task.machine !== SELF) mirrorTasks.set(r.task.id, r.task);
 			return send(res, 200, r);
 		}
-		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign", "watch"].includes(action ?? "")) throw new HttpError(404, "unknown action");
 		if (action === "message" && body.intakeId) {
 			// A browser comment appended to an existing task: ship its screenshots, then link (consume) it.
 			const i = findIntake(String(body.intakeId));
@@ -1598,6 +1622,7 @@ server.listen(cfg.port, cfg.host, () => {
 	log(`[quick-agent hub] web ui: run \`quick ui\` → http://127.0.0.1:${cfg.uiPort}/`);
 	mesh.start();
 	cron.start();
+	watchdog.start();
 	// Background release check: never blocks startup, cached for update.cacheMinutes, silent on failure.
 	setTimeout(backgroundUpdate, 10_000).unref();
 	rmSync(paths.restarting, { force: true });

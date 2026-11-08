@@ -158,12 +158,20 @@ export class HubClient {
 		watchers?: string[];
 		/** Project id or name (default: inferred from cwd / git / page URL / text; unknown names are created). */
 		project?: string;
+		/** Expected active time, e.g. "20m" (default: by kind of task, see shared/watchdog.ts). */
+		expected?: string;
+		/** false = no watchdog reviews for this task (e.g. long polling jobs). */
+		watch?: boolean;
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}
 	/** Set resources/priority/notes of a machine (default this hub's machine); null clears a field. */
 	configureMachine(input: { machine?: string; resources?: string[] | null; resourceNotes?: string | null; priority?: number | null; description?: string; owner?: string | null }) {
 		return this.request<{ machine: MachineInfo }>("POST", "/api/machine", input).then((r) => r.machine);
+	}
+	/** Watchdog of one task: turn it off/on, set the expectation, or start a review now. */
+	watch(id: string, body: { off?: boolean; now?: boolean; expected?: string }) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/watch`, body).then((r) => r.task);
 	}
 	/** intakeId: a browser comment appended to this task (its screenshots are copied into the task, the comment is linked). */
 	sendMessage(id: string, text: string, intakeId?: string) {
@@ -198,7 +206,7 @@ export class HubClient {
 		return this.request<{ focus: FocusState }>("POST", "/api/attention/focus", { on, minutes }).then((r) => r.focus);
 	}
 	/** Worker → hub state report. needsHuman marks an explicit request for a human decision. */
-	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; progress?: ProgressInput; needsHuman?: boolean; question?: string; options?: string[] }) {
+	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; progress?: ProgressInput; needsHuman?: boolean; question?: string; options?: string[]; expect?: { expected: string; reason: string } }) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/report`, body).then((r) => r.task);
 	}
 	projects() {
