@@ -40,8 +40,9 @@ summary:hover{color:var(--fg)}
 .keys{margin-top:14px;border-top:1px solid var(--line-2)}
 .keys .k{display:flex;align-items:center;gap:8px;height:30px;border-bottom:1px solid var(--line);font-size:12px;color:var(--fg-2)}
 .keys .k span{flex:1}
+.keys .k span:last-child{flex:0 0 auto;white-space:nowrap}
 .seg{display:flex;margin-top:6px;border:1px solid var(--line-2)}
-.seg button{height:30px;border:0;border-right:1px solid var(--line-2);font:11.5px var(--mono);color:var(--fg-2)}
+.seg button{height:30px;white-space:nowrap;border:0;border-right:1px solid var(--line-2);font:11.5px var(--mono);color:var(--fg-2)}
 .seg button:last-child{border-right:0}
 .seg button.on{background:var(--inv-bg);color:var(--inv-fg)}
 .seg button:active{transform:none}
@@ -56,16 +57,16 @@ button.primary .kh{margin-left:auto;margin-right:10px}
 <div id="status"></div>
 <label>评论框发送键 <span class="kh" style="float:right;text-transform:none;letter-spacing:0"><kbd>M</kbd> 切换</span></label>
 <div class="seg" id="sendKey" role="radiogroup" aria-label="评论框发送键">
-	<button data-v="enter" role="radio">Enter 发送 · ⇧Enter 换行</button>
-	<button data-v="mod" role="radio" id="modOpt">⌘Enter 发送 · Enter 换行</button>
+	<button data-v="enter" role="radio" title="Enter 发送，Shift+Enter 换行">Enter 发送</button>
+	<button data-v="mod" role="radio" id="modOpt">⌘Enter 发送</button>
 </div>
 <div class="keys" id="keys">
-	<div class="k"><span>开始 / 退出框选</span><span id="kPick" style="flex:0"></span></div>
-	<div class="k"><span>打开本弹窗</span><span id="kPopup" style="flex:0"></span></div>
-	<div class="k"><span>多选 · 写评论 · 取消</span><span style="flex:0;white-space:nowrap"><kbd>⇧</kbd>+点击 <kbd>Enter</kbd> <kbd>Esc</kbd></span></div>
-	<div class="k"><span>弹窗内：框选 · 任务面板 · 设置</span><span style="flex:0;white-space:nowrap"><kbd>E</kbd> <kbd>D</kbd> <kbd>,</kbd></span></div>
+	<div class="k"><span>开始 / 退出框选</span><span id="kPick"></span></div>
+	<div class="k"><span>打开本弹窗</span><span id="kPopup"></span></div>
+	<div class="k"><span>多选 · 写评论 · 取消</span><span><kbd>⇧</kbd>+点击 <kbd>Enter</kbd> <kbd>Esc</kbd></span></div>
+	<div class="k"><span>弹窗内：框选 · 任务面板 · 设置</span><span><kbd>E</kbd> <kbd>D</kbd> <kbd>,</kbd></span></div>
 </div>
-<div class="hint"><a id="shortcuts">修改快捷键</a>（chrome://extensions/shortcuts）· 点击元素即可评论，「框选区域」可拖出矩形。</div>
+<div class="hint"><a id="shortcuts">修改快捷键</a>（chrome://extensions/shortcuts）· 点击选元素，按住拖动框选区域。</div>
 <details id="settings">
 	<summary>连接设置</summary>
 	<label for="hubUrl">Hub 地址（本机 hub 或 ssh -L 转发的端口）</label><input id="hubUrl" type="text" placeholder="http://127.0.0.1:7788">

@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>QA test SPA</title>
+<style>
+body{margin:0;font:15px/1.6 system-ui,sans-serif;background:#fff;color:#222}
+header{position:sticky;top:0;background:#2b5;color:#fff;padding:10px 16px;z-index:10;display:flex;gap:12px}
+header a{color:#fff}
+#sticky-btn{background:#fff;color:#2b5;border:0;padding:4px 10px}
+main{padding:16px;max-width:900px}
+.card{border:1px solid #ccc;padding:14px;margin:12px 0;border-radius:8px;background:#fafafa}
+#inner{height:220px;overflow:auto;border:2px solid #888;margin:20px 0}
+#inner .row{padding:16px;border-bottom:1px solid #ddd}
+.spacer{height:1400px;background:repeating-linear-gradient(#fff 0 40px,#f3f3f3 40px 80px)}
+</style></head><body>
+<header><b>Test App</b><a href="#" data-r="a">Route A</a><a href="#" data-r="b">Route B</a><a href="#/ha">Hash A</a><a href="#/hb">Hash B</a><a href="other.html">Other page</a><button id="sticky-btn">Sticky button</button></header>
+<main id="view"></main>
+<script>
+function render(){
+  const q=new URLSearchParams(location.search).get('r')||'', h=location.hash;
+  const name=h.startsWith('#/')?'hash-'+h.slice(2):(q||'home');
+  document.title='QA test SPA – '+name;
+  document.getElementById('view').innerHTML=`<h1 id="title">Page ${name}</h1>
+  <div class="card" id="item-${name}">Item card on ${name}</div>
+  <div class="card" id="second-${name}">Second card on ${name}</div>
+  <div id="inner">${Array.from({length:12},(_,i)=>`<div class="row" id="row-${name}-${i}">Inner row ${i} (${name})</div>`).join('')}</div>
+  <div class="spacer"></div><div class="card" id="bottom-${name}">Bottom card ${name}</div>`;
+}
+document.addEventListener('click',e=>{const a=e.target.closest('a[data-r]');if(!a)return;e.preventDefault();history.pushState({},'','?r='+a.dataset.r);render()});
+addEventListener('popstate',render);addEventListener('hashchange',render);render();
+</script></body></html>

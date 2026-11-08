@@ -63,7 +63,7 @@
 		.sel{position:fixed;border:2px solid var(--fg);outline:1px solid var(--bg);background:color-mix(in srgb,var(--fg) 8%,transparent);pointer-events:none}
 		.tag{position:fixed;background:var(--acc);color:var(--acc-fg);font:500 11px/1.5 var(--mono);padding:1px 6px;pointer-events:none;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
 		.region{position:fixed;border:2px dashed var(--acc);background:var(--acc-soft);pointer-events:none}
-		.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:var(--bg);color:var(--fg);border:1px solid var(--line-2);display:flex;align-items:stretch;height:36px;pointer-events:auto;box-shadow:var(--hard);max-width:calc(100vw - 24px)}
+		.bar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--bg);color:var(--fg);border:1px solid var(--line-2);display:flex;align-items:stretch;height:36px;pointer-events:auto;box-shadow:var(--hard);max-width:calc(100vw - 24px)}
 		.bar b{display:flex;align-items:center;gap:8px;padding:0 12px;border-right:1px solid var(--line-2);font:800 12px/1 var(--sans);letter-spacing:-.01em;text-transform:uppercase;white-space:nowrap}
 		.bar b::before{content:"";width:10px;height:10px;background:var(--acc)}
 		.bar button{background:transparent;color:var(--fg-2);border:0;border-right:1px solid var(--line);padding:0 12px;white-space:nowrap;transition:background var(--t),color var(--t)}
@@ -99,6 +99,7 @@
 		.pin.failed,.pin.exited{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
 		.pin.cancelled,.pin.dismissed{border-style:dashed;color:var(--fg-3)}
 		.pin.running::after,.pin.starting::after,.pin.claimed::after{content:"";position:absolute;right:-5px;top:-5px;width:7px;height:7px;background:var(--acc);animation:blink 1.2s steps(2,start) infinite}
+		.picking .pin{pointer-events:none;opacity:.5}
 		.pin.open{outline:2px solid var(--acc);outline-offset:1px}
 		@keyframes blink{to{visibility:hidden}}
 		.pop{position:fixed;left:0;top:0;width:min(320px,calc(100vw - 16px));background:var(--bg);color:var(--fg);border:1px solid var(--line-2);pointer-events:auto;box-shadow:var(--hard);max-height:300px;overflow:auto}
@@ -223,36 +224,43 @@
 	const selBoxes = [];
 
 	const kbdHtml = (keys) => keys.map((k) => `<kbd>${k}</kbd>`).join("");
+	// One picker, two gestures (decided per gesture, no mode switch): press + release without moving
+	// (< DRAG_PX) picks the element under the pointer; press + drag draws a region.
+	const DRAG_PX = 5;
+	let dragging = false; // dragStart is set on mousedown; dragging once the pointer moved ≥ DRAG_PX
+	let swallowClick = false; // the click that follows a drag must not also pick an element
 	function start() {
 		if (active) return;
 		active = true;
 		selected = [];
 		regionRect = null;
+		mode = "element";
 		closePop();
+		pinLayer.classList.add("picking");
 		bar = el("bar");
-		bar.innerHTML = `<b>quick-agent</b><button data-m="element" title="点击选择元素">元素</button><button data-m="region" title="拖出一个矩形">框选区域</button><span class="hint">点击 · ${kbdHtml(["⇧"])}+点击多选 · ${kbdHtml(["Enter"])} 写评论 · ${kbdHtml(["Esc"])} 退出</span><button data-x title="退出 (Esc)">✕</button>`;
+		bar.innerHTML = `<b>quick-agent</b><span class="hint">点击选元素 · 拖动框选区域 · ${kbdHtml(["⇧"])}+点击多选 · ${kbdHtml(["Enter"])} 写评论 · ${kbdHtml(["Esc"])} 退出</span><button data-x title="退出 (Esc)">✕</button>`;
 		bar.addEventListener("click", (e) => {
-			const m = e.target.closest("button")?.dataset.m;
-			if (m) setMode(m);
 			if (e.target.closest("[data-x]")) stop();
-			else if (m) snapDraft();
 		});
 		hl = el("hl");
 		tag = el("tag");
 		hl.style.display = tag.style.display = "none";
-		setMode(mode);
 		document.addEventListener("mousemove", onMove, true);
 		document.addEventListener("mousedown", onDown, true);
 		document.addEventListener("mouseup", onUp, true);
 		document.addEventListener("click", onClick, true);
 		document.addEventListener("keydown", onKey, true);
+		document.addEventListener("dragstart", onDragStart, true);
+		document.addEventListener("selectstart", onDragStart, true);
 	}
 	function stop(keepDraft = false) {
 		if (!active) return;
 		active = false;
 		if (!keepDraft) dropDraft(); // cancelled or sent: this page's draft is done
+		pinLayer.classList.remove("picking");
 		document.documentElement.style.cursor = "";
 		dragStart = null;
+		dragging = false;
 		regionBox = null;
 		hovered = null;
 		document.removeEventListener("mousemove", onMove, true);
@@ -260,6 +268,8 @@
 		document.removeEventListener("mouseup", onUp, true);
 		document.removeEventListener("click", onClick, true);
 		document.removeEventListener("keydown", onKey, true);
+		document.removeEventListener("dragstart", onDragStart, true);
+		document.removeEventListener("selectstart", onDragStart, true);
 		layer.querySelectorAll(".bar,.hl,.tag,.sel,.region,.box").forEach((n) => n.remove());
 		selBoxes.length = 0;
 		box = null;
@@ -267,11 +277,10 @@
 		selected = [];
 		regionRect = null;
 	}
+	/** Set the selection kind (restoring drafts); the user never switches it by hand. */
 	function setMode(m) {
-		mode = m;
-		bar.querySelectorAll("button[data-m]").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
-		document.documentElement.style.cursor = m === "region" ? "crosshair" : "";
-		hl.style.display = tag.style.display = "none";
+		mode = m === "region" ? "region" : "element";
+		if (hl) hl.style.display = tag.style.display = "none";
 	}
 	function place(node, r) {
 		node.style.left = `${r.x}px`;
@@ -295,17 +304,40 @@
 		host.style.display = "";
 		return t;
 	}
+	function cancelDrag() {
+		dragStart = null;
+		dragging = false;
+		regionRect = null;
+		regionBox?.remove();
+		regionBox = null;
+		document.documentElement.style.cursor = "";
+	}
+	function onDragStart(e) {
+		if (isOurs(e) || box) return;
+		e.preventDefault(); // no native drag of links/images, no text selection while picking
+	}
 
 	function onMove(e) {
 		if (box || isOurs(e)) return;
-		if (mode === "region") {
-			if (dragStart) {
-				regionRect = {
-					x: Math.min(dragStart.x, e.clientX), y: Math.min(dragStart.y, e.clientY),
-					width: Math.abs(e.clientX - dragStart.x), height: Math.abs(e.clientY - dragStart.y),
-				};
-				place(regionBox, regionRect);
+		if (dragStart) {
+			if (!dragging && Math.hypot(e.clientX - dragStart.x, e.clientY - dragStart.y) < DRAG_PX) return;
+			if (!dragging) {
+				// the press became a drag: switch this gesture to a region, dropping element picks
+				dragging = true;
+				mode = "region";
+				selected = [];
+				redrawSelection();
+				hl.style.display = tag.style.display = "none";
+				regionBox?.remove();
+				regionBox = el("region");
+				document.documentElement.style.cursor = "crosshair";
 			}
+			e.preventDefault();
+			regionRect = {
+				x: Math.min(dragStart.x, e.clientX), y: Math.min(dragStart.y, e.clientY),
+				width: Math.abs(e.clientX - dragStart.x), height: Math.abs(e.clientY - dragStart.y),
+			};
+			place(regionBox, regionRect);
 			return;
 		}
 		const t = targetAt(e);
@@ -314,7 +346,7 @@
 		drawHover();
 	}
 	function drawHover() {
-		if (!hovered || !hl || box || mode !== "element") return;
+		if (!hovered || !hl || box || dragging) return;
 		const r = hovered.getBoundingClientRect();
 		hl.style.display = tag.style.display = "block";
 		place(hl, r);
@@ -323,34 +355,42 @@
 		tag.style.top = `${r.y > 22 ? r.y - 20 : r.bottom + 2}px`;
 	}
 	function onDown(e) {
-		if (box || isOurs(e)) return;
-		e.preventDefault();
+		if (box || isOurs(e) || e.button !== 0) return;
+		e.preventDefault(); // also blocks text selection / native drag from starting
 		e.stopPropagation();
-		if (mode === "region") {
-			dragStart = { x: e.clientX, y: e.clientY };
-			regionBox?.remove();
-			regionBox = el("region");
-			place(regionBox, { x: e.clientX, y: e.clientY, width: 0, height: 0 });
-		}
+		dragStart = { x: e.clientX, y: e.clientY };
+		dragging = false;
+		swallowClick = false;
 	}
 	function onUp(e) {
-		if (box || isOurs(e)) return;
+		if (box || isOurs(e) || !dragStart) return;
 		e.preventDefault();
 		e.stopPropagation();
-		if (mode === "region" && dragStart) {
-			dragStart = null;
-			if (!regionRect || regionRect.width < 6 || regionRect.height < 6) return;
-			selected = elementsInRegion(regionRect);
-			openBox();
-		}
+		const wasDrag = dragging;
+		dragStart = null;
+		dragging = false;
+		document.documentElement.style.cursor = "";
+		if (!wasDrag) return; // a click: onClick picks the element
+		swallowClick = true;
+		setTimeout(() => (swallowClick = false), 0); // the click (if any) is dispatched right after mouseup
+		if (!regionRect || regionRect.width < DRAG_PX || regionRect.height < DRAG_PX) return cancelDrag();
+		selected = elementsInRegion(regionRect);
+		openBox();
 	}
 	function onClick(e) {
 		if (isOurs(e)) return;
 		e.preventDefault();
 		e.stopPropagation();
-		if (box || mode !== "element") return;
+		if (swallowClick) return void (swallowClick = false);
+		if (box) return;
 		const t = targetAt(e);
 		if (!t) return;
+		if (mode === "region") {
+			// a click after a parked region selection starts a fresh element selection
+			cancelDrag();
+			selected = [];
+		}
+		mode = "element";
 		const i = selected.indexOf(t);
 		if (i >= 0) selected.splice(i, 1);
 		else selected.push(t);
@@ -365,12 +405,12 @@
 			e.stopPropagation();
 			// Esc peels one layer: an in-progress drag, then the selection, then the picker itself.
 			if (dragStart) {
-				dragStart = null;
-				regionRect = null;
-				regionBox?.remove();
-				regionBox = null;
-			} else if (selected.length && !box) {
+				cancelDrag();
+				swallowClick = true; // releasing the button after Esc must not pick anything
+			} else if ((selected.length || regionRect) && !box) {
 				selected = [];
+				cancelDrag();
+				mode = "element";
 				redrawSelection();
 				snapDraft();
 			} else stop();
@@ -800,6 +840,7 @@
 		openPop = null;
 	}
 	function reposition() {
+		const taken = []; // several comments on one element: fan the pins out to the left instead of stacking
 		for (const p of pins) {
 			if (!p.node) continue;
 			const pt = pinPoint(p);
@@ -809,8 +850,10 @@
 				continue;
 			}
 			p.node.hidden = false;
-			const x = Math.min(Math.max(pt.x - 11, 2), innerWidth - 26);
+			let x = Math.min(Math.max(pt.x - 11, 2), innerWidth - 26);
 			const y = Math.max(pt.y - 11, 2);
+			while (taken.some((t) => Math.abs(t.x - x) < 20 && Math.abs(t.y - y) < 20)) x -= 24;
+			taken.push({ x, y });
 			p.pos = { x, y };
 			p.node.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
 		}

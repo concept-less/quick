@@ -44,7 +44,7 @@ function renderKeys(target, keys) {
 	for (const k of parts) {
 		const kbd = document.createElement("kbd");
 		kbd.textContent = k;
-		target.append(kbd, " ");
+		target.append(kbd);
 	}
 }
 
@@ -68,7 +68,8 @@ async function setSendKey(v) {
 	await chrome.storage.local.set({ sendKey: v });
 	showSendKey(v);
 }
-$("modOpt").textContent = `${MOD}${IS_MAC ? "" : "+"}Enter 发送 · Enter 换行`;
+$("modOpt").textContent = `${MOD}${IS_MAC ? "" : "+"}Enter 发送`;
+$("modOpt").title = `${MOD}+Enter 发送，Enter 换行`;
 $("sendKey").addEventListener("click", (e) => {
 	const v = e.target.closest("button")?.dataset.v;
 	if (v) setSendKey(v);
