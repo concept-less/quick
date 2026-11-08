@@ -52,7 +52,7 @@ async function setBadge(text, color, title) {
 	} catch {}
 }
 const markOk = () => setBadge("", null, "");
-const markErr = (e) => setBadge("!", "#f7768e", String(e?.message || e));
+const markErr = (e) => setBadge("!", "#ff3b30", String(e?.message || e));
 
 // ---------------------------------------------------------------- screenshots
 
@@ -82,7 +82,7 @@ async function captureShots(windowId, boxes, focus, dpr) {
 	const full = new OffscreenCanvas(fw, Math.round(bmp.height * fs));
 	const fctx = full.getContext("2d");
 	fctx.drawImage(bmp, 0, 0, full.width, full.height);
-	fctx.strokeStyle = "#ff2d55";
+	fctx.strokeStyle = "#ff3b30";
 	fctx.lineWidth = 3;
 	for (const b of boxes || []) fctx.strokeRect(b.x * scale * fs, b.y * scale * fs, b.width * scale * fs, b.height * scale * fs);
 	shots.push({ name: "viewport", dataUrl: await blobToDataUrl(await full.convertToBlob({ type: "image/jpeg", quality: 0.85 })) });

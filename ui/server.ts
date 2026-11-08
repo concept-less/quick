@@ -438,10 +438,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 function loginPage(bad: boolean) {
 	return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>quick-agent</title>
-<style>:root{color-scheme:light dark}body{font:15px/1.6 system-ui,-apple-system,"PingFang SC",sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:Canvas;color:CanvasText}
-form{max-width:420px;padding:28px;border:1px solid color-mix(in srgb,CanvasText 15%,transparent);border-radius:14px}input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:8px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);background:transparent;color:inherit;font:inherit}
-button{margin-top:12px;padding:8px 16px;border-radius:8px;border:0;background:#4f6df5;color:#fff;font:inherit;cursor:pointer}code{font-size:13px}.e{color:#e5484d}</style></head>
-<body><form method="get" action="/"><h2>⚡ quick-agent</h2><p>请输入访问 token（终端运行 <code>quick token</code>，或直接用 <code>quick ui</code> 打开）。</p>${bad ? '<p class="e">token 不正确</p>' : ""}<input name="token" autofocus placeholder="token"><button>进入</button></form></body></html>`;
+<style>:root{--bg:#f4f4f0;--fg:#0d0d0d;--fg2:#55554f;--line:#d4d4cc;--acc:#e61919;--inv:#f4f4f0;--hard:#0d0d0d;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0e0e0e;--fg:#ececE6;--fg2:#a3a39c;--line:#2a2a2a;--acc:#ff3b30;--inv:#0e0e0e;--hard:#4a4a46;color-scheme:dark}}
+*{box-sizing:border-box}body{font:14px/1.65 "Inter","Helvetica Neue",ui-sans-serif,system-ui,-apple-system,"PingFang SC",sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:var(--bg);color:var(--fg);padding:20px}
+form{width:min(420px,100%);border:1px solid var(--fg);box-shadow:8px 8px 0 var(--hard)}
+h2{margin:0;padding:14px 18px;border-bottom:1px solid var(--fg);font:800 14px/1 "Inter","Helvetica Neue",ui-sans-serif,system-ui,sans-serif;text-transform:uppercase;display:flex;align-items:center;gap:10px}h2::before{content:"";width:12px;height:12px;background:var(--acc)}
+.b{padding:16px 18px 18px}p{margin:0 0 14px;color:var(--fg2)}code{font:12.5px "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;color:var(--fg)}
+input{width:100%;height:38px;padding:0 12px;border:1px solid var(--fg);border-radius:0;background:transparent;color:inherit;font:13px "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;outline:0}input:focus{box-shadow:3px 3px 0 var(--hard)}
+button{margin-top:12px;width:100%;height:38px;border:1px solid var(--fg);border-radius:0;background:var(--fg);color:var(--inv);font:inherit;font-weight:600;cursor:pointer}button:hover{background:var(--acc);border-color:var(--acc);color:#fff}
+.e{color:var(--acc);border-left:3px solid var(--acc);padding-left:10px}</style></head>
+<body><form method="get" action="/"><h2>quick-agent</h2><div class="b"><p>请输入访问 token（终端运行 <code>quick token</code>，或直接用 <code>quick ui</code> 打开）。</p>${bad ? '<p class="e">token 不正确</p>' : ""}<input name="token" autofocus placeholder="token" aria-label="token"><button>进入</button></div></form></body></html>`;
 }
 
 const server = createServer((req, res) => {

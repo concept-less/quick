@@ -16,9 +16,10 @@
 	};
 
 	const STATUS_COLOR = {
-		pending: "#8a93a6", claimed: "#7aa2f7", dispatched: "#7aa2f7",
-		starting: "#7aa2f7", running: "#7aa2f7", idle: "#e0af68", needs_input: "#e0af68", blocked: "#e0af68",
-		done: "#9ece6a", failed: "#f7768e", cancelled: "#8a93a6", exited: "#f7768e",
+		// monochrome + one accent: grey = queued/working, red = needs you / failed, white = done
+		pending: "#6b6b66", claimed: "#a3a39c", dispatched: "#a3a39c",
+		starting: "#a3a39c", running: "#a3a39c", idle: "#ff3b30", needs_input: "#ff3b30", blocked: "#ff3b30",
+		done: "#ececE6", failed: "#ff3b30", cancelled: "#6b6b66", exited: "#ff3b30",
 	};
 	const STATUS_TEXT = {
 		pending: "等待前台", claimed: "前台处理中", dispatched: "已派单", starting: "启动中", running: "进行中",
@@ -32,31 +33,35 @@
 	host.style.cssText = "all:initial;position:absolute;left:0;top:0;width:0;height:0;overflow:visible;z-index:2147483647;pointer-events:none;";
 	const root = host.attachShadow({ mode: "closed" });
 	root.innerHTML = `<style>
+		/* tokens shared with ui/app.html + popup.html: ink surface, hairline borders, one signal-red accent, square corners */
 		:host{all:initial}
-		*{box-sizing:border-box;font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-		.hl{position:fixed;border:2px solid #ff2d55;background:rgba(255,45,85,.08);pointer-events:none;border-radius:3px;transition:all .04s}
-		.sel{position:fixed;border:2px solid #7aa2f7;background:rgba(122,162,247,.12);pointer-events:none;border-radius:3px}
-		.tag{position:fixed;background:#ff2d55;color:#fff;font-size:11px;padding:1px 6px;border-radius:3px;pointer-events:none;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
-		.region{position:fixed;border:2px dashed #ff2d55;background:rgba(255,45,85,.06);pointer-events:none}
-		.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:10px;padding:6px 8px;display:flex;gap:6px;align-items:center;pointer-events:auto;box-shadow:0 8px 30px rgba(0,0,0,.35)}
-		.bar b{color:#7aa2f7;margin:0 6px 0 4px}
-		.bar button,.box button{background:#232837;color:#e6e6e6;border:1px solid #2f3542;border-radius:6px;padding:4px 10px;cursor:pointer}
-		.bar button.on{border-color:#7aa2f7;color:#7aa2f7}
-		.bar .hint{color:#8a93a6;font-size:12px;margin:0 4px}
-		.box{position:fixed;width:360px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:10px;padding:10px;pointer-events:auto;box-shadow:0 12px 40px rgba(0,0,0,.4)}
-		.box textarea{width:100%;min-height:90px;resize:vertical;background:#0f1115;color:#e6e6e6;border:1px solid #2f3542;border-radius:6px;padding:8px;outline:none}
-		.box textarea:focus{border-color:#7aa2f7}
-		.box .meta{color:#8a93a6;font-size:12px;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-		.box .row{display:flex;gap:8px;align-items:center;margin-top:8px}
+		*{box-sizing:border-box;font:13px/1.5 "Inter","Helvetica Neue",ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+		.hl{position:fixed;border:2px solid #ff3b30;background:rgba(255,59,48,.08);pointer-events:none;transition:all .04s}
+		.sel{position:fixed;border:2px solid #0e0e0e;outline:1px solid #ececE6;background:rgba(14,14,14,.08);pointer-events:none}
+		.tag{position:fixed;background:#ff3b30;color:#fff;font:500 11px/1.5 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;padding:1px 6px;pointer-events:none;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
+		.region{position:fixed;border:2px dashed #ff3b30;background:rgba(255,59,48,.06);pointer-events:none}
+		.bar{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;padding:6px;display:flex;gap:6px;align-items:center;pointer-events:auto;box-shadow:4px 4px 0 rgba(0,0,0,.35)}
+		.bar b{display:flex;align-items:center;gap:8px;margin:0 8px 0 6px;font:800 12px/1 "Inter","Helvetica Neue",ui-sans-serif,system-ui,sans-serif;letter-spacing:-.01em;text-transform:uppercase}
+		.bar b::before{content:"";width:10px;height:10px;background:#ff3b30}
+		.bar button,.box button{height:28px;background:transparent;color:#ececE6;border:1px solid #3a3a38;padding:0 10px;cursor:pointer;transition:border-color .12s,background .12s,color .12s}
+		.bar button:hover,.box button:hover{border-color:#ececE6}
+		.bar button.on{background:#ececE6;color:#0e0e0e;border-color:#ececE6}
+		.bar .hint{color:#8c8c85;font:11px/1.4 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;margin:0 6px}
+		.box{position:fixed;width:360px;background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;padding:12px;pointer-events:auto;box-shadow:6px 6px 0 rgba(0,0,0,.35)}
+		.box textarea{width:100%;min-height:90px;resize:vertical;background:#161616;color:#ececE6;border:1px solid #3a3a38;padding:8px 10px;outline:none}
+		.box textarea:focus{border-color:#ececE6}
+		.box .meta{color:#8c8c85;font:11px/1.5 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+		.box .row{display:flex;gap:8px;align-items:center;margin-top:10px}
 		.box .row .sp{flex:1}
-		.box button.primary{background:#7aa2f7;color:#0f1115;border-color:#7aa2f7;font-weight:600}
-		.box label{color:#8a93a6;font-size:12px;display:flex;gap:4px;align-items:center}
-		.toast{position:fixed;bottom:18px;right:18px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:8px;padding:8px 12px;pointer-events:auto;max-width:420px;box-shadow:0 8px 30px rgba(0,0,0,.35)}
-		.toast.err{border-color:#f7768e}
-		.toast .sub{color:#8a93a6;font-size:12px;margin-top:2px}
-		.pin{position:absolute;width:20px;height:20px;border-radius:50%;color:#0f1115;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;border:2px solid #0f1115;box-shadow:0 2px 6px rgba(0,0,0,.4)}
-		.pop{position:absolute;width:320px;background:#171a21;color:#e6e6e6;border:1px solid #2f3542;border-radius:8px;padding:8px 10px;pointer-events:auto;box-shadow:0 8px 30px rgba(0,0,0,.4);white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
-		.pop .st{font-size:12px;margin-bottom:4px}
+		.box button.primary{background:#ececE6;color:#0e0e0e;border-color:#ececE6;font-weight:600}
+		.box button.primary:hover{background:#ff3b30;border-color:#ff3b30;color:#fff}
+		.box label{color:#a3a39c;font-size:12px;display:flex;gap:4px;align-items:center}
+		.toast{position:fixed;bottom:18px;right:18px;background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;border-left:4px solid #ececE6;padding:9px 14px;pointer-events:auto;max-width:420px;box-shadow:4px 4px 0 rgba(0,0,0,.35)}
+		.toast.err{border-left-color:#ff3b30}
+		.toast .sub{color:#8c8c85;font-size:12px;margin-top:2px}
+		.pin{position:absolute;width:20px;height:20px;color:#0e0e0e;font:700 11px/1 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;border:2px solid #0e0e0e;box-shadow:2px 2px 0 rgba(0,0,0,.45)}
+		.pop{position:absolute;width:320px;background:#0e0e0e;color:#ececE6;border:1px solid #ececE6;padding:10px 12px;pointer-events:auto;box-shadow:4px 4px 0 rgba(0,0,0,.35);white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
+		.pop .st{font:600 11px/1.5 "JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;letter-spacing:.04em;margin-bottom:6px}
 		.pins{position:absolute;left:0;top:0;width:0;height:0}
 	</style><div class="layer"></div><div class="pins"></div>`;
 	const layer = root.querySelector(".layer");
@@ -161,7 +166,7 @@
 		selected = [];
 		regionRect = null;
 		bar = el("bar");
-		bar.innerHTML = `<b>⚡ quick-agent</b><button data-m="element">元素</button><button data-m="region">框选区域</button><span class="hint">点击选择 · Shift+点击多选 · Enter 写评论 · Esc 退出</span><button data-x>✕</button>`;
+		bar.innerHTML = `<b>quick-agent</b><button data-m="element">元素</button><button data-m="region">框选区域</button><span class="hint">点击选择 · Shift+点击多选 · Enter 写评论 · Esc 退出</span><button data-x>✕</button>`;
 		bar.addEventListener("click", (e) => {
 			const m = e.target.closest("button")?.dataset.m;
 			if (m) setMode(m);
@@ -459,7 +464,7 @@
 			const d = el("pin", pinLayer);
 			d.style.left = `${pos.x}px`;
 			d.style.top = `${pos.y}px`;
-			d.style.background = STATUS_COLOR[st] || "#8a93a6";
+			d.style.background = STATUS_COLOR[st] || "#6b6b66";
 			d.textContent = String(i + 1);
 			d.title = `${STATUS_TEXT[st] || st}: ${p.comment}`;
 			d.onclick = (e) => {
@@ -470,7 +475,7 @@
 				pop.dataset.id = p.id;
 				pop.style.left = `${Math.min(pos.x + 24, scrollX + innerWidth - 340)}px`;
 				pop.style.top = `${pos.y}px`;
-				pop.innerHTML = `<div class="st" style="color:${STATUS_COLOR[st] || "#8a93a6"}">● ${escapeHtml(STATUS_TEXT[st] || st)}${p.taskId ? ` · 任务 ${escapeHtml(p.taskId)}` : ""}${p.taskTitle ? ` · ${escapeHtml(p.taskTitle)}` : ""}</div><div>${escapeHtml(p.comment)}</div>${p.summary ? `<hr style="border-color:#2f3542"><div style="color:#c0c6d4">${escapeHtml(p.summary)}</div>` : ""}`;
+				pop.innerHTML = `<div class="st" style="color:${STATUS_COLOR[st] || "#6b6b66"}">■ ${escapeHtml(STATUS_TEXT[st] || st)}${p.taskId ? ` · 任务 ${escapeHtml(p.taskId)}` : ""}${p.taskTitle ? ` · ${escapeHtml(p.taskTitle)}` : ""}</div><div>${escapeHtml(p.comment)}</div>${p.summary ? `<hr style="border:0;border-top:1px solid #3a3a38;margin:8px 0"><div style="color:#a3a39c">${escapeHtml(p.summary)}</div>` : ""}`;
 				openPop = pop;
 			};
 		});
