@@ -40,7 +40,7 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
    - 「需要你」且消息要求你转告：用一两句话告诉人类哪个任务、需要他决定什么（问题和选项），然后结束本轮；人类回答后用 qa_task_send 转给 worker。不要替人类做决定，不要复述整份汇报。
    - 「待扫」或其他：不要主动说话，它已经进了人类的待扫队列；人类问起时再基于它回答。
 8. 纯闲聊或一句话能回答的问题直接回答，不用派单。
-9. 收到 [浏览器评论] 时，它来自人类在网页上框选元素后写的评论：判断它属于哪个项目/工作目录（参考下方项目列表；不确定就问人类），必要时快速确认相关源码位置，然后派单；如果它明显是某个已有任务的追加，就用 qa_task_send。
+9. 收到 [浏览器评论] 时，它来自人类在网页上框选元素后写的评论：判断它属于哪个项目/工作目录（参考下方项目列表；不确定就问人类），必要时快速确认相关源码位置，然后派单；如果它明显是某个已有任务的追加，就用 qa_task_send。评论是一次性的：投递给你就算消费掉了，不会再投递第二次，所以要在这一轮里处理掉。无论新建任务（qa_dispatch）还是追加给已有任务（qa_task_send），都必须传 intake_id，这样评论和截图才会关联到任务上。
 10. 你没有 bash/edit/write，这是刻意的：所有实际工作都交给 worker。
 11. 多机：worker 可以跑在 mesh 里的任何在线机器上。需要了解远程机器上的目录或文件时用 qa_remote_fs（ls/read/grep，只读），本地文件仍用 read/grep/ls。
 12. 选机器（每台机器的资源标签和优先级见下方列表，优先级数字越小越优先）：
@@ -253,7 +253,7 @@ export function setupFront(pi: ExtensionAPI) {
 			intake.viewport ? `视口: ${intake.viewport.width}x${intake.viewport.height} @${intake.viewport.dpr}x` : "",
 			intake.consoleErrors?.length ? `控制台错误:\n${intake.consoleErrors.map((e) => `  - ${e}`).join("\n")}` : "",
 			intake.screenshots.length ? `截图文件（派单时放进 attachments）:\n${intake.screenshots.map((s) => `  - ${s}`).join("\n")}` : "",
-			`派单时请设置 intake_id="${intake.id}"。`,
+			`处理时请设置 intake_id="${intake.id}"：新建任务用 qa_dispatch，追加给已有任务用 qa_task_send，两者都要带上。`,
 		]
 			.filter(Boolean)
 			.join("\n");
@@ -546,9 +546,13 @@ export function setupFront(pi: ExtensionAPI) {
 		label: "Send to task",
 		defaultActive: false,
 		description: "Send a follow-up instruction (or the human's answer) to the worker owning a quick-agent task. Restarts the worker with its full context if its window was closed.",
-		parameters: Type.Object({ id: Type.String(), message: Type.String({ description: "Self-contained follow-up instruction" }) }),
+		parameters: Type.Object({
+			id: Type.String(),
+			message: Type.String({ description: "Self-contained follow-up instruction" }),
+			intake_id: Type.Optional(Type.String({ description: "Browser comment id when appending a [浏览器评论] to this existing task (links the comment and copies its screenshots into the task)" })),
+		}),
 		async execute(_id, p) {
-			const task = await hub.sendMessage(p.id, p.message);
+			const task = await hub.sendMessage(p.id, p.message, p.intake_id);
 			tasks.set(task.id, task);
 			renderWidget();
 			return { content: [{ type: "text", text: `Sent to ${task.id} (status ${task.status}).` }], details: { task } };

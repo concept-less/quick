@@ -295,7 +295,6 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .send textarea:focus{border-color:var(--line-2);box-shadow:var(--hard)}
 .send .acts{margin-top:8px;align-items:center}
 .send .acts .hintk{font:11px var(--mono);color:var(--fg-3);flex:1}
-.icard{padding:14px var(--s4);border-bottom:var(--bw) solid var(--line)}
 /* ---------- scheduled jobs (定时) ---------- */
 .cjob{padding:12px var(--s3) 12px var(--s4);border-bottom:var(--bw) solid var(--line);position:relative}
 .cjob.off .ttitle{color:var(--fg-3)}
@@ -307,8 +306,8 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .cjob .acts{margin-top:8px}.cjob .acts .btn{height:26px;padding:0 10px;font-size:12px}
 .st.on{color:var(--fg);border-color:var(--fg)}.st.off{color:var(--fg-3);border-style:dashed}.st.off::before{display:none}.st.fin{color:var(--fg-3)}
 .chint{padding:10px var(--s4);font-size:12px;color:var(--fg-3);border-bottom:var(--bw) solid var(--line);background:var(--bg-2)}
-.icard .ctext{font-size:13.5px;white-space:pre-wrap;word-break:break-word;margin:8px 0;font-weight:500}
-.icard img{max-width:100%;max-height:150px;border:var(--bw) solid var(--line);cursor:zoom-in}
+.dshots{display:flex;flex-wrap:wrap;gap:8px}
+.dshots img{max-width:100%;max-height:150px;border:var(--bw) solid var(--line);cursor:zoom-in}
 /* ---------- overlays ---------- */
 #toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(420px,calc(100vw - 32px))}
 .toast{background:var(--bg);border:var(--bw) solid var(--line-2);border-left:4px solid var(--fg);box-shadow:var(--hard);padding:10px 14px;font-size:13px;white-space:pre-wrap;word-break:break-word;animation:tin .16s ease-out;cursor:pointer}
@@ -416,13 +415,12 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
     </div></div>
   </section>
   <aside id="side">
-    <div class="tabs"><button class="tab on" data-tab="tasks">注意力<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span><kbd class="mk2"></kbd></button><button class="tab" data-tab="cron">定时<span class="badge" id="cBadge"></span><kbd class="mk3"></kbd></button></div>
+    <div class="tabs"><button class="tab on" data-tab="tasks">注意力<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="cron">定时<span class="badge" id="cBadge"></span><kbd class="mk2"></kbd></button></div>
     <div id="pane-tasks" style="display:flex;flex-direction:column;flex:1;min-height:0">
       <div class="filters"><span id="lvls" style="display:contents"></span><input id="tsearch" type="search" aria-label="搜索任务" autocomplete="off"><span class="grow"></span><span class="chip" id="tcount"></span></div>
       <div id="projbar" style="display:none"></div><div id="machines"></div>
       <div class="scroll" id="tlist" role="list"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
     </div>
-    <div id="pane-intake" style="display:none;flex-direction:column;flex:1;min-height:0"><div class="scroll" id="ilist"><div class="skel"><i></i><i></i></div></div></div>
     <div id="pane-cron" style="display:none;flex-direction:column;flex:1;min-height:0"><div class="scroll" id="clist"><div class="skel"><i></i><i></i></div></div></div>
     <div id="detail"></div>
   </aside>
@@ -496,7 +494,7 @@ let toolRes=new Map();    // toolCallId -> {result,isError,running}
 let toolOwner=new Map();  // toolCallId -> message index
 let cur=-1;               // index of streaming message
 let streaming=false;
-const tasks=new Map(),intakes=new Map();let hubLoaded=false,machines=[],selfId='',selTask=null,hubOk=false;
+const tasks=new Map();let hubLoaded=false,machines=[],selfId='',selTask=null,hubOk=false;
 // attention model from the hub (shared/attention.ts): the only source of "what needs you"
 const attn=new Map();let counts={need:0,skim:0,snoozed:0,inflight:0,archived:0},focus={on:false},showArchived=false;
 let projects=[],projFilter=localStorage.qaProj||'';const pCollapsed=new Set(JSON.parse(localStorage.qaProjCollapsed||'[]'));
@@ -634,7 +632,7 @@ function autosize(){input.style.height='auto';input.style.height=Math.min(input.
 input.addEventListener('input',autosize);
 input.addEventListener('keydown',e=>{if(isSendKey(e)){e.preventDefault();if(!sending)send(e.altKey?'steer':'followUp')}
   else if(e.key==='Escape'&&streaming&&!input.value&&!selTask){e.preventDefault();e.stopPropagation();$('#stopBtn').click()}});
-// global keys: ⌘/Ctrl+K composer ⇄ task search, ⌘/Ctrl+1/2 side panel tabs, "/" composer, "?" shortcuts,
+// global keys: ⌘/Ctrl+K composer ⇄ task search, ⌘/Ctrl+1/2 side panel tabs (注意力 / 定时), "/" composer, "?" shortcuts,
 // Esc closes image zoom / task detail / search
 const showSide=on=>{if(innerWidth<=900&&document.body.classList.contains('show-side')!==on)$('#mobToggle').click()};
 function switchTab(name){document.querySelector('.tab[data-tab="'+name+'"]')?.click();showSide(true)}
@@ -644,7 +642,7 @@ document.addEventListener('keydown',e=>{
   const mod=IS_MAC?e.metaKey&&!e.ctrlKey:e.ctrlKey&&!e.metaKey;
   if(mod&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='k'){e.preventDefault();document.querySelector('.modal')?.querySelector('[data-x]')?.click();if(document.activeElement===input)focusSearch();else focusComposer();return}
   if(document.querySelector('.modal'))return;
-  if(mod&&!e.altKey&&!e.shiftKey&&(e.key==='1'||e.key==='2'||e.key==='3')){e.preventDefault();switchTab({1:'tasks',2:'intake',3:'cron'}[e.key]);return}
+  if(mod&&!e.altKey&&!e.shiftKey&&(e.key==='1'||e.key==='2')){e.preventDefault();switchTab({1:'tasks',2:'cron'}[e.key]);return}
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||'');
   if(e.key==='Escape'){if($('#zoom').style.display==='flex'){$('#zoom').style.display='none';return}if(selTask){closeTask();return}if(document.activeElement===$('#tsearch')){e.preventDefault();if($('#tsearch').value){$('#tsearch').value='';renderTasks()}else focusComposer();return}}
   if(typing||e.metaKey||e.ctrlKey||e.altKey)return;
@@ -652,14 +650,14 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='?'){e.preventDefault();showKeys()}
 });
 function showKeys(){
-  const rows=[['聚焦输入框 / 再按一次搜索任务',kbd(MOD,'K')],['任务面板 / 浏览器评论 / 定时',kbd(MOD,'1')+' '+kbd(MOD,'2')+' '+kbd(MOD,'3')],['发送消息',kbd(...SEND_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['换行',kbd(...NEWLINE_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['插入当前轮（steer）',kbd(ALT)+' + 发送键'],['停止回复（输入框为空时）',kbd('Esc')],['关闭任务详情 / 大图 / 清空搜索',kbd('Esc')],['任务列表上下移动 / 打开',kbd('↑')+kbd('↓')+' '+kbd('Enter')],['聚焦输入框',kbd('/')],['显示快捷键',kbd('?')]];
-  modal('<h3>快捷键</h3><div class="dc"><table class="keys-t">'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+r[1]+'</td></tr>').join('')+'</table><p class="lbl" style="margin-top:14px">发送键当前：'+esc(SEND_COMBO())+' 发送 · '+esc(NEWLINE_COMBO())+' 换行</p></div><div class="df"><button class="btn" data-sk>切换发送键</button><span class="grow"></span><button class="btn primary" data-x>关闭</button></div>',(dlg,close)=>{dlg.querySelector('[data-x]').onclick=close;dlg.querySelector('[data-sk]').onclick=()=>{close();toggleSendKey()};dlg.querySelector('[data-x]').focus()});
+  const rows=[['聚焦输入框 / 再按一次搜索任务',kbd(MOD,'K')],['注意力 / 定时',kbd(MOD,'1')+' '+kbd(MOD,'2')],['发送消息',kbd(...SEND_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['换行',kbd(...NEWLINE_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['插入当前轮（steer）',kbd(ALT)+' + 发送键'],['停止回复（输入框为空时）',kbd('Esc')],['关闭任务详情 / 大图 / 清空搜索',kbd('Esc')],['任务列表上下移动 / 打开',kbd('↑')+kbd('↓')+' '+kbd('Enter')],['聚焦输入框',kbd('/')],['显示快捷键',kbd('?')]];
+  modal('<h3>快捷键</h3><div class="dc"><table class="keys-t">'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+r[1]+'</td></tr>').join('')+'</table><p class="lbl" style="margin-top:14px">发送键当前：'+esc(SEND_COMBO())+' 发送 · '+esc(NEWLINE_COMBO())+' 换行</p><p style="margin-top:8px;color:var(--fg-2);font-size:12px">浏览器插件：在网页上按 '+kbd(MOD,SHIFT,'E')+' 框选元素写评论，发送后交给前台 agent 处理，页面上不留标记。</p></div><div class="df"><button class="btn" data-sk>切换发送键</button><a class="btn" href="'+esc((S.hub||'')+'/extension.zip')+'">下载浏览器插件</a><span class="grow"></span><button class="btn primary" data-x>关闭</button></div>',(dlg,close)=>{dlg.querySelector('[data-x]').onclick=close;dlg.querySelector('[data-sk]').onclick=()=>{close();toggleSendKey()};dlg.querySelector('[data-x]').focus()});
 }
 $('#keysBtn').onclick=showKeys;$('#skBtn').onclick=()=>{toggleSendKey();input.focus()};
 $('#tsearch').placeholder='搜索任务  '+combo(MOD,'K');
 $('#tsearch').addEventListener('input',()=>renderTasks());
 $('#tsearch').addEventListener('keydown',e=>{if(e.key==='ArrowDown'||e.key==='Enter'){const f=$('#tlist .titem');if(f){e.preventDefault();e.key==='Enter'?openTask(f.dataset.id):f.focus()}}});
-document.querySelector('.mk1').textContent=combo(MOD,'1');document.querySelector('.mk2').textContent=combo(MOD,'2');document.querySelector('.mk3').textContent=combo(MOD,'3');
+document.querySelector('.mk1').textContent=combo(MOD,'1');document.querySelector('.mk2').textContent=combo(MOD,'2');
 $('#keysBtn').title='快捷键（?）';
 document.addEventListener('click',e=>{const b=e.target.closest('.copy');if(!b)return;const code=b.closest('.code')?.querySelector('pre')?.textContent||'';navigator.clipboard?.writeText(code).then(()=>{b.textContent='已复制';setTimeout(()=>b.textContent='复制',1200)},()=>toast('复制失败','error'))});
 input.addEventListener('paste',e=>{for(const it of e.clipboardData?.items||[]){if(it.type.startsWith('image/')){e.preventDefault();const f=it.getAsFile();const r=new FileReader();r.onload=()=>{const [h,d]=String(r.result).split(',');pending.push({mimeType:h.slice(5,h.indexOf(';')),data:d});renderThumbs()};r.readAsDataURL(f)}}});
@@ -838,7 +836,7 @@ $('#focusBtn').onclick=()=>{
     dlg.querySelectorAll('.opt').forEach(b=>b.onclick=async()=>{close();const m=opts[+b.dataset.k][1];try{const r=await hubPost('attention/focus',m===null?{on:false}:{on:true,minutes:m||undefined});focus=r.focus;renderFocus()}catch(e){toast(e.message,'error')}});
   });
 };
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));for(const k of ['tasks','intake','cron'])$('#pane-'+k).style.display=b.dataset.tab===k?'flex':'none';if(b.dataset.tab==='cron')renderCron();closeTask()});
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));for(const k of ['tasks','cron'])$('#pane-'+k).style.display=b.dataset.tab===k?'flex':'none';if(b.dataset.tab==='cron')renderCron();closeTask()});
 let detailSeq=0;
 async function openTask(id){
   if(innerWidth<=900&&!document.body.classList.contains('show-side'))$('#mobToggle').click();
@@ -854,10 +852,10 @@ async function openTask(id){
   d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(t.title)+'</h3>'+(i?'<span class="mark">'+esc(i.mark)+'</span>':'')+'</div><div class="dbody">'+
     (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div>'+(showProg?(ACTIVE.includes(t.status)?'':'<div class="ar">'+esc(i.reason)+'</div>')+'<div id="dprog">'+progHtml(t,i)+'</div>':'<div class="ar">'+esc(i.reason)+'</div>')+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
       (acts.length?'<div class="tacts">'+acts.map(a=>'<button class="btn'+(a.id==='cancel'?' danger':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+'</div>':'')+
-
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
     '<details class="dsec" id="tlogSec"'+(tlIsOpen()?' open':'')+'><summary>工作记录<span class="grow"></span><span class="tlc"></span></summary><div id="tlog" data-id="'+esc(t.id)+'"></div></details>'+
     '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+'</dl>'+
+    taskShots(t)+
     '<details class="dsec" id="briefSec"><summary>任务简报</summary><pre class="pre">'+esc(t.brief)+'</pre></details>'+
     '<div class="acts"><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>关闭 worker 窗口</button></div></div>'+
     '<div class="dfoot"><div class="dfl"><span>'+(i?.level==='need'?'回答 WORKER':'追加指令')+'</span><span class="grow"></span><span>'+(t.closed||!ACTIVE.includes(t.status)?'窗口已关也能发，会自动恢复':'worker 在做，会插入它的当前工作')+'</span></div><textarea id="tmsg" rows="2" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>';
@@ -880,6 +878,9 @@ async function openTask(id){
   // Viewing a finished task settles 待扫; a question keeps waiting until it is answered or put aside.
   if(i?.level==='skim')hubPost('tasks/'+t.id+'/ack').catch(()=>{});
 }
+/** Browser-comment screenshots (copied into the task's attachments by the hub). */
+function taskShots(t){const shots=(t.attachments||[]).map((f,n)=>({f,n})).filter(x=>/\.(png|jpe?g|webp|gif)$/i.test(x.f));if(!shots.length||t.source?.kind!=='browser'&&!/\/intake\//.test(shots[0].f))return '';
+  return '<div class="dsec"><h4>截图</h4><div class="dshots">'+shots.map(x=>'<img class="zoomable" loading="lazy" alt="" title="'+esc(x.f)+'" src="/api/hub/tasks/'+encodeURIComponent(t.id)+'/attachment?n='+x.n+'">').join('')+'</div></div>'}
 function closeTask(){tlStop();const was=selTask;selTask=null;detailSeq++;const d=$('#detail');const hadFocus=d.contains(document.activeElement);d.classList.remove('on');d.dataset.id='';_renderTasks();if(hadFocus&&was)document.querySelector('.titem[data-id="'+CSS.escape(was)+'"]')?.focus()}
 let detailTimer=0;function refreshDetailSoon(){clearTimeout(detailTimer);detailTimer=setTimeout(()=>{if(selTask&&!document.activeElement?.closest?.('#detail'))openTask(selTask)},400)}
 
@@ -977,14 +978,6 @@ function tlRender(keepPos){const box=document.getElementById('tlog'),t=TL;if(!bo
   const c=document.querySelector('#tlogSec .tlc');if(c)c.textContent=t.total?t.total+' 条':'';
   if(stick){box.dataset.prog='1';box.scrollTop=box.scrollHeight;requestAnimationFrame(()=>{if(TL===t&&t.stuck)box.scrollTop=box.scrollHeight;delete box.dataset.prog})}}
 
-/* ---------- browser comments ---------- */
-function renderIntakes(){
-  const list=[...intakes.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,100);
-  $('#ilist').innerHTML=list.map(i=>'<div class="icard"><div class="trow">'+stPill(i.status)+'<span class="tsub">'+esc(i.title||i.url||'')+'</span><span class="tago">'+ago(i.createdAt)+'</span></div><div class="ctext">'+esc(i.comment)+'</div>'+(i.url?'<div class="tsub"><a href="'+esc(i.url)+'" target="_blank">'+esc(i.url)+'</a></div>':'')+
-    '<div class="trow" style="margin-top:6px"><span class="tidm">'+esc(i.id)+'</span>'+(i.machine&&i.machine!==selfId?'<span class="mach">@'+esc(i.machine)+'</span>':'')+(i.elements?.length?'<span class="tsub">'+i.elements.length+' 个元素 · '+esc(i.elements[0].selector||'')+'</span>':'<span class="grow"></span>')+(i.taskId?tidHtml(i.taskId):'')+'</div>'+
-    (i.screenshots?.length&&(!i.machine||i.machine===selfId)?'<div style="margin-top:6px"><img class="zoomable" loading="lazy" src="/api/hub/intake/'+encodeURIComponent(i.id)+'/screenshot?n='+(i.screenshots.length>1?1:0)+'"></div>':'')+'</div>').join('')||'<div class="blank"><span class="lbl">空</span>还没有浏览器评论。<br>安装浏览器插件后，在网页上按 '+kbd(MOD,SHIFT,'E')+' 框选元素写评论，评论会交给前台 agent 处理。<br><br><a class="btn" href="'+esc((S.hub||'')+'/extension.zip')+'">↓ 下载浏览器插件</a></div>';
-  $('#iBadge').textContent=list.filter(i=>i.status==='pending').length||'';
-}
 
 /* ---------- scheduled jobs (定时) ---------- */
 const crons=new Map();let cronLoaded=false;
@@ -1023,11 +1016,11 @@ async function loadCron(){try{const r=await api('GET','/api/hub/cron');crons.cle
 /* ---------- hub ---------- */
 function setHub(ok){hubOk=ok;$('#hubDot').className='dot '+(ok?'on':'off');$('#hubText').textContent=ok?'hub 已连接':'hub 离线'}
 async function loadHub(){
-  try{const [tr,mr,ir,ar,pr]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/intake'),api('GET','/api/hub/attention?archived=200'),api('GET','/api/hub/projects').catch(()=>({projects:[]}))]);
+  try{const [tr,mr,ar,pr]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/attention?archived=200'),api('GET','/api/hub/projects').catch(()=>({projects:[]}))]);
     projects=pr.projects||[];
-    tasks.clear();for(const t of tr.tasks)tasks.set(t.id,t);attn.clear();for(const i of ar.items||[])attn.set(i.taskId,i);counts=ar.counts||counts;focus=ar.focus||focus;selfId=mr.self||'';machines=mr.machines||[];intakes.clear();for(const i of ir.intake||[])intakes.set(i.id,i);
-    hubLoaded=true;renderMachines();renderTasks();renderIntakes();for(let i=0;i<nodes.length;i++)renderMsg(i);loadCron();
-  }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off;$('#ilist').innerHTML=off}}
+    tasks.clear();for(const t of tr.tasks)tasks.set(t.id,t);attn.clear();for(const i of ar.items||[])attn.set(i.taskId,i);counts=ar.counts||counts;focus=ar.focus||focus;selfId=mr.self||'';machines=mr.machines||[];
+    hubLoaded=true;renderMachines();renderTasks();for(let i=0;i<nodes.length;i++)renderMsg(i);loadCron();
+  }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off}}
 }
 function onHub(e){
   window.qaTeamOnHub?.(e);
@@ -1042,7 +1035,6 @@ function onHub(e){
   else if(e.type==='machines'){machines=e.machines;renderMachines()}
   else if(e.type==='cron'){if(e.job.deleted)crons.delete(e.job.id);else{const prev=crons.get(e.job.id);crons.set(e.job.id,{...prev,...e.job,describe:e.job.describe||prev?.describe,tasks:e.job.tasks||prev?.tasks||[],running:e.job.running??prev?.running})}renderCron();clearTimeout(cronTimer);cronTimer=setTimeout(loadCron,800)}
   else if(e.type==='projects'){projects=e.projects||[];renderProjFilter();renderTasks()}
-  else if(e.type==='intake'){const isNew=!intakes.has(e.intake.id);intakes.set(e.intake.id,e.intake);renderIntakes();if(isNew&&e.intake.status==='pending')toast('新的浏览器评论：'+e.intake.comment.slice(0,80))}
 }
 
 /* ---------- stream ---------- */

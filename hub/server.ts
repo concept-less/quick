@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { hostname, platform } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { loadConfig, matchProject, paths, REPO_ROOT, saveConfigPatch } from "../shared/config.ts";
+import { intakeRetentionMs, loadConfig, matchProject, paths, REPO_ROOT, saveConfigPatch } from "../shared/config.ts";
 import { applyResourceEdits, candidateMachines, detectResources, mergeResources, normalizeRequires, pickMachineForCwd, ScheduleError } from "../shared/schedule.ts";
 import type { Project } from "../shared/projects.ts";
 import {
@@ -23,14 +23,12 @@ import {
 } from "../shared/types.ts";
 import { dashboardHtml } from "./dashboard.ts";
 import { Mesh } from "./mesh.ts";
-import { pageKey } from "./page-url.ts";
 import { activeRoot, compareVersions, readJob, readState, readVersion, runUpgrade, spawnReload, type Step, updateStatus, type UpgradeResult, writeJob } from "../shared/update.ts";
 import { createHandoff } from "./handoff.ts";
 import { createTeam } from "./team.ts";
 import { AGENT, can, personalAttention, teamRow, type Viewer } from "../shared/team.ts";
 import { createCron } from "./cron.ts";
 import { createAttention, keyOf } from "./attention.ts";
-import { attentionOf } from "../shared/attention.ts";
 import { createProjects } from "./projects.ts";
 import { applyActivity, applyProgress, finishProgress, restartProgress } from "../shared/progress.ts";
 import { readTranscript } from "../shared/transcript.ts";
@@ -96,8 +94,8 @@ function loadAll() {
 			i.machine ??= SELF;
 			i.rev ??= 0;
 			if (i.machine !== SELF) continue; // local copies of remote intakes (screenshots) are not authoritative
-			// Claims do not survive a hub restart: let a front agent pick them up again.
-			if (i.status === "claimed") i.status = "pending";
+			// One-shot: a claimed comment was consumed by a front agent and is never delivered again.
+			if (i.status === "claimed") i.status = "consumed";
 			intakes.set(i.id, i);
 		} catch {}
 	}
@@ -194,7 +192,7 @@ const mesh = new Mesh({
 		const recent = (o: { updatedAt?: number; createdAt: number }) => Date.now() - (o.updatedAt ?? o.createdAt) < 14 * 86400_000;
 		return [
 			...[...tasks.values(), ...mirrorTasks.values()].filter(recent).map((task) => ({ kind: "task", data: { task } })),
-			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => recent(i)).map((intake) => ({ kind: "intake", data: { intake } })),
+			...[...intakes.values(), ...mirrorIntakes.values()].filter((i) => !intakeExpired(i)).map((intake) => ({ kind: "intake", data: { intake } })),
 			...team.snapshot(),
 			...cron.snapshot(),
 			...projects.snapshot(),
@@ -224,6 +222,7 @@ const mesh = new Mesh({
 			if (!i || i.machine === SELF) return false;
 			const cur = mirrorIntakes.get(i.id);
 			if (cur && cur.machine === i.machine && cur.rev >= i.rev) return false;
+			if (intakeExpired(i)) return false;
 			mirrorIntakes.set(i.id, i);
 			broadcast({ type: "intake", intake: i });
 			return true;
@@ -316,6 +315,51 @@ function update(t: Task, patch: Partial<Task>, ev?: Omit<TaskEvent, "ts" | "task
 	broadcast({ type: "task", task: t, event: full });
 	mesh.flood("task", { task: t, event: full });
 	return t;
+}
+
+const INTAKE_RETENTION_MS = intakeRetentionMs(cfg);
+/** Consumed comments are only kept for a short while (debugging); pending ones until a front agent claims them. */
+function intakeExpired(i: Intake, now = Date.now()) {
+	if (i.status === "pending") return false;
+	return now - (i.consumedAt ?? i.createdAt) > INTAKE_RETENTION_MS;
+}
+/** Before deleting an intake directory: copy files that local tasks still reference into those tasks. */
+function rescueIntakeFiles(dir: string) {
+	const prefix = `${resolve(dir)}/`;
+	for (const t of tasks.values()) {
+		const refs = t.attachments.filter((a) => resolve(a).startsWith(prefix) && existsSync(a));
+		if (!refs.length) continue;
+		const moved = writeFiles(join(taskDir(t.id), "attachments", basename(dir)), readFiles(refs));
+		t.attachments = t.attachments.map((a) => moved.get(a) ?? a);
+		for (const [from, to] of moved) t.brief = t.brief.split(from).join(to);
+		saveTask(t);
+	}
+}
+function pruneIntakes() {
+	const now = Date.now();
+	for (const i of [...intakes.values()]) {
+		if (!intakeExpired(i, now)) continue;
+		intakes.delete(i.id);
+		const dir = join(paths.intake, i.id);
+		try {
+			rescueIntakeFiles(dir);
+			rmSync(dir, { recursive: true, force: true });
+		} catch (e) {
+			log(`[intake] prune ${i.id} failed: ${(e as Error).message}`);
+		}
+	}
+	for (const i of [...mirrorIntakes.values()]) if (intakeExpired(i, now)) mirrorIntakes.delete(i.id);
+	// Local copies of remote intakes (screenshots fetched on claim) and leftovers without an owner here.
+	for (const id of safeReaddir(paths.intake)) {
+		if (intakes.has(id)) continue;
+		const dir = join(paths.intake, id);
+		try {
+			if (now - statSync(dir).mtimeMs <= INTAKE_RETENTION_MS) continue;
+			if (mirrorIntakes.get(id)?.status === "pending") continue;
+			rescueIntakeFiles(dir);
+			rmSync(dir, { recursive: true, force: true });
+		} catch {}
+	}
 }
 
 function updateIntake(i: Intake, patch: Partial<Intake>) {
@@ -417,6 +461,21 @@ function readFiles(list: string[]): FileBlob[] {
 		}
 	}
 	return out;
+}
+
+const inIntakeDir = (f: string) => resolve(f).startsWith(`${resolve(paths.intake)}/`);
+
+/** Message to an existing task with files (screenshots of a browser comment): store them with the task, rewrite paths. */
+function adoptFiles(t: Task, text: string, files: FileBlob[] | undefined, intakeId?: string): string {
+	if (!files?.length) return text;
+	const sub = String(intakeId ?? `m${t.messages + 1}`).replace(/[^\w-]/g, "_");
+	const moved = writeFiles(join(taskDir(t.id), "attachments", sub), files);
+	for (const [from, to] of moved) {
+		text = text.split(from).join(to);
+		if (!t.attachments.includes(to)) t.attachments.push(to);
+	}
+	saveTask(t);
+	return text;
 }
 
 /** Write transferred files into dir; returns original path → new path. */
@@ -616,6 +675,14 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	},
 
 	"task.create": async (p) => createTaskLocal(p),
+	"task.attachment": async (p) => {
+		const t = ownTask(p.id);
+		const f = t.attachments[Number(p.n) || 0];
+		if (!f || !existsSync(f) || !statSync(f).isFile()) throw new HttpError(404, "no such attachment");
+		const [blob] = readFiles([f]);
+		if (!blob) throw new HttpError(404, "no such attachment");
+		return blob;
+	},
 	"task.get": async (p) => ({ task: ownTask(p.id), events: readEvents(p.id, Math.min(Number(p.events ?? 30) || 30, 500)), comments: team.readComments(p.id, Math.min(Number(p.comments ?? 50) || 50, 500)) }),
 	"task.message": async (p) => {
 		const t = ownTask(p.id);
@@ -623,7 +690,7 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		if (!text) throw new HttpError(400, "text is required");
 		const touched = team.touched(t, p.viewer?.user);
 		if (touched.pings !== t.pings) Object.assign(t, touched);
-		await deliverMessage(t, text);
+		await deliverMessage(t, adoptFiles(t, text, p.files, p.intakeId));
 		return t;
 	},
 	"task.cancel": async (p) => {
@@ -681,14 +748,20 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		const i = intakes.get(p.id);
 		if (!i) throw new HttpError(404, `no such intake on ${SELF}: ${p.id}`);
 		if (i.status !== "pending") throw new HttpError(409, `intake already ${i.status}`);
-		updateIntake(i, { status: "claimed", claimedBy: String(p.by ?? "front") });
+		// Delivered and claimed = consumed: it is never handed to a front agent again.
+		updateIntake(i, { status: "consumed", consumedAt: Date.now(), claimedBy: String(p.by ?? "front") });
 		return { intake: i, files: p.withFiles ? readFiles(i.screenshots) : [] };
 	},
 	"intake.update": async (p) => {
 		const i = intakes.get(p.id);
 		if (!i) throw new HttpError(404, `no such intake on ${SELF}: ${p.id}`);
 		const patch: Partial<Intake> = {};
-		if (p.status) patch.status = p.status;
+		if (p.status) {
+			if (!["consumed", "dispatched", "dismissed"].includes(p.status)) throw new HttpError(400, `invalid intake status: ${p.status}`);
+			patch.status = p.status;
+			// A consumed comment never goes back to pending (it would be delivered again).
+			if (i.status === "pending") patch.consumedAt = Date.now();
+		}
 		if (p.taskId) patch.taskId = p.taskId;
 		return updateIntake(i, patch);
 	},
@@ -852,7 +925,13 @@ async function apiCreateTask(body: any): Promise<Task> {
 		const dir = projectDir(projects.find(String(body.project)), machine);
 		if (dir) params.cwd = dir;
 	}
-	if (machine !== SELF && Array.isArray(body.attachments) && body.attachments.length) params.files = readFiles(body.attachments.map(String));
+	if (Array.isArray(body.attachments) && body.attachments.length) {
+		// Remote machine: ship every attachment. Here: copy browser-comment screenshots into the task,
+		// the intake directory itself is pruned after the retention period.
+		const list = body.attachments.map(String);
+		const files = machine !== SELF ? list : list.filter(inIntakeDir);
+		if (files.length) params.files = readFiles(files);
+	}
 	const task = await call<Task>(machine, "task.create", params);
 	if (task.machine !== SELF) mirrorTasks.set(task.id, task);
 	// Mark the originating browser comment as dispatched (on whichever machine owns it).
@@ -1385,6 +1464,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		}
 		const owner = findTask(id).machine;
 		if (action === "screen" && m === "GET") return send(res, 200, await call(owner, "task.screen", { id }));
+		if (action === "attachment" && m === "GET") {
+			const f = await call<FileBlob>(owner, "task.attachment", { id, n: Number(url.searchParams.get("n") ?? 0) });
+			const ext = f.name.toLowerCase().split(".").pop() ?? "";
+			res.writeHead(200, { "content-type": ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" } as Record<string, string>)[ext] ?? "application/octet-stream" });
+			return res.end(Buffer.from(f.data, "base64"));
+		}
 		if (!action && m === "GET") return send(res, 200, await call(owner, "task.get", { id, events: url.searchParams.get("events") ?? 30, comments: url.searchParams.get("comments") ?? 50 }));
 		if (action === "transcript" && m === "GET") {
 			const q: Record<string, string> = {};
@@ -1409,6 +1494,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			return send(res, 200, r);
 		}
 		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		if (action === "message" && body.intakeId) {
+			// A browser comment appended to an existing task: ship its screenshots, then link (consume) it.
+			const i = findIntake(String(body.intakeId));
+			const shots = i.screenshots.filter((f) => existsSync(f));
+			const files = shots.length ? readFiles(shots) : undefined;
+			const task = await call<Task>(owner, "task.message", { ...body, files, intakeId: i.id, id, viewer, by: viewer.user });
+			if (task.machine !== SELF) mirrorTasks.set(task.id, task);
+			await call(i.machine, "intake.update", { id: i.id, status: "dispatched", taskId: task.id }).catch((e) => log(`intake.update failed: ${e.message}`));
+			return send(res, 200, { task });
+		}
 		// Mesh RPC params are trusted: the owning hub learns who acts from here, never from the client body.
 		const task = await call<Task>(owner, `task.${action}`, { ...body, id, viewer, by: viewer.user });
 		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
@@ -1467,20 +1562,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		return send(res, 200, { intake: await call(i.machine, "intake.update", { id, status: body.status, taskId: body.taskId }) });
 	}
 
-	// Browser badges: comments on a page (from any machine) and the status of their tasks.
-	if (p === "/api/pages" && m === "GET") {
-		const pageUrl = url.searchParams.get("url") ?? "";
-		const key = pageKey(pageUrl);
-		const list = allIntakes()
-			.filter((i) => i.url && pageKey(i.url) === key)
-			.sort((a, b) => a.createdAt - b.createdAt)
-			.map((i) => {
-				const t = i.taskId ? (tasks.get(i.taskId) ?? mirrorTasks.get(i.taskId)) : undefined;
-				const a = t ? attentionOf(t) : undefined;
-				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, mode: i.mode, anchor: i.anchor, viewport: i.viewport, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine, attention: a && { level: a.level, mark: a.mark, reason: a.reason } };
-			});
-		return send(res, 200, { comments: list });
-	}
+	// Browser comments are one-shot: pages show no marks for sent comments. Kept (always empty) for older extensions.
+	if (p === "/api/pages" && m === "GET") return send(res, 200, { comments: [] });
 
 	throw new HttpError(404, "not found");
 }
@@ -1522,6 +1605,8 @@ server.listen(cfg.port, cfg.host, () => {
 setInterval(backgroundUpdate, Math.max(1, cfg.update.cacheMinutes) * 60_000).unref();
 setInterval(maybeRestart, 60_000).unref();
 setInterval(() => attention.tick(), 30_000).unref();
+pruneIntakes();
+setInterval(pruneIntakes, Math.min(3600_000, Math.max(60_000, INTAKE_RETENTION_MS / 4))).unref();
 setInterval(() => void reconcile().catch(() => {}), 5000);
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
 	process.on(sig, () => {

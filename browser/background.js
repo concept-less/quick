@@ -3,7 +3,7 @@
 // on demand (activeTab), captures and crops screenshots. No remote code, no analytics.
 
 const DEFAULTS = { hubUrl: "http://127.0.0.1:7788", token: "" };
-// Optional: run the content scripts on every page so comment pins show up automatically and
+// Optional: run the content scripts on every page so unsent drafts come back automatically and
 // console errors are recorded from page load. Only active if the user grants it in the popup.
 const AUTO_ORIGINS = ["http://*/*", "https://*/*"];
 const AUTO_SCRIPTS = [
@@ -161,6 +161,8 @@ async function syncAutoScripts() {
 	return granted;
 }
 chrome.runtime.onInstalled.addListener(() => syncAutoScripts().catch(console.warn));
+// Keep the "需要你" badge fresh without polling from pages: refresh (throttled) when the user switches tabs.
+chrome.tabs.onActivated.addListener(() => void refreshAttention());
 chrome.runtime.onStartup.addListener(() => syncAutoScripts().catch(console.warn));
 chrome.permissions.onAdded.addListener(() => syncAutoScripts().catch(console.warn));
 chrome.permissions.onRemoved.addListener(() => syncAutoScripts().catch(console.warn));
@@ -180,12 +182,8 @@ const handlers = {
 		}
 		const r = await hub("POST", "/api/intake", p);
 		markOk();
-		return { intake: r.intake };
-	},
-	async "qa-page-comments"(msg) {
-		const r = await hub("GET", `/api/pages?url=${encodeURIComponent(msg.url)}`);
 		void refreshAttention();
-		return { comments: r.comments };
+		return { intake: r.intake };
 	},
 	async "qa-health"() {
 		const { hubUrl } = await settings();
@@ -197,6 +195,7 @@ const handlers = {
 		}
 		await hub("GET", "/api/tasks");
 		markOk();
+		void refreshAttention();
 		return { health: h };
 	},
 	async "qa-toggle-active"() {

@@ -2,8 +2,9 @@
 # Needs an isolated test hub on :7811 with token "testtoken" (QA_HOME=<tmp> QA_PORT=7811 node hub/server.ts)
 # and the test site served on :7813:  python3 -m http.server 7813 --bind 127.0.0.1 -d test/browser
 # Run: python3 test/browser/ext_e2e.py     (closed shadow DOM is inspected via CDP DOM.getDocument pierce)
-# Covers: per-page drafts (SPA / hash / full navigation / back), pins not leaking across pages, pins
-# following window scroll / inner scroll / sticky header / resize, click-vs-drag gesture payloads, send key.
+# Covers: per-page drafts (SPA / hash / full navigation / back), one-shot comments (after sending no
+# mark stays on the page, also not after a reload or a later visit; a failed send keeps the text for a
+# retry), click-vs-drag gesture payloads, send key.
 import asyncio, json, sys, shutil, os
 from playwright.async_api import async_playwright
 EXT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "browser")
@@ -33,8 +34,10 @@ async def shadow_state(page):
       return { bar: !!this.querySelector('.bar'), box: !!box, text: box ? box.querySelector('textarea').value : null,
         meta: box ? box.querySelector('.meta').textContent : null, sel: live('.sel').length, region: live('.region').length,
         toast: [...this.querySelectorAll('.toast')].map(t => t.textContent),
-        pins: [...this.querySelectorAll('.pin')].map(p => { const m = /translate\\((-?[\\d.]+)px,\\s*(-?[\\d.]+)px\\)/.exec(p.style.transform) || []; return { id: p.dataset.id, hidden: p.hidden, x: +m[1], y: +m[2] }; }),
-        pop: !!this.querySelector('.pop:not([hidden])') };
+        // anything that marks the page besides the toolbar / toast: pins, badges, popovers, selection, region, box
+        marks: [...this.querySelectorAll('*')].filter(n => n.tagName !== 'STYLE' && !n.classList.contains('layer') && !n.closest('.bar,.toast,.fade')
+          && !((n.classList.contains('hl') || n.classList.contains('tag')) && n.style.display === 'none')).map(n => n.className || n.tagName.toLowerCase()),
+        hover: live('.hl,.tag').filter(n => n.style.display !== 'none').length };
     }"""})
     await cdp.detach()
     return r["result"]["value"]
@@ -90,7 +93,7 @@ async def main():
             await page.keyboard.type(f"comment on B ({scen})"); await page.keyboard.press("Enter")
             await page.wait_for_timeout(2500)
             st = await shadow_state(page)
-            check(f"[{scen}] B: sent (box closed, pin shown)", not st["box"] and len(st["pins"]) >= 1, st)
+            check(f"[{scen}] B: sent, nothing left on the page", not st["box"] and not st["marks"] and not st["bar"], st)
             # back to A
             if scen == "spa": await page.go_back()
             elif scen == "hash": await page.go_back()
@@ -104,9 +107,7 @@ async def main():
             await page.wait_for_timeout(2500)
             st = await shadow_state(page); d = await drafts()
             check(f"[{scen}] A: sent, draft cleared", not st["box"] and not d, (st, d))
-            # pins of A must not include B's comment (and vice versa)
-            pins_a = {p["id"] for p in st["pins"]}
-            check(f"[{scen}] A pins exclude B comment", len(pins_a) >= 1, st)
+            check(f"[{scen}] A: sent, nothing left on the page", not st["marks"] and not st["bar"], st)
             await page.keyboard.press("Escape")
 
         # ---------------------------------------------------------------- toggle after URL change starts fresh
@@ -163,62 +164,58 @@ async def main():
         check("[gesture] Esc during drag cancels (no region, no box, picker still on)", st["region"] == 0 and not st["box"] and st["bar"], st)
         await page.keyboard.press("Escape")
 
-        # ---------------------------------------------------------------- pins: no cross-page leaking
-        await page.goto(SITE + "spa.html?r=a"); await page.wait_for_timeout(2000)
-        st = await shadow_state(page); ids_a = {p["id"] for p in st["pins"]}
-        await spa("history.pushState({}, '', '?r=b'); render()"); await page.wait_for_timeout(150)
-        st = await shadow_state(page); ids_b_immediate = {p["id"] for p in st["pins"]}
-        check("[pins] SPA route change clears A's pins immediately", not (ids_a & ids_b_immediate), (ids_a, ids_b_immediate))
-        await page.wait_for_timeout(2000)
-        st = await shadow_state(page); ids_b = {p["id"] for p in st["pins"]}
-        check("[pins] B shows only B's pins", ids_b and not (ids_a & ids_b), (ids_a, ids_b))
-        await page.go_back(); await page.wait_for_timeout(2000)
-        st = await shadow_state(page); check("[pins] back to A shows A's pins again", {p['id'] for p in st['pins']} == ids_a, st["pins"])
-        await page.goto(SITE + "spa.html?r=a#section"); await page.wait_for_timeout(1500)
-        st = await shadow_state(page); check("[pins] plain #fragment = same page", {p['id'] for p in st['pins']} == ids_a, st["pins"])
-
-        # ---------------------------------------------------------------- pins stay on their component
+        # ---------------------------------------------------------------- one-shot: sent comments leave no marks
         await sw.evaluate("() => chrome.storage.local.remove('qaDrafts')")
-        import time; PIN = "pin" + str(int(time.time()))
-        await page.goto(SITE + "spa.html?r=" + PIN); await page.wait_for_timeout(800)
-        async def comment_on(sel, text, region=False):
-            await toggle(); await page.wait_for_timeout(200)
-            await page.click(sel); await page.wait_for_timeout(200)
-            await page.keyboard.type(text); await page.keyboard.press("Enter"); await page.wait_for_timeout(2200)
-        await comment_on("#second-"+PIN, "pin on card")
-        await page.evaluate(f"document.getElementById('row-{PIN}-3').scrollIntoView({{block:'center'}})"); await page.wait_for_timeout(200)
-        await comment_on("#row-"+PIN+"-3", "pin on inner row")
-        await page.evaluate("window.scrollTo(0,0)")
-        await comment_on("#sticky-btn", "pin on sticky header")
-        await page.wait_for_timeout(5500)  # let the poll attach ids
-        async def pin_vs(sel, idx):
-            st = await shadow_state(page)
-            r = await page.evaluate(f"(() => {{ const r = document.querySelector('{sel}').getBoundingClientRect(); return [r.right, r.top]; }})()")
-            pin = st["pins"][idx]
-            return pin, r
-        def near(pin, r):
-            return (not pin["hidden"]) and abs(pin["x"] + 11 - min(r[0], 1280 - 15)) <= 3 and abs(pin["y"] + 11 - max(r[1], 13)) <= 3
-        st = await shadow_state(page); n = len(st["pins"])
-        check("[pos] 3 pins on page", n == 3, st["pins"])
-        for dy in (300, 700):
-            await page.evaluate(f"window.scrollTo(0,{dy})"); await page.wait_for_timeout(250)
-            pin, r = await pin_vs("#second-"+PIN, 0)
-            vis = r[1] > 44  # below the sticky header
-            check(f"[pos] window scroll {dy}: card pin follows card / hides under sticky header", near(pin, r) if vis else pin["hidden"], (pin, r))
-            pin, r = await pin_vs("#sticky-btn", 2)
-            check(f"[pos] window scroll {dy}: sticky header pin stays on header", near(pin, r), (pin, r))
-        await page.evaluate("window.scrollTo(0,0)"); await page.wait_for_timeout(200)
-        await page.evaluate("document.getElementById('inner').scrollTop = 60"); await page.wait_for_timeout(250)
-        pin, r = await pin_vs("#row-"+PIN+"-3", 1)
-        check("[pos] inner container scroll: pin follows row", near(pin, r), (pin, r))
-        await page.screenshot(path=SHOTS + "ext-pins.png")
-        await page.evaluate("document.getElementById('inner').scrollTop = 600"); await page.wait_for_timeout(250)
-        pin, r = await pin_vs("#row-"+PIN+"-3", 1)
-        check("[pos] inner container scroll: row scrolled out → pin hidden", pin["hidden"], (pin, r))
-        await page.set_viewport_size({"width": 900, "height": 700}); await page.wait_for_timeout(300)
-        await page.evaluate("document.getElementById('inner').scrollTop = 60"); await page.wait_for_timeout(250)
-        pin, r = await pin_vs("#second-"+PIN, 0)
-        check("[pos] after resize: pin follows card", near(pin, r) or r[1] <= 44, (pin, r))
+        check("[once] background has no page-comment polling", await sw.evaluate("() => typeof handlers['qa-page-comments']") == "undefined")
+        ONCE = SITE + "spa.html?r=once"
+        await page.goto(ONCE); await page.wait_for_timeout(700)
+        await toggle(); await page.wait_for_timeout(200)
+        await page.click("#item-once", modifiers=["Shift"]); await page.click("#second-once", modifiers=["Shift"]); await page.wait_for_timeout(150)
+        await page.keyboard.press("Enter"); await page.wait_for_timeout(200)
+        st = await shadow_state(page)
+        check("[once] before sending: selection boxes + comment box on the page", st["box"] and st["sel"] == 2, st)
+        await page.keyboard.type("one-shot element comment"); await page.keyboard.press("Enter")
+        await page.wait_for_timeout(1200)
+        st = await shadow_state(page)
+        iid = await last_id()
+        check("[once] sent: toast with the comment id", bool(iid), st["toast"])
+        check("[once] sent: no selection, box, pin, badge or toolbar left", not st["marks"] and not st["bar"] and st["hover"] == 0, st)
+        await page.screenshot(path=SHOTS + "ext-after-send.png")
+        await page.wait_for_timeout(3500)  # the old extension polled the hub here and drew pins
+        st = await shadow_state(page)
+        check("[once] still nothing after a while", not st["marks"], st)
+        await page.reload(); await page.wait_for_timeout(2500)
+        st = await shadow_state(page)
+        check("[once] reload: no marks come back", st is not None and not st["marks"] and not st["box"] and not st["bar"], st)
+        await page.goto(SITE + "other.html"); await page.wait_for_timeout(500)
+        await page.goto(ONCE); await page.wait_for_timeout(2500)
+        st = await shadow_state(page)
+        check("[once] later visit: no marks", st is not None and not st["marks"] and not st["bar"], st)
+        d = await drafts(); check("[once] nothing kept in extension storage for the page", not d, d)
+        # region: the dashed region goes away too
+        await toggle(); await page.wait_for_timeout(200)
+        b1 = await page.evaluate("(() => { const a = document.getElementById('item-once').getBoundingClientRect(); return [a.x - 6, a.y - 6, a.right + 6, a.bottom + 6]; })()")
+        await page.mouse.move(b1[0], b1[1]); await page.mouse.down()
+        for i in range(1, 11): await page.mouse.move(b1[0] + (b1[2] - b1[0]) * i / 10, b1[1] + (b1[3] - b1[1]) * i / 10)
+        await page.mouse.up(); await page.wait_for_timeout(250)
+        st = await shadow_state(page); check("[once] region drawn", st["region"] == 1 and st["box"], st)
+        await page.keyboard.type("one-shot region comment"); await page.keyboard.press("Enter"); await page.wait_for_timeout(1500)
+        st = await shadow_state(page); check("[once] region sent: no marks left", not st["marks"] and not st["bar"], st)
+        await page.reload(); await page.wait_for_timeout(2000)
+        st = await shadow_state(page); check("[once] region: reload shows nothing", not st["marks"], st)
+        # failed send: text and selection stay for a retry; the retry clears everything
+        await sw.evaluate("() => chrome.storage.local.set({ token: 'wrong' })")
+        await toggle(); await page.wait_for_timeout(200)
+        await page.click("#item-once"); await page.wait_for_timeout(200)
+        await page.keyboard.type("retry me"); await page.keyboard.press("Enter"); await page.wait_for_timeout(1500)
+        st = await shadow_state(page)
+        check("[once] send failed: box + text + selection kept, error toast", st["box"] and st["text"] == "retry me" and st["sel"] == 1 and any("发送失败" in t for t in st["toast"]), st)
+        await sw.evaluate("() => chrome.storage.local.set({ token: 'testtoken' })")
+        await page.keyboard.press("Enter"); await page.wait_for_timeout(1500)
+        st = await shadow_state(page)
+        check("[once] retry succeeds and clears the page", not st["marks"] and not st["bar"] and any("已发送" in t for t in st["toast"]), st)
+        await page.reload(); await page.wait_for_timeout(2000)
+        st = await shadow_state(page); check("[once] retry: reload shows nothing", not st["marks"], st)
 
         # ---------------------------------------------------------------- popup
         await page.set_viewport_size({"width": 1280, "height": 800})

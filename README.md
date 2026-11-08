@@ -324,20 +324,20 @@ quick ui status | url | logs | stop | restart
 - **注意力队列（首屏）**：左侧就是注意力队列，「需要你」排最前，每一级里按项目分组（见「项目」），按任务展示：标记、原因、等了多久，worker 的问题和可选答案（点一下就把答案发给 worker），以及回答/稍后/知道了/接管等动作；「待扫」一键「知道了」；「稍后」「不用管」「已归档」依次在后。顶栏的「需要你 N」和桌面客户端托盘角标、`quick attention` 是同一个数字；「专注」按钮开关专注模式。任务卡片上显示进度（「3/6 发布 Release」+ 细进度条）。点开任务可以看进度（步骤清单 + 人话状态）、最新汇报、工作记录、简报，在底部常驻的输入框里回答或追加指令（见「进度与工作记录」）。
 - **前台 agent**：右侧是一个持续的前台，交代新的事、问"有什么需要我的"都在这里。回复流式显示，工具调用显示为卡片，派单卡片带任务 ID 和实时状态，点击任务 ID 打开详情。回复过程中继续发消息会排到本轮之后（Alt+Enter 插入当前轮），可以随时「停止」。支持粘贴图片，`/tasks`、`/qa on|off` 等扩展命令照常可用。顶栏可以切换模型和思考级别。
 - **只有一个前台**：没有会话列表，没有新建/切换/重命名；刷新页面或重启 `quick ui` 都接着同一段对话，上下文由自动压缩控制长度。（内部实现：前台通过 pi SDK 托管在 Web UI 进程里，加载同一个 quick-agent 扩展，对话持久化成 `~/.quick-agent/ui-sessions/` 下的 pi 会话文件；这是实现细节，不对人展示。调试时可用隐藏参数 `quick ui restart --fresh-front` 从空对话开始。）
-- **汇报与评论**：worker 的汇报按注意力进入前台对话（见「汇报怎么送到前台」）。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。「浏览器评论」标签页列出所有评论，以及它们对应的任务。
+- **汇报与评论**：worker 的汇报按注意力进入前台对话（见「汇报怎么送到前台」）。浏览器插件发来的评论会以「浏览器评论」卡片进入对话（附截图），由前台处理。评论是一次性的，Web UI 不单独列出评论：前台处理后它就变成一个新任务或已有任务的追加指令；来源是浏览器的任务，详情里显示来源页面和截图。
 - **安全**：只监听 `127.0.0.1`（端口用 config 的 `uiPort` 或环境变量 `QA_UI_PORT` 设置，默认 7790）。访问需要 hub token：`?token=` 只用一次，换成 HttpOnly、SameSite=Strict 的 cookie 后，就会从地址栏移除。服务端还会拒绝非 localhost 的 Host 头（防 DNS rebinding）和跨源写请求。浏览器对 hub 的调用都由 Web UI 进程代理，token 不会暴露给页面脚本。
 - 深色和浅色跟随系统，也可以用右上角 ◐ 手动切换；窄屏时顶栏有「注意力 | 对话」切换，注意力队列始终在前/左。界面样式来自 `shared/tokens.css`（Web UI、登录页和浏览器插件共用同一份设计 token）。
 - **快捷键**（Mac 显示 ⌘，其他系统是 Ctrl；顶栏 `?` 按钮或按 `?` 查看）：
   | 操作 | 快捷键 |
   |---|---|
   | 聚焦输入框；在输入框里再按一次跳到任务搜索 | `⌘K` / `Ctrl+K` |
-  | 切到注意力队列 / 浏览器评论 | `⌘1` / `⌘2`（`Ctrl+1` / `Ctrl+2`） |
+  | 切到注意力队列 / 定时 | `⌘1` / `⌘2`（`Ctrl+1` / `Ctrl+2`） |
   | 发送 / 换行（两种模式，输入框右下角按钮或快捷键面板里切换，存在 localStorage） | 默认 `Enter` 发送、`Shift+Enter` 换行；另一种是 `⌘/Ctrl+Enter` 发送、`Enter` 换行 |
   | 回复中插入当前轮（steer） | `Alt` + 发送键 |
   | 停止回复（输入框为空时）；关闭任务详情、大图、清空搜索 | `Esc` |
   | 队列上下移动 / 打开 | `↑` `↓` / `Enter` |
   | 聚焦输入框 / 显示快捷键 | `/` / `?` |
-- 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理；汇报会送到所有在线前台，只有一个主动开口。
+- 注意：Web UI 和终端里的 pi 都是前台。浏览器评论由先认领的那个处理，认领即消费，不会再投递给其他前台；汇报会送到所有在线前台，只有一个主动开口。
 
 ## 桌面客户端（Electron，macOS）
 
@@ -565,14 +565,13 @@ quick team board                                 # 团队视图：所有进行�
 - **发送键**：评论框默认 `Enter` 发送、`Shift+Enter` 换行；可以在弹窗里（或评论框里的「切换」）改成 `⌘/Ctrl+Enter` 发送、`Enter` 换行，设置存在 `chrome.storage`。
 - **弹窗快捷键**：`E` 开始框选，`D` 打开任务面板，`,` 展开连接设置，`M` 切换发送键。
 - **草稿跟着页面走**：框选到一半或评论写到一半时离开页面（普通跳转、SPA 换路由、hash 路由变化、后退），选择和评论框会立刻淡出，草稿按页面存起来（最多 30 个页面，保存 24 小时）；回到该页面会自动恢复选择和草稿，元素找不到时会提示。各页面的草稿互不影响，发送或取消后清除。
-- 插件界面（工具条、高亮、评论框、角标、提示）都在 closed shadow DOM 里，不受网页样式影响，也不会污染网页；配色和 Web UI 一样跟随系统深浅色。
+- 插件界面（工具条、高亮、评论框、提示）都在 closed shadow DOM 里，不受网页样式影响，也不会污染网页；配色和 Web UI 一样跟随系统深浅色。
 - 写完评论后发送。插件会附带以下内容：URL、选择器和 XPath、outerHTML 片段、可见文本、视口截图（选区用红框标出）、选区裁剪图、页面控制台错误。
-- 评论会先交给 **前台 agent**。前台根据项目映射确定工作目录，快速定位源码后派单；如果评论属于某个已有任务，就追加给对应的 worker。
-- 发出评论的元素旁边会出现编号角标（pin），样式表示任务状态：描边＝等待/进行中（进行中带闪烁小方块），红色描边＝需要你处理，实心黑/白＝完成，实心红＝失败，虚线＝已取消。点击角标可以查看 worker 的汇报。
-- 角标钉在组件上：保存的是「元素选择器 + 元素内相对位置」，窗口滚动、内部容器滚动、sticky 头部、窗口缩放和页面布局变化时都会重新定位；组件被滚出容器、被遮挡或不存在时隐藏。
-- 角标只属于它所在的页面：hub 按页面 key 匹配（忽略普通 `#锚点`、末尾斜杠、`utm_*`/`fbclid` 等跟踪参数，query 参数排序后比较；`#/…`、`#!/…` 这类 hash 路由算不同页面），插件在 URL 变化（含 SPA 路由、后退、bfcache 恢复）时立刻清空并重新拉取。
+- 评论会先交给 **前台 agent**。前台根据项目映射确定工作目录，快速定位源码后派单（`qa_dispatch`）；如果评论属于某个已有任务，就追加给对应的 worker（`qa_task_send`）。两种方式都带上 `intake_id`，评论和截图会关联到任务上（截图复制进任务的 `attachments/`）。
+- **评论是一次性的**：发送成功后，选中框、框选区域和评论框立刻消失，页面上不留任何标记，刷新或以后再访问也不会出现。发送失败时评论框、选择和文字都保留，修好连接后再发送即可。之后的进展在 Web UI 的注意力队列里看（任务详情里有来源页面和截图）。
+- 评论投递给前台并被认领就算消费掉了：hub 不会再投递第二次（hub 重启后也不会）。已消费的评论在 `~/.quick-agent/intake/<id>/` 里只保留一段时间方便排错，默认 72 小时，之后自动清理（config 的 `intakeRetentionHours` 或环境变量 `QA_INTAKE_RETENTION_HOURS`）；任务用到的截图已经复制到任务目录，不受影响。
 - 插件代码更新后，需要在 `chrome://extensions` 里点一下重新加载。
-- **权限**：默认只在你按快捷键/点按钮后才访问当前标签页（`activeTab`），所以角标在你第一次在该页面启动框选后才出现，控制台错误也从那一刻开始记录。想在所有网站自动显示角标、从页面加载起记录错误，可在弹窗「连接设置」里勾选「在所有网站自动显示…」（会额外申请"所有网站"权限，可随时关掉）。
+- **权限**：默认只在你按快捷键/点按钮后才访问当前标签页（`activeTab`），所以控制台错误从你第一次在该页面启动框选后才开始记录，未发送的草稿也要到那时才恢复。想从页面加载起记录错误、自动恢复草稿，可在弹窗「连接设置」里勾选「在所有网站自动恢复…」（会额外申请"所有网站"权限，可随时关掉）。
 - hub 没启动、Token 不对时，弹窗会给出明确提示；用快捷键在不能运行的页面（如 `chrome://`、扩展商店）触发时，工具栏图标会显示红色 `!`，悬停可看原因。
 
 ### 上架 Chrome Web Store / Edge / Firefox
@@ -610,6 +609,7 @@ quick team board                                 # 团队视图：所有进行�
   "mesh": { "secret": "…quick mesh init 生成…", "peers": [ { "ssh": "simon@laptop", "port": 7788 }, { "url": "http://10.0.0.5:7788" } ] },
   "update": { "enabled": true, "autoInstall": false, "cacheMinutes": 10 },   // 见「升级与发布」
   "defaultCwd": "/home/simon",
+  // "intakeRetentionHours": 72,   // 已消费的浏览器评论保留多久（小时）后自动清理
   "projects": [
     // 浏览器评论按 URL 匹配工作目录（子串，或 /正则/）；hub 启动时合并进 ~/.quick-agent/projects.json 的项目（见「项目」）
     { "match": "localhost:5173", "cwd": "/home/simon/my-app", "notes": "Vite + React，组件在 src/components", "machine": "cloud" }
@@ -637,7 +637,7 @@ hub/attention.ts             注意力：计算变化、决定打扰、合批待
 hub/team.ts                  团队：成员名册（mesh 复制）、身份、邀请、任务上的人、评论、点名
 hub/dashboard.ts             网页面板（任务视图）
 ui/server.ts                 Web UI：用 pi SDK 托管唯一的前台 agent + 代理 hub API + SSE（quick ui）
-ui/app.html                  Web UI 前端（注意力队列、前台对话、浏览器评论、定时）
+ui/app.html                  Web UI 前端（注意力队列、前台对话、定时）
 ui/team.js                   Web UI 团队部分（身份、团队视图、任务的人和评论）
 shared/                      配置、数据类型、hub 客户端（hub / CLI / 扩展共用）
 shared/attention.ts          注意力模型：状态、原因、动作、排序、打扰策略（纯函数，所有前端共用）
@@ -658,7 +658,7 @@ docs/browser-extension/      插件隐私政策与上架材料
 scripts/pack-extension.sh    打包上架用 zip（dist/）
 ```
 
-运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`projects.json`（项目）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`、`cron.json`（本机 hub 所属的定时计划）、`hub.log`、`attention.json`（专注模式、摘要间隔、待发摘要）。内部细节：worker 的上下文是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`（`quick show <id> --debug` 显示路径），Web UI 前台的对话保存在 `ui-sessions/`；正常使用不需要关心它们，接管 worker 用 `quick attach`。
+运行时数据放在 `~/.quick-agent/`：`update.json`（升级检查缓存）、`projects.json`（项目）、`tasks/<id>/{task.json,events.jsonl,brief.md,run.sh}`、`intake/<id>/{intake.json,*.png}`（浏览器评论，消费后短期保留）、`cron.json`（本机 hub 所属的定时计划）、`hub.log`、`attention.json`（专注模式、摘要间隔、待发摘要）。内部细节：worker 的上下文是标准的 pi 会话文件，保存在 `~/.pi/agent/sessions/`（`quick show <id> --debug` 显示路径），Web UI 前台的对话保存在 `ui-sessions/`；正常使用不需要关心它们，接管 worker 用 `quick attach`。
 
 ## Hub API（Bearer token）
 
@@ -696,7 +696,9 @@ scripts/pack-extension.sh    打包上架用 zip（dist/）
 | POST | `/api/cron/:id/run`、`/pause`、`/resume`、`/delete`（或 `DELETE /api/cron/:id`） | 立即运行一次 / 暂停 / 恢复 / 删除；会路由到计划所属的 hub |
 | GET | `/api/events` | SSE 事件流（`?task=<id>` 用于 worker 接收指令；`?role=front&front=<id>` 用于前台；含 `attention*` 事件） |
 | POST/GET | `/api/intake` | 入口提交（浏览器评论等）/ 列表 |
-| GET | `/api/pages?url=` | 某个页面上的评论及其任务状态和注意力（插件角标用） |
+| POST | `/api/intake/:id/claim` | 前台认领评论（认领即消费，只能成功一次） |
+| POST | `/api/tasks/:id/message` | `{text, intakeId?}` 追加指令；带 `intakeId` 时把这条浏览器评论关联到任务，截图复制进任务 |
+| GET | `/api/tasks/:id/attachment?n=` | 任务附件（Web UI 显示截图用） |
 | GET | `/`、`/extension.zip`、`/health` | 面板 / 插件包 / 健康检查 |
 
 新入口只需要 `POST /api/intake`（交给前台组装上下文）或 `POST /api/tasks`（直接派单）。

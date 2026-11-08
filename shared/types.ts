@@ -114,7 +114,14 @@ export interface Intake {
 	machine: string;
 	rev: number;
 	createdAt: number;
-	status: "pending" | "claimed" | "dispatched" | "dismissed";
+	/**
+	 * One-shot: "pending" until a front agent claims it; claiming consumes it ("consumed", never delivered
+	 * again, also across hub restarts). "dispatched" = consumed and linked to a task (new or existing).
+	 * "claimed" is the legacy name of "consumed" (older hubs).
+	 */
+	status: "pending" | "consumed" | "claimed" | "dispatched" | "dismissed";
+	/** When a front agent claimed (consumed) it; consumed intakes are pruned after the retention period. */
+	consumedAt?: number;
 	kind: "browser-comment";
 	comment: string;
 	url?: string;

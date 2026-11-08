@@ -43,12 +43,12 @@ quick-agent comments 是开源项目 quick-agent（https://github.com/concept-le
 • 点击元素即可评论，Shift+点击多选，或拖出一个矩形框选区域；
 • 写下评论，⌘/Ctrl+Enter 发送。
 
-插件会把评论连同上下文——页面 URL、元素选择器和 XPath、HTML 片段、可见文本、带红框标注的截图、页面控制台错误——发送到你自己运行的 quick-agent hub，由你的 AI 编程助手定位源码并修改。已发送的评论会在页面上显示编号角标，颜色表示处理状态，点开可查看汇报。
+插件会把评论连同上下文——页面 URL、元素选择器和 XPath、HTML 片段、可见文本、带红框标注的截图、页面控制台错误——发送到你自己运行的 quick-agent hub，由你的 AI 编程助手定位源码并修改。评论是一次性的：发送后页面上不留任何标记，进展在 quick-agent 里查看。
 
 隐私：
 • 数据只发送到你在插件中配置的 hub（默认是本机 127.0.0.1），开发者没有任何服务器，不收集任何数据；
 • 无统计、无广告、无远程代码；
-• 默认只在你主动触发时访问当前标签页；"在所有网站自动显示角标"是可选功能，默认关闭。
+• 默认只在你主动触发时访问当前标签页；"在所有网站自动恢复草稿"是可选功能，默认关闭。
 
 使用前需要先安装并启动 quick-agent hub，详见项目主页。快捷键可在 chrome://extensions/shortcuts 修改。
 ```
@@ -63,12 +63,12 @@ Point at what's wrong, right on the page:
 • Click an element to comment, Shift+click to select several, or drag a rectangle to select a region;
 • Write your comment and press ⌘/Ctrl+Enter.
 
-The comment is sent with its context — page URL, selector and XPath, HTML snippet, visible text, an annotated screenshot and the page's console errors — to the quick-agent hub that YOU run, where your AI coding agent locates the source and fixes it. Sent comments show numbered status pins on the page.
+The comment is sent with its context — page URL, selector and XPath, HTML snippet, visible text, an annotated screenshot and the page's console errors — to the quick-agent hub that YOU run, where your AI coding agent locates the source and fixes it. Comments are one-shot: once sent, nothing stays on the page; follow the progress in quick-agent.
 
 Privacy:
 • Data goes only to the hub address you configure (default: 127.0.0.1 on your own machine). The developer runs no server and collects nothing.
 • No analytics, no ads, no remote code.
-• By default the extension only accesses the current tab after you invoke it. "Show pins on all sites" is optional and off by default.
+• By default the extension only accesses the current tab after you invoke it. "Restore drafts on all sites" is optional and off by default.
 
 Requires a running quick-agent hub — see the homepage. Change the shortcut at chrome://extensions/shortcuts.
 ```
@@ -87,7 +87,7 @@ Requires a running quick-agent hub — see the homepage. Change the shortcut at 
 | `scripting` | Injects the bundled picker script (content.js) and the console-error recorder (console-hook.js) into the current tab on demand; and, only if the user opts in to "all sites" mode, registers them as content scripts. No remote code. |
 | `storage` | Stores the user's hub URL and access token locally. |
 | Host permission `http://127.0.0.1/*`, `http://localhost/*` | Sends comments to, and reads comment status from, the quick-agent hub running on the user's own computer (default http://127.0.0.1:7788). |
-| Optional host permission `http://*/*`, `https://*/*` | Off by default; requested only when the user enables "show pins on all sites" in the popup. Lets the extension show status pins of previously sent comments on pages the user revisits and record console errors from page load. Can be revoked at any time. |
+| Optional host permission `http://*/*`, `https://*/*` | Off by default; requested only when the user enables the "all sites" option in the popup. Lets the extension restore unsent comment drafts on pages the user revisits and record console errors from page load. Can be revoked at any time. |
 | Remote code | No — all JavaScript is included in the package. |
 
 **Data usage（勾选）**
@@ -116,7 +116,7 @@ Without a hub the popup shows a "cannot reach hub" message; that is expected.
 | 素材 | 尺寸 | 是否必需 | 状态 |
 |---|---|---|---|
 | 商店图标 | 128×128 PNG（建议图形 96×96 + 四周 16px 透明边距） | 必需 | `browser/icon128.png` 可用；当前为满幅圆角方块，审核可接受，有时间可按 96+16 规范重画 |
-| 截图 | 1280×800 或 640×400，PNG/JPEG，1–5 张 | 至少 1 张 | [!] 需人工截取。建议：①元素高亮 + 工具条；②评论框；③页面上的状态角标 + 汇报气泡；④弹窗（已连接状态，拼到 1280×800 画布上）；⑤hub 面板里收到的评论 |
+| 截图 | 1280×800 或 640×400，PNG/JPEG，1–5 张 | 至少 1 张 | [!] 需人工截取。建议：①元素高亮 + 工具条；②评论框；③发送后的提示；④弹窗（已连接状态，拼到 1280×800 画布上）；⑤Web UI 里由评论生成的任务（来源页面 + 截图） |
 | 小宣传图（Small promo tile） | 440×280 PNG/JPEG | 必需 | [!] 需制作 |
 | 大宣传图（Marquee） | 1400×560 | 可选 | — |
 | Edge：Logo | 300×300（推荐）/ 截图 1280×800、宣传图 440×280 等同 Chrome | Logo 必需 | [!] 用 icon 放大重绘 |

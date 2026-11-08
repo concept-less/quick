@@ -57,6 +57,8 @@ export interface QaConfig {
 	update: UpdateConfig;
 	/** Use a (remote) team hub with a personal token instead of the local hub. */
 	client?: ClientConfig;
+	/** Hours a consumed browser comment (~/.quick-agent/intake/<id>) is kept for debugging before it is deleted (default 72, env QA_INTAKE_RETENTION_HOURS). */
+	intakeRetentionHours?: number;
 }
 
 export interface MachineConfig {
@@ -135,6 +137,12 @@ export const paths = {
 	restarting: join(QA_HOME, "hub.restarting"),
 };
 
+/** Retention of consumed browser comments in hours (see QaConfig.intakeRetentionHours). */
+export function intakeRetentionMs(cfg: Pick<QaConfig, "intakeRetentionHours">): number {
+	const h = Number(process.env.QA_INTAKE_RETENTION_HOURS ?? cfg.intakeRetentionHours ?? 72);
+	return (Number.isFinite(h) && h >= 0 ? h : 72) * 3600_000;
+}
+
 export function ensureDirs(): void {
 	for (const p of [paths.home, paths.tasks, paths.intake]) mkdirSync(p, { recursive: true });
 }
@@ -163,6 +171,7 @@ export function loadConfig(): QaConfig {
 		machine: machineConfig(raw.machine),
 		mesh: { secret: raw.mesh?.secret, peers: raw.mesh?.peers ?? [] },
 		update: updateConfig(raw.update),
+		intakeRetentionHours: raw.intakeRetentionHours,
 		client: raw.client?.hub && raw.client?.token ? { hub: String(raw.client.hub).replace(/\/+$/, ""), token: String(raw.client.token), user: raw.client.user } : undefined,
 	};
 	if (!existsSync(CONFIG_PATH) || raw.token === undefined) {

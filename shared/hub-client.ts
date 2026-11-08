@@ -165,8 +165,9 @@ export class HubClient {
 	configureMachine(input: { machine?: string; resources?: string[] | null; resourceNotes?: string | null; priority?: number | null; description?: string; owner?: string | null }) {
 		return this.request<{ machine: MachineInfo }>("POST", "/api/machine", input).then((r) => r.machine);
 	}
-	sendMessage(id: string, text: string) {
-		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/message`, { text }).then((r) => r.task);
+	/** intakeId: a browser comment appended to this task (its screenshots are copied into the task, the comment is linked). */
+	sendMessage(id: string, text: string, intakeId?: string) {
+		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/message`, intakeId ? { text, intakeId } : { text }).then((r) => r.task);
 	}
 	cancel(id: string) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/cancel`, {}).then((r) => r.task);
