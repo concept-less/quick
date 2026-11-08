@@ -43,6 +43,8 @@ export interface Task extends TaskPeople {
 	brief: string;
 	cwd: string;
 	status: TaskStatus;
+	/** Absent on legacy tasks: never retroactively move their cwd. */
+	lifecycle?: import("./lifecycle.ts").TaskLifecycle;
 	createdAt: number;
 	updatedAt: number;
 	source: TaskSource;

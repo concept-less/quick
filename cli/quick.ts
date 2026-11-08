@@ -102,7 +102,9 @@ const HELP = `quick — quick-agent
   quick show <id>           查看任务的注意力、汇报、简报
   quick new [--machine M] [--requires a,b] [--cwd DIR] [--reviewer 人] [--assignee 人] [--watch a,b] [--project P] <title> <brief...>
                             不经前台直接派单（不指定机器时按资源+优先级自动选机器）
-  quick send <id> <message> 回答 worker 的问题或追加指令（窗口已关会带着完整上下文重新拉起）
+  quick send <id> <message> 回答 worker 的问题或追加指令（不代表批准集成；窗口已关会带着完整上下文重新拉起）
+  quick approve <id> --sha SHA   明确批准指定的完整 head SHA 集成（仅等待人工批准时）
+  quick changes <id> <message>   要求修改并重新审查，旧批准失效
   quick retry <id>          让停下/失败的 worker 从中断处重试
   quick attach <id>         进入 worker 的 tmux 窗口（远程任务经 ssh；C-b d 返回）
   quick handoff <id> <machine> [--cwd 路径] [--no-workspace] [--abort] [--wait 秒] [--on-conflict fail|stash|backup] [--no-follow]
@@ -556,7 +558,25 @@ async function main() {
 			const id = rest[0] ?? die("usage: quick show <id>");
 			const { task: t, events } = await hub.getTask(id, 30);
 			const a = attentionOf(t);
+			if (t.lifecycle?.phase === "human_approval") {
+				a.options = undefined;
+				a.actions = a.actions.filter((x) => x.id !== "reply");
+			}
 			console.log(`${a.mark} ${t.id} [${LEVEL_LABEL[a.level]}] ${t.title}\n  注意力: ${a.reason}${a.options?.length ? `\n  选项: ${a.options.join(" / ")}` : ""}\n  可以: ${a.actions.map((x) => x.label).join(" / ") || "-"}\n  cwd: ${t.cwd}\n  接管: quick attach ${t.id}\n  activity: ${t.activity ?? "-"}${rest.includes("--debug") ? `\n  [debug] tmux ${t.tmuxTarget ?? "-"} · resume file ${t.sessionFile ?? "-"}` : ""}`);
+			if (t.lifecycle) {
+				const l = t.lifecycle;
+				console.log(`\n── 生命周期 ──\n  阶段: ${l.phase}\n  策略: 模板 ${l.policy.template} · workspace=${l.policy.workspace} · review=${l.policy.review}\n  原因: ${l.policy.reason}\n  head: ${l.head ?? "(尚无提交)"}`);
+				if (l.workspace) console.log(`  工作区: ${l.workspace.cwd}\n  分支: ${l.workspace.branch} → ${l.workspace.baseBranch}\n  基线: ${l.workspace.baseSha}\n  diff: ${l.head ? `${l.workspace.baseSha}..${l.head}` : "(等待 head)"}`);
+				if (l.review) console.log(`  审查: ${l.review.verdict} · ${l.review.sha}${l.review.sha !== l.head ? "（与当前 head 不一致）" : ""}\n${l.review.summary}`);
+				if (l.approval) console.log(`  人工批准: ${l.approval.sha} · ${l.approval.by}${l.approval.sha !== l.head ? "（与当前 head 不一致）" : ""}`);
+				if (l.error) console.log(`  错误: ${l.error}`);
+				if (l.devUpdated !== undefined) console.log(`  dev 工作区: ${l.devUpdated ? "已更新" : "未更新，保留现有工作区"}`);
+				console.log(`  Release: ${l.release || "未报告（与代码集成分开追踪）"}`);
+				if (l.phase === "human_approval") {
+					console.log(l.head ? `  批准此 SHA: quick approve ${t.id} --sha ${l.head}` : "  尚无 head SHA，不能批准");
+					console.log(`  要求修改: quick changes ${t.id} <修改意见>\n  普通消息 / 回答不代表批准。`);
+				}
+			}
 			console.log(`\n── 汇报 ──\n${t.summary ?? "(暂无)"}`);
 			console.log(`\n── 事件 ──\n${events.map((e) => `${new Date(e.ts).toLocaleTimeString()} ${e.kind}${e.status ? `→${e.status}` : ""} ${(e.text ?? "").split("\n")[0]?.slice(0, 120)}`).join("\n")}`);
 			console.log(`\n── 简报 ──\n${t.brief}`);
@@ -603,6 +623,21 @@ async function main() {
 			const [id, ...msg] = rest;
 			if (!id || !msg.length) die("usage: quick send <id> <message>");
 			return console.log(attnLine(attentionOf(await hub.sendMessage(id, msg.join(" ")))));
+		}
+		case "approve": {
+			const args = [...rest];
+			const sha = flag(args, "--sha");
+			const [id] = args;
+			if (!id || id.startsWith("-") || args.length !== 1 || !sha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha)) die("usage: quick approve <id> --sha <完整 commit SHA>");
+			const { task } = await hub.request<{ task: Task }>("POST", `/api/tasks/${encodeURIComponent(id)}/approve`, { sha });
+			return console.log(attnLine(attentionOf(task)));
+		}
+		case "changes": {
+			const [id, ...msg] = rest;
+			const text = msg.join(" ").trim();
+			if (!id || id.startsWith("-") || !text) die("usage: quick changes <id> <message>");
+			const { task } = await hub.request<{ task: Task }>("POST", `/api/tasks/${encodeURIComponent(id)}/changes`, { text });
+			return console.log(attnLine(attentionOf(task)));
 		}
 		case "cancel":
 			return console.log(attnLine(attentionOf(await hub.cancel(rest[0] ?? die("usage: quick cancel <id>")))));

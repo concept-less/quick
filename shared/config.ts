@@ -50,6 +50,8 @@ export interface QaConfig {
 	/** Fallback cwd for tasks when nothing else is known. */
 	defaultCwd: string;
 	projects: ProjectRule[];
+	/** Explicit dev checkout rules; no production deployment discovery. */
+	lifecycle?: import("./lifecycle.ts").LifecycleConfig[];
 	/** Identity, resources and scheduling preference of this machine in the mesh. */
 	machine: MachineConfig;
 	mesh: MeshConfig;
@@ -160,6 +162,7 @@ export function loadConfig(): QaConfig {
 		tmuxSession: raw.tmuxSession ?? "qa",
 		defaultCwd: raw.defaultCwd ?? homedir(),
 		projects: raw.projects ?? [],
+		lifecycle: raw.lifecycle,
 		machine: machineConfig(raw.machine),
 		mesh: { secret: raw.mesh?.secret, peers: raw.mesh?.peers ?? [] },
 		update: updateConfig(raw.update),

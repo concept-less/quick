@@ -167,6 +167,7 @@ export function parseMentions(text: string, members: Pick<Member, "id" | "name" 
  * undefined: nobody recorded (tasks from before the team, root dispatches) → the team owners.
  */
 export function holderOf(t: Task & TaskPeople): string | undefined {
+	if (t.lifecycle?.phase === "human_approval") return t.reviewer ?? t.requester;
 	if (t.status === "done") return t.reviewer ?? t.assignee ?? t.requester;
 	return t.assignee ?? t.reviewer ?? t.requester;
 }

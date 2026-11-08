@@ -148,6 +148,8 @@ export class HubClient {
 		watchers?: string[];
 		/** Project id or name (default: inferred from cwd / git / page URL / text; unknown names are created). */
 		project?: string;
+		/** Front's automatic risk/complexity judgement; hub applies project rules and safety checks. */
+		lifecycle?: import("./lifecycle.ts").LifecycleInput;
 	}) {
 		return this.request<{ task: Task }>("POST", "/api/tasks", input).then((r) => r.task);
 	}
@@ -187,7 +189,7 @@ export class HubClient {
 		return this.request<{ focus: FocusState }>("POST", "/api/attention/focus", { on, minutes }).then((r) => r.focus);
 	}
 	/** Worker → hub state report. needsHuman marks an explicit request for a human decision. */
-	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; needsHuman?: boolean; question?: string; options?: string[] }) {
+	report(id: string, body: { status?: Task["status"]; summary?: string; activity?: string; sessionFile?: string; kind?: TaskEvent["kind"]; settled?: boolean; scope?: {risk:"critical"|"complex";reason:string}; needsHuman?: boolean; question?: string; options?: string[] }) {
 		return this.request<{ task: Task }>("POST", `/api/tasks/${enc(id)}/report`, body).then((r) => r.task);
 	}
 	projects() {

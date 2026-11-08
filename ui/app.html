@@ -291,10 +291,19 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .dsec pre,.pre{white-space:pre-wrap;word-break:break-word;background:var(--surface);border:var(--bw) solid var(--line);padding:10px 12px;margin:0;font-size:12px;line-height:1.55}
 .dsec>.md{font-size:13.5px;border-left:3px solid var(--fg);padding:2px 0 2px 14px}
 .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}
-.send textarea{width:100%;min-height:72px;border:var(--bw) solid var(--line);padding:10px 12px;background:var(--surface);resize:vertical;outline:0;display:block;transition:border-color var(--t),box-shadow var(--t)}
-.send textarea:focus{border-color:var(--line-2);box-shadow:var(--hard)}
+.send textarea,.lifecycle textarea{width:100%;min-height:72px;border:var(--bw) solid var(--line);padding:10px 12px;background:var(--surface);resize:vertical;outline:0;display:block;transition:border-color var(--t),box-shadow var(--t)}
+.send textarea:focus,.lifecycle textarea:focus{border-color:var(--line-2);box-shadow:var(--hard)}
 .send .acts{margin-top:8px;align-items:center}
 .send .acts .hintk{font:11px var(--mono);color:var(--fg-3);flex:1}
+.lifecycle .dmeta{grid-template-columns:76px minmax(0,1fr);word-break:normal;overflow-wrap:anywhere}
+.lifecycle .dmeta dt{font:12px/1.7 var(--sans);letter-spacing:0;text-transform:none}
+.lifecycle .dmeta dd{white-space:pre-wrap;color:var(--fg)}
+.lifecycle .lc-note{font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.lifecycle .lc-error{color:var(--acc);white-space:pre-wrap;overflow-wrap:anywhere}
+.lifecycle .lc-error:empty{display:none}
+.lifecycle label{display:block;margin:14px 0 6px;font-size:13px}
+.lifecycle .btn{height:auto;min-height:32px;white-space:normal}
+@media(max-width:600px){.lifecycle .btn{min-height:44px}.lifecycle textarea{font-size:14px}}
 .icard{padding:14px var(--s4);border-bottom:var(--bw) solid var(--line)}
 /* ---------- scheduled jobs (定时) ---------- */
 .cjob{padding:12px var(--s3) 12px var(--s4);border-bottom:var(--bw) solid var(--line);position:relative}
@@ -678,6 +687,40 @@ function firstSentence(s){if(!s)return '';const clean=l=>l.replace(/^\s*(#{1,6}|
 function setCounts(c){if(c)counts=c;const n=counts.need||0;$('#needN').textContent=n;$('#needBtn').classList.toggle('hot',n>0);$('#needBtn').title=n?n+' 件事需要你决定':'没有需要你的事';$('#tBadge').textContent=n||'';document.title=(n?'('+n+') ':'')+'quick-agent';renderFocus()}
 function renderFocus(){const b=$('#focusBtn');b.classList.toggle('on',!!focus.on);b.textContent=focus.on?('专注中'+(focus.until?' 至 '+hm(focus.until):'')):'专注'}
 async function hubPost(path,body){return api('POST','/api/hub/'+path,body||{})}
+const LC_PHASE={preparing:'准备工作区',developing:'开发中',quiescing:'等待 worker 停止',reviewing:'独立审查',changes_requested:'要求修改',human_approval:'等待人工批准',integrating:'集成中',ci:'等待 PR / CI',cleanup:'清理工作区',complete:'集成完成',blocked:'生命周期受阻'};
+const humanApproval=t=>t?.lifecycle?.phase==='human_approval';
+const fullSha=s=>typeof s==='string'&&/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(s);
+const canApprove=l=>l?.phase==='human_approval'&&fullSha(l.head)&&l.review?.sha===l.head&&l.review.verdict==='approve';
+const lifecyclePending=new Set();
+function lifecycleHtml(t){const l=t.lifecycle;if(!l)return '';const p=l.policy,w=l.workspace;
+  const row=(label,value,mono=false)=>'<dt>'+esc(label)+'</dt><dd'+(mono?' class="mono"':'')+'>'+esc(value??'—')+'</dd>';
+  return '<section class="dsec lifecycle"><h4>任务生命周期</h4><dl class="dmeta">'+
+    row('阶段',(LC_PHASE[l.phase]||l.phase)+' · '+l.phase)+row('模板',p.template)+row('工作区模式',p.workspace)+row('审查模式',p.review)+row('策略原因',p.reason)+
+    (w?row('工作区',w.cwd,true)+row('dev 目录',w.devCwd,true)+row('分支',w.branch+' → '+w.baseBranch,true)+row('基线 SHA',w.baseSha,true):'')+
+    row('head SHA',l.head||'尚无提交',true)+row('diff 范围',w?.baseSha&&l.head?w.baseSha+'..'+l.head:'尚无可比较的基线 / head',true)+
+    (l.review?row('审查结论',l.review.verdict==='approve'?'通过':'要求修改')+row('审查 SHA',l.review.sha+(l.review.sha!==l.head?'（与当前 head 不一致）':''),true)+row('审查时间',new Date(l.review.at).toLocaleString()):row('审查结论',p.review==='none'?'无需审查':'尚无审查结果'))+
+    (l.approval?row('人工批准',l.approval.sha+' · '+l.approval.by+' · '+new Date(l.approval.at).toLocaleString()+(l.approval.sha!==l.head?'（与当前 head 不一致）':''),true):'')+
+    (l.pr?row('PR',l.pr.url,true)+row('PR 状态',l.pr.state||'等待 CI / 审批')+row('PR 摘要',l.pr.summary||'创建 PR 不代表完成'):'')+
+    (l.devUpdated!==undefined?row('dev 状态',l.devUpdated?'已更新':'未更新，保留现有工作区'):'')+row('Release',l.release||'未报告（与代码集成分开追踪）')+'</dl>'+
+    (l.review?'<div class="dsec"><h4>审查摘要</h4><div class="md">'+md(l.review.summary)+'</div></div>':'')+
+    (l.error?'<p class="lc-error" role="alert">'+esc(l.error)+'</p>':'')+
+    (humanApproval(t)?'<p class="lc-note">批准仅针对上方显示的完整 head SHA。普通消息、回答或「知道了」不代表批准。</p>'+
+      (!canApprove(l)?'<p class="lc-note">当前 head 尚无匹配的通过审查，不能批准。</p>':'')+
+      '<div class="acts"><button class="btn primary" data-lifecycle="approve"'+(!canApprove(l)||lifecyclePending.has(t.id)?' disabled':'')+'>批准 '+esc(l.head?.slice(0,12)||'此 SHA')+' 集成</button></div>'+
+      '<label for="tchanges">修改意见</label><textarea id="tchanges" placeholder="说明需要修改的问题；提交后重新审查，旧批准失效"></textarea><div class="acts"><button class="btn" data-lifecycle="changes"'+(lifecyclePending.has(t.id)?' disabled':'')+'>要求修改</button></div><p class="lc-error" data-lifecycle-error role="alert"></p>':'')+'</section>'}
+async function lifecycleAction(t,action,text){
+  if(lifecyclePending.has(t.id))return;
+  const current=tasks.get(t.id);
+  if(!humanApproval(current))throw new Error('任务已离开人工批准阶段，请重新打开详情');
+  // Bind approval to the SHA the user actually saw, never silently use a newer head from SSE.
+  const sha=t.lifecycle?.head;
+  if(action==='approve'&&(!canApprove(current.lifecycle)||!canApprove(t.lifecycle)||current.lifecycle.head!==sha))throw new Error('head 或审查结果已变化，请重新打开详情审查后再批准');
+  if(action==='changes'&&!text?.trim())throw new Error('请填写修改意见');
+  lifecyclePending.add(t.id);
+  try{const r=await hubPost('tasks/'+encodeURIComponent(t.id)+'/'+action,action==='approve'?{sha}:{text:text.trim()});
+    if(r.task)tasks.set(t.id,r.task);renderTasks();toast(action==='approve'?'已提交此 SHA 的明确批准':'已要求修改，完成后重新审查');return true;
+  }finally{lifecyclePending.delete(t.id)}
+}
 async function act(id,a,arg){const t=tasks.get(id);
   try{
     if(a==='ack'){const el=document.querySelector('.titem[data-id="'+CSS.escape(id)+'"]');if(el)return ackCard(el);await hubPost('tasks/'+encodeURIComponent(id)+'/ack')}
@@ -685,7 +728,7 @@ async function act(id,a,arg){const t=tasks.get(id);
     else if(a==='unsnooze')await hubPost('tasks/'+encodeURIComponent(id)+'/snooze',{minutes:0});
     else if(a==='retry'){await hubPost('tasks/'+encodeURIComponent(id)+'/retry');toast('已让 '+id+' 重试','info',2500)}
     else if(a==='cancel'){if(!confirm('中止 '+id+' 当前运行？'))return;await hubPost('tasks/'+encodeURIComponent(id)+'/cancel')}
-    else if(a==='answer'){await hubPost('tasks/'+encodeURIComponent(id)+'/message',{text:arg});toast('已把回答发给 '+id,'info',2500)}
+    else if(a==='answer'){if(humanApproval(t))throw new Error('请在任务详情中明确批准当前 SHA 或要求修改；普通回答不代表批准');await hubPost('tasks/'+encodeURIComponent(id)+'/message',{text:arg});toast('已把回答发给 '+id,'info',2500)}
     else if(a==='attach'){const cmd='quick attach '+id;navigator.clipboard?.writeText(cmd).catch(()=>{});toast('接管：在终端运行 '+cmd+'（已复制）','info',4000)}
     else if(a==='reply'){await openTask(id);setTimeout(()=>$('#tmsg')?.focus(),50)}
   }catch(e){toast(e.message,'error')}
@@ -706,17 +749,20 @@ function itemHtml(i){const t=tasks.get(i.taskId)||{id:i.taskId,title:i.title,mac
   return '<div class="titem '+i.level+(i.taskId===selTask?' sel':'')+'" data-id="'+esc(i.taskId)+'" tabindex="0" role="listitem" aria-label="'+esc(LVL[i.level]+' '+i.title+' '+i.reason)+'">'+
     '<div class="trow"><span class="mark">'+esc(i.mark)+'</span><span class="ttitle">'+esc(i.title)+'</span>'+(i.level==='skim'?'<button class="ackb" data-act="ack" title="知道了：确认并归档">知道了</button>':'')+'</div>'+
     '<div class="trow"><span class="tidm">'+esc(i.taskId)+'</span>'+mtag(t)+'<span class="tsub'+(i.level==='need'||i.level==='skim'?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+esc(when)+'</span></div>'+
+    (t.lifecycle?'<div class="tsub" title="'+esc(t.lifecycle.policy.reason)+'">'+esc((LC_PHASE[t.lifecycle.phase]||t.lifecycle.phase)+' · 模板 '+t.lifecycle.policy.template+' · '+t.lifecycle.policy.workspace+' / '+t.lifecycle.policy.review)+'</div>':'')+
     (i.level==='need'&&i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+
-    (i.level==='need'&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'" title="把这个回答发给 worker">'+esc(o)+'</button>').join('')+'</div>':'')+
-    (i.level==='need'||i.level==='snoozed'?'<div class="tacts">'+acts.map((a,k)=>'<button class="btn'+(k===0?' primary':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+
+    (!humanApproval(t)&&i.level==='need'&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'" title="把这个回答发给 worker">'+esc(o)+'</button>').join('')+'</div>':'')+
+    (i.level==='need'||i.level==='snoozed'?'<div class="tacts">'+acts.map((a,k)=>'<button class="btn'+(k===0?' primary':'')+'" data-act="'+a.id+'">'+esc(humanApproval(t)&&a.id==='reply'?'查看审批':ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+
     (more?'<button class="tmore" data-more aria-expanded="'+open+'">'+(open?'- 收起汇报':'+ 完整汇报')+'</button>'+(open?'<div class="tfull md">'+md(sum)+'</div>':''):'')+'</div>'}
 /* ---------- projects: second dimension of the attention queue (hub/projects.ts) ---------- */
 function liveProject(id){let p=projects.find(x=>x.id===id);for(let k=0;p&&p.mergedInto&&k<10;k++)p=projects.find(x=>x.id===p.mergedInto);return p&&!p.mergedInto?p:null}
 const projOf=t=>liveProject(t?.project)?.id||'';
 const projName=id=>id?(liveProject(id)?.name||id):'未归类';
 const itemProj=i=>projOf(tasks.get(i.taskId)||{project:i.project});
-function projCounts(){const m=new Map();for(const i of attn.values()){if(i.level==='archived')continue;const id=itemProj(i);if(!m.has(id))m.set(id,{id,need:0,inflight:0,open:0,latest:0});const c=m.get(id);c.open++;if(i.level==='need')c.need++;if(i.level==='inflight')c.inflight++;c.latest=Math.max(c.latest,i.updatedAt||i.since||0)}
-  return [...m.values()].sort((a,b)=>(b.need>0)-(a.need>0)||(b.inflight>0)-(a.inflight>0)||(!a.id)-(!b.id)||b.latest-a.latest)}
+const taskCreatedAt=i=>tasks.get(i.taskId)?.createdAt||0;
+const taskCreationOrder=(a,b)=>taskCreatedAt(b)-taskCreatedAt(a)||a.taskId.localeCompare(b.taskId);
+function projCounts(){const m=new Map();for(const i of attn.values()){if(i.level==='archived')continue;const id=itemProj(i);if(!m.has(id))m.set(id,{id,need:0,inflight:0,open:0,latest:0});const c=m.get(id);c.open++;if(i.level==='need')c.need++;if(i.level==='inflight')c.inflight++;c.latest=Math.max(c.latest,taskCreatedAt(i))}
+  return [...m.values()].sort((a,b)=>(!a.id)-(!b.id)||b.latest-a.latest||a.id.localeCompare(b.id))}
 function renderProjFilter(){const sel=$('#pfilter');if(!sel)return;const live=projects.filter(p=>!p.mergedInto).sort((a,b)=>a.name.localeCompare(b.name));
   if(projFilter&&projFilter!=='~none'&&!liveProject(projFilter))projFilter='';const cs=new Map(projCounts().map(c=>[c.id,c]));
   const lab=(id,name)=>{const c=cs.get(id);return esc(name)+(c&&(c.need||c.inflight)?' ('+[c.need?'需要你 '+c.need:'',c.inflight?'运行 '+c.inflight:''].filter(Boolean).join(' · ')+')':'')};
@@ -744,7 +790,7 @@ async function loadProjects(){try{const r=await api('GET','/api/hub/projects');p
 function levelHtml(l,list){if(projFilter)return list.map(itemHtml).join('');
   const m=new Map();for(const i of list){const id=itemProj(i);if(!m.has(id))m.set(id,[]);m.get(id).push(i)}
   if(m.size<2&&!pCollapsed.has([...m.keys()][0]||'~none'))return list.map(itemHtml).join('');
-  const order=projCounts().map(c=>c.id);const ids=[...m.keys()].sort((a,b)=>((order.indexOf(a)+1)||1e9)-((order.indexOf(b)+1)||1e9));
+  const ids=[...m.keys()].sort((a,b)=>taskCreationOrder(m.get(a)[0],m.get(b)[0]));
   return ids.map(id=>{const its=m.get(id),closed=l!=='need'&&pCollapsed.has(id||'~none');
     return '<div class="phead'+(closed?' closed':'')+'" data-pid="'+esc(id)+'" role="button" tabindex="0" aria-expanded="'+!closed+'" title="'+(closed?'展开这个项目':'折叠这个项目（需要你的任务仍然显示）')+'"><span class="pcar">'+(closed?'+':'-')+'</span><span class="pname'+(id?'':' none')+'">'+esc(projName(id))+'</span><span class="pc">'+its.length+'</span>'+(id?'<button class="pmenu" data-pmenu title="重命名 / 合并项目">...</button>':'')+'</div>'+(closed?'':its.map(itemHtml).join(''))}).join('')}
 function _renderTasks(){
@@ -753,7 +799,8 @@ function _renderTasks(){
   const match=i=>{if(!q)return true;const t=tasks.get(i.taskId)||{};return [i.taskId,i.title,i.reason,i.question,t.cwd,i.machine,t.summary,LVL[i.level],projName(itemProj(i))].some(v=>String(v||'').toLowerCase().includes(q))};
   const pf=projFilter==='~none'?'':liveProject(projFilter)?.id;
   const items=[...attn.values()].filter(match).filter(i=>!projFilter||itemProj(i)===pf);const by={};for(const l of LEVELS)by[l]=[];for(const i of items)by[i.level]?.push(i);
-  by.need.sort((a,b)=>a.since-b.since);by.snoozed.sort((a,b)=>(a.snoozedUntil||0)-(b.snoozedUntil||0));for(const l of ['skim','inflight','archived'])by[l].sort((a,b)=>b.since-a.since);
+  // Keep attention/project grouping, but progress and snooze updates never reorder peers.
+  for(const l of LEVELS)by[l].sort(taskCreationOrder);
   const shown=LEVELS.filter(l=>l!=='archived'||showArchived||q);
   let h='';for(const l of shown){const list=l==='archived'?by[l].slice(0,30):by[l];if(!list.length)continue;h+='<div class="lvh '+l+'" id="lv-'+l+'" title="'+esc(LVL_HINT[l])+'">'+LVL[l]+' <span class="n">'+by[l].length+'</span></div>'+levelHtml(l,list)}
   $('#tlist').innerHTML=h||'<div class="blank"><span class="lbl">没有需要你的事</span>'+(tasks.size?'交出去的事都在进行中或已确认。':'还没有交出去的事。<br>在前台告诉 agent 要做什么，它会派给 worker；只有需要你时才会出现在这里。')+'</div>';
@@ -794,18 +841,26 @@ async function openTask(id){
   let r;try{r=await api('GET','/api/hub/tasks/'+encodeURIComponent(id)+'?events=1')}catch(e){if(seq===detailSeq)d.innerHTML='<div class="dhead"><button class="btn icon" data-back>←</button><h3>'+esc(id)+'</h3></div><div class="blank">'+esc(e.message)+'</div>';d.querySelector('[data-back]').onclick=closeTask;return}
   if(seq!==detailSeq)return;
   const t=r.task;tasks.set(t.id,t);const i=attn.get(t.id);
-  const keep=d.querySelector('#tmsg')?.value||'';const briefOpen=d.querySelector('#briefSec')?.open;
+  const keep=d.querySelector('#tmsg')?.value||'',changesKeep=d.querySelector('#tchanges')?.value||'';const briefOpen=d.querySelector('#briefSec')?.open;
   const acts=(i?.actions||[]).filter(a=>a.id!=='reply');
   d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(t.title)+'</h3>'+(i?'<span class="mark">'+esc(i.mark)+'</span>':'')+'</div><div class="dbody">'+
-    (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div><div class="ar">'+esc(i.reason)+'</div>'+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
+    (i?'<div class="attn '+i.level+'"><div class="ah"><span>'+esc(LVL[i.level])+'</span><span class="grow"></span><span class="tago">'+(i.level==='snoozed'&&i.snoozedUntil?hm(i.snoozedUntil)+' 回来':ago(i.since))+'</span></div><div class="ar">'+esc(i.reason)+'</div>'+(i.question?'<div class="tq">'+esc(i.question)+'</div>':'')+(!humanApproval(t)&&i.options?.length?'<div class="topts">'+i.options.map((o,k)=>'<button class="btn" data-opt="'+k+'">'+esc(o)+'</button>').join('')+'</div>':'')+
       (acts.length?'<div class="tacts">'+acts.map(a=>'<button class="btn'+(a.id==='cancel'?' danger':'')+'" data-act="'+a.id+'">'+esc(ACT_BTN[a.id]||a.label)+'</button>').join('')+'</div>':'')+'</div>':'')+
+    lifecycleHtml(t)+
     '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>项目</dt><dd><select data-proj aria-label="项目">'+projects.filter(p=>!p.mergedInto).map(p=>'<option value="'+esc(p.id)+'"'+(projOf(t)===p.id?' selected':'')+'>'+esc(p.name)+'</option>').join('')+'<option value=""'+(projOf(t)?'':' selected')+'>未归类</option><option value="~new">新建项目...</option></select>'+(t.projectVia==='manual'?' <span class="chip" title="手动设置，不会被自动归类覆盖">手动</span>':'')+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd>'+(t.activity&&ACTIVE.includes(t.status)?'<dt>当前</dt><dd class="mono">'+esc(t.activity)+'</dd>':'')+'</dl>'+
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
-    '<div class="dsec send"><h4>'+(i?.level==='need'?'回答 worker':'追加指令')+'</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>'+
+    (!humanApproval(t)?'<div class="dsec send"><h4>'+(i?.level==='need'?'回答 worker':'追加指令')+'</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；它的窗口关了也会带着完整上下文继续"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>':'')+
     '<details class="dsec" id="briefSec"><summary>任务简报</summary><pre class="pre">'+esc(t.brief)+'</pre></details>'+
     '<div class="acts"><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>关闭 worker 窗口</button></div></div>';
-  const ta=d.querySelector('#tmsg');ta.value=keep;if(briefOpen)d.querySelector('#briefSec').open=true;
-  ta.onkeydown=e=>{if(isSendKey(e)){e.preventDefault();d.querySelector('[data-a=send]').click()}};applySendKey();
+  const ta=d.querySelector('#tmsg');if(ta){ta.value=keep;ta.onkeydown=e=>{if(isSendKey(e)){e.preventDefault();d.querySelector('[data-a=send]').click()}}}if(briefOpen)d.querySelector('#briefSec').open=true;
+  applySendKey();
+  const changes=d.querySelector('#tchanges');if(changes)changes.value=changesKeep;
+  d.querySelectorAll('[data-lifecycle]').forEach(b=>b.onclick=async()=>{if(lifecyclePending.has(t.id))return;
+    const buttons=[...d.querySelectorAll('[data-lifecycle]')],error=d.querySelector('[data-lifecycle-error]');error.textContent='';buttons.forEach(x=>x.disabled=true);
+    try{if(await lifecycleAction(t,b.dataset.lifecycle,changes?.value)){if(b.dataset.lifecycle==='changes')changes.value='';if(selTask===t.id)await openTask(t.id)}}
+    catch(e){error.textContent=e.message;toast(e.message,'error')}
+    finally{buttons.forEach(x=>x.disabled=lifecyclePending.has(t.id)||(x.dataset.lifecycle==='approve'&&!canApprove(tasks.get(t.id)?.lifecycle)))}
+  });
   d.querySelector('[data-back]').onclick=closeTask;
   d.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>act(t.id,b.dataset.act));
   d.querySelectorAll('[data-opt]').forEach(b=>b.onclick=()=>{const o=i?.options?.[+b.dataset.opt];if(o)act(t.id,'answer',o)});
@@ -813,8 +868,8 @@ async function openTask(id){
     try{const r=await api('POST','/api/hub/tasks/'+encodeURIComponent(t.id)+'/project',{project:v});tasks.set(r.task.id,r.task);await loadProjects();toast(t.id+' 已移到「'+projName(projOf(r.task))+'」');openTask(t.id)}catch(e){toast(e.message,'error');ps.value=projOf(t)}};
   d.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{const a=b.dataset.a;
     if(a==='close'&&!confirm('关闭 '+t.id+' 的 worker 窗口？'))return;
-    try{if(a==='send'){const text=ta.value.trim();if(!text)return;await api('POST','/api/hub/tasks/'+t.id+'/message',{text});ta.value='';toast('已发送给 '+t.id)}
-      else await api('POST','/api/hub/tasks/'+t.id+'/'+a,{});openTask(t.id)}catch(e){toast(e.message,'error')}});
+    try{if(a==='send'){if(humanApproval(tasks.get(t.id)))throw new Error('请明确批准当前 SHA 或要求修改；普通消息不代表批准');const text=ta.value.trim();if(!text)return;await hubPost('tasks/'+encodeURIComponent(t.id)+'/message',{text});ta.value='';toast('已发送给 '+t.id)}
+      else await hubPost('tasks/'+encodeURIComponent(t.id)+'/'+a,{});if(selTask===t.id)openTask(t.id)}catch(e){toast(e.message,'error')}});
   window.qaTeamDetail?.(d,t,r); // team: people + comments (ui/team.js)
   // Viewing a finished task settles 待扫; a question keeps waiting until it is answered or put aside.
   if(i?.level==='skim')hubPost('tasks/'+t.id+'/ack').catch(()=>{});
@@ -876,7 +931,7 @@ async function loadHub(){
 }
 function onHub(e){
   window.qaTeamOnHub?.(e);
-  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask&&(e.event||prev?.status!==e.task.status))refreshDetailSoon();
+  if(e.type==='task'){const prev=tasks.get(e.task.id);tasks.set(e.task.id,e.task);renderTasks();if(e.task.source?.kind==='cron')renderCron();if(e.task.id===selTask&&(e.event||prev?.status!==e.task.status||JSON.stringify(prev?.lifecycle)!==JSON.stringify(e.task.lifecycle)))refreshDetailSoon();
     if(prev&&prev.status!==e.task.status){for(const [id,i] of toolOwner){const r=toolRes.get(id);if(r?.result?.details?.task?.id===e.task.id)schedule(i)}}}
   else if(e.type==='attention'){const i=e.item;attn.set(i.taskId,i);counts=e.counts;focus=e.focus||focus;renderTasks();if(i.taskId===selTask)refreshDetailSoon();
     if(e.interrupt==='now')toast('需要你 '+i.mark+' '+i.title+'\n'+i.reason,'warning',9000)}

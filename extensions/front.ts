@@ -20,7 +20,7 @@ import type { CronView } from "../hub/cron.ts";
 import { attentionOf, itemLine, LEVEL_LABEL, type AttentionCounts, type AttentionItem, type FocusState } from "../shared/attention.ts";
 import { classify, findProject, groupByProject, resolveProject, type Project } from "../shared/projects.ts";
 
-const QA_TOOLS = ["qa_dispatch", "qa_cron", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
+const QA_TOOLS = ["qa_dispatch", "qa_cron", "qa_tasks", "qa_task_read", "qa_task_send", "qa_task_review", "qa_task_cancel", "qa_handoff", "qa_machines", "qa_remote_fs", ...TEAM_TOOLS];
 const FRONT_TOOLS = ["read", "grep", "find", "ls", ...QA_TOOLS];
 
 const ICON: Record<string, string> = {
@@ -31,7 +31,7 @@ function frontRules(cwd: string, defaultCwd: string, projects: string, machines:
 	return `你是 quick-agent 工作流中的 **前台 agent**：你和人类交互，并且必须 **快**。工作方式类似中断处理的上半部：
 1. 理解任务：只做最少量的澄清。只有在缺少关键信息、无法写出可执行简报时才提问，而且一次问完。
 2. 组装上下文：允许快速读取少量文件、grep/ls 确认工作目录和相关位置，但不要深入调研，不要动手实现。
-3. 派单：调用 qa_dispatch 把任务交给一个独立的负责人 worker。brief 必须自包含：目标、背景、相关文件/位置、约束、验收标准，以及你掌握的全部上下文（含截图路径、元素选择器、页面 URL）。worker 看不到你和人类的对话。
+3. 派单：自动判断 workspace/review 策略并在 qa_dispatch.lifecycle 记录理由，不要每次让用户选择。只读调查/提醒 kind=read_only；低风险小型官网/前端文案样式布局普通交互 risk=low + complexity=small_frontend 走 A 直改主 dev 目录；复杂功能/后端/跨模块默认 B 隔离 + 独立 Agent review；支付/账务/金额/密钥/重要权限/不可逆数据为 critical 走 C 先 Agent review 再人工批准。规模大本身不用人工。不得仅凭文件在前端目录判低风险。先定位实际 dev 服务目录和机器；同文件并发优先追加已有任务，不抢占。然后调用 qa_dispatch 把任务交给一个独立的负责人 worker。brief 必须自包含：目标、背景、相关文件/位置、约束、验收标准，以及你掌握的全部上下文（含截图路径、元素选择器、页面 URL）。worker 看不到你和人类的对话。
 4. 派完立刻用一两句话回复（任务 ID、标题、工作目录），结束本轮，不要等待 worker。
 5. 一次请求包含多个互相独立的任务时，分别派单。属于已有任务的追加需求，用 qa_task_send 发给对应 worker，不要新建任务。
 6. 人类问进度或"有什么需要我的"时用 qa_tasks（按注意力排好：需要你 / 待扫 / 稍后 / 不用管）/ qa_task_read；要求中止时用 qa_task_cancel。
@@ -350,6 +350,12 @@ export function setupFront(pi: ExtensionAPI) {
 				Type.String({ description: "Absolute working directory ON THE TARGET MACHINE. Omit to use the chosen machine's project mapping / default directory." }),
 			),
 			brief: Type.String({ description: "Self-contained task brief: goal, context, relevant files, constraints, acceptance criteria" }),
+			lifecycle: Type.Optional(Type.Object({
+				kind: StringEnum(["code", "read_only"] as const),
+				risk: Type.Optional(StringEnum(["low", "normal", "critical"] as const)),
+				complexity: Type.Optional(StringEnum(["small_frontend", "complex"] as const)),
+				reason: Type.String({description:"自动策略理由；支付/权限/密钥/金额永远 critical，不因前端文件而低风险。"}),
+			})),
 			attachments: Type.Optional(Type.Array(Type.String(), { description: "Absolute paths of files the worker should look at (e.g. screenshots)" })),
 			intake_id: Type.Optional(Type.String({ description: "Browser comment id when dispatching a [浏览器评论]" })),
 			machine: Type.Optional(
@@ -380,6 +386,7 @@ export function setupFront(pi: ExtensionAPI) {
 				assignee: p.assignee,
 				watchers: p.watchers,
 				project: p.project,
+				lifecycle: p.lifecycle,
 				source: intake ? { kind: "browser", intakeId: intake.id, url: intake.url } : { kind: "tui" },
 			});
 			tasks.set(task.id, task);
@@ -527,6 +534,7 @@ export function setupFront(pi: ExtensionAPI) {
 				`attention: ${LEVEL_LABEL[att.level]} ${att.mark} ${att.reason}${task.ask?.options?.length ? ` (options: ${task.ask.options.join(" / ")})` : ""}`,
 				`tmux: ${task.tmuxTarget ?? "-"}`,
 				task.activity ? `activity: ${task.activity}` : "",
+				task.lifecycle ? `Git lifecycle: ${JSON.stringify(task.lifecycle)}` : "",
 				team.people(task) ? `people:${team.people(task)}` : "",
 				`--- summary ---\n${task.summary ?? "(none yet)"}`,
 				comments?.length ? `--- comments ---\n${comments.slice(-10).map((c) => `${new Date(c.ts).toLocaleTimeString()} ${c.author}: ${c.text.slice(0, 400)}`).join("\n")}` : "",
@@ -536,6 +544,21 @@ export function setupFront(pi: ExtensionAPI) {
 				.filter(Boolean)
 				.join("\n");
 			return { content: [{ type: "text", text }], details: { task } };
+		},
+	});
+
+	pi.registerTool({
+		name: "qa_task_review",
+		label: "Human review decision",
+		defaultActive: false,
+		description: "Relay the human's explicit critical-risk decision: approve an exact reviewed SHA or request changes. Never infer approval from task completion, silence or generic follow-up; first read the current decision summary.",
+		promptGuidelines: ["Only call qa_task_review action=approve when the human has explicitly authorized the current SHA and decision summary. Agent review is not human approval. Ordinary follow-up uses qa_task_send, never bypass a human gate."],
+		parameters: Type.Object({id:Type.String(),action:StringEnum(["approve","changes"] as const),sha:Type.Optional(Type.String()),text:Type.Optional(Type.String())}),
+		async execute(_id,p) {
+			if(p.action === "approve" && !/^[0-9a-f]{40,64}$/.test(p.sha ?? "")) throw new Error("批准必须指定完整 SHA");
+			const {task} = await hub.request<{task:Task}>("POST",`/api/tasks/${encodeURIComponent(p.id)}/${p.action}`,{sha:p.sha,text:p.text});
+			tasks.set(task.id,task);renderWidget();
+			return {content:[{type:"text",text:`${task.id}: ${task.lifecycle?.phase ?? task.status}`}],details:{task}};
 		},
 	});
 

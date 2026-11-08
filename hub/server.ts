@@ -3,7 +3,7 @@
 // Run: node hub/server.ts   (normally started automatically by pi or `quick hub start`)
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, openSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { hostname, platform } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -32,6 +32,11 @@ import { createCron } from "./cron.ts";
 import { createAttention, keyOf } from "./attention.ts";
 import { attentionOf } from "../shared/attention.ts";
 import { createProjects } from "./projects.ts";
+import { createLifecycle, runAgentReview } from "./lifecycle.ts";
+import { createIntegrationLocks } from "./integration-locks.ts";
+import { normalizeRemote } from "../shared/projects.ts";
+import { lifecycleGit } from "./git-lifecycle.ts";
+import { CRITICAL_RISK } from "../shared/lifecycle.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -70,7 +75,9 @@ function taskDir(id: string) {
 }
 function saveTask(t: Task) {
 	mkdirSync(taskDir(t.id), { recursive: true });
-	writeFileSync(join(taskDir(t.id), "task.json"), JSON.stringify(t, null, 2));
+	const file=join(taskDir(t.id), "task.json");
+	writeFileSync(`${file}.tmp`, JSON.stringify(t, null, 2));
+	renameSync(`${file}.tmp`,file);
 }
 function saveIntake(i: Intake) {
 	mkdirSync(join(paths.intake, i.id), { recursive: true });
@@ -138,7 +145,10 @@ let attention: ReturnType<typeof createAttention>;
 function broadcast(e: HubEvent, filter?: (c: SseClient) => boolean) {
 	if (e.type === "task" && projects) e = { ...e, task: projects.view(e.task) };
 	const frame = `data: ${JSON.stringify(e)}\n\n`;
-	for (const c of clients) if (!filter || filter(c)) c.res.write(frame);
+	for (const c of clients) {
+		if (c.role === "worker" && (("taskId" in e && e.taskId !== c.taskId) || (e.type === "task" && e.task.id !== c.taskId) || (!["task", "task.message", "task.cancel", "hello"].includes(e.type)))) continue;
+		if (!filter || filter(c)) c.res.write(frame);
+	}
 	// Every task change is re-evaluated by the attention model (which may emit an "attention" event).
 	if (e.type === "task" && !filter) attention?.onTask(e.task, e.event);
 }
@@ -357,6 +367,9 @@ function sh(s: string) {
 async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: string; idle?: boolean; status?: TaskStatus } = {}) {
 	await ensureTmuxSession();
 	const dir = taskDir(t.id);
+	await lifecycleGit(t.cwd,"rev-parse","--show-toplevel").then(async()=>{
+		if(t.lifecycle?.phase === "developing") writeFileSync(join(taskDir(t.id),"brief.md"),`# ${t.title}\n\n工作目录：${t.cwd}\n策略：${JSON.stringify(t.lifecycle.policy)}\n\n${t.brief}\n\n仅在该 cwd 开发提交本任务改动；不要自行合并/push/清理。完成后 qa_report done 交回审查集成。`);
+	}).catch(()=>{});
 	const briefPath = join(dir, "brief.md");
 	const model = opts.model ?? cfg.workerModel ?? cfg.model;
 	// The quick-agent pi package is installed globally; QA_TASK_ID selects the worker role.
@@ -369,8 +382,15 @@ async function spawnWorker(t: Task, opts: { resumeMessage?: string; model?: stri
 		piArgs.push("--name", `[${t.id}] ${t.title}`);
 		initial = [`@${briefPath}`, "以上是你负责的任务简报（quick-agent task brief）。请完整负责并完成它。"];
 	}
+	const tokenFile = join(dir, "worker.token");
+	if (!existsSync(tokenFile)) writeFileSync(tokenFile, randomBytes(32).toString("hex"), { mode: 0o600 });
+	const workerToken = readFileSync(tokenFile, "utf8").trim();
 	const script = [
 		"#!/usr/bin/env bash",
+		"unset QA_HUB_URL QA_TOKEN QA_MACHINE QA_PORT QA_UI_PORT",
+		`export QA_TOKEN=${sh(workerToken)}`,
+		`export QA_PORT=${sh(String(cfg.port))}`,
+		`export QA_HUB_URL=${sh(`http://${cfg.host}:${cfg.port}`)}`,
 		`export PATH=${sh(process.env.PATH ?? "")}`,
 		`export QA_TASK_ID=${sh(t.id)}`,
 		`export QA_HOME=${sh(paths.home)}`,
@@ -469,11 +489,19 @@ async function createTaskLocal(body: any): Promise<Task> {
 	}
 	tasks.set(id, t);
 	mkdirSync(taskDir(id), { recursive: true });
+	try {
+		await lifecycle.prepare(t, body.lifecycle);
+	} catch (e) {
+		writeFileSync(join(taskDir(id), "brief.md"), `# ${t.title}\n\n${t.brief}\n\nGit 准备尚未成功，请勿在原目录直接开发。`);
+		update(t, { status: "blocked", ...(t.lifecycle ? {lifecycle:{...t.lifecycle,phase:"blocked",retryPhase:"preparing",error:(e as Error).message}} : {}), summary: `Git 准备失败（未启动 worker）：${(e as Error).message}` });
+		return t;
+	}
 	const briefDoc = [
 		`# 任务 ${id}: ${title}`,
 		"",
 		`- 机器: ${SELF}`,
-		`- 工作目录: ${cwd}`,
+		`- 工作目录: ${t.cwd}`,
+		t.lifecycle ? `- Git 策略: ${t.lifecycle.policy.template} / ${t.lifecycle.policy.workspace} / ${t.lifecycle.policy.review}：${t.lifecycle.policy.reason}\n- 请只在指定 cwd 开发并提交本任务改动；不要自行合并/push/删除 worktree。qa_report done 表示交回 hub 审查与集成，不是最终完成。范围扩大必须 qa_scope 升级。` : "",
 		t.project ? `- 项目: ${projects.get(t.project)?.name ?? t.project}` : "",
 		`- 来源: ${t.source.kind}${t.source.url ? ` (${t.source.url})` : ""}`,
 		attachments.length ? `- 附件:\n${attachments.map((a) => `  - ${a}`).join("\n")}` : "",
@@ -489,8 +517,9 @@ async function createTaskLocal(body: any): Promise<Task> {
 	recordEvent(t, { kind: "created", text: title });
 	try {
 		await spawnWorker(t, { model: body.model });
+		if (t.lifecycle) update(t, { lifecycle: { ...t.lifecycle, phase: "developing" } });
 	} catch (err) {
-		update(t, { status: "failed", summary: `spawn failed: ${(err as Error).message}` }, { kind: "status", status: "failed", text: (err as Error).message });
+		update(t, { status: "failed", ...(t.lifecycle?.workspace ? {lifecycle:{...t.lifecycle,phase:"blocked",retryPhase:"developing",error:(err as Error).message}} : {}), summary: `spawn failed: ${(err as Error).message}` }, { kind: "status", status: "failed", text: (err as Error).message });
 	}
 	return t;
 }
@@ -523,6 +552,7 @@ function recordFailedTask(body: any, reason: string): Task {
 }
 
 async function deliverMessage(t: Task, text: string) {
+	if (t.lifecycle?.workspace && !["developing","changes_requested"].includes(t.lifecycle.phase)) throw new HttpError(409,"任务处于 Git 审查/批准/集成/阻塞阶段，不可通过评论/消息启动 worker");
 	if (handoff.interceptMessage(t, text)) return;
 	if (t.pendingNote) {
 		text = `${t.pendingNote}\n\n---\n${text}`;
@@ -584,7 +614,10 @@ function configureMachine(p: any, from: string): MachineInfo {
 	return machineInfo();
 }
 
+const integrationLocks = createIntegrationLocks(join(paths.home,"integration-locks"));
 const methods: Record<string, (p: any, from: string) => Promise<any>> = {
+	"integration.acquire": async (p, from) => integrationLocks.acquire(String(p.key ?? ""),`${from}/${String(p.taskId ?? "")}`),
+	"integration.release": async (p, from) => { await integrationLocks.release(String(p.key ?? ""),`${from}/${String(p.taskId ?? "")}`); return true; },
 	"machine.info": async () => machineInfo(),
 	"machine.configure": async (p, from) => configureMachine(p, from),
 
@@ -614,6 +647,19 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		const t = ownTask(p.id);
 		const text = String(p.text ?? "").trim();
 		if (!text) throw new HttpError(400, "text is required");
+		if (lifecycle.busy(t.id)) throw new HttpError(409,"生命周期正在处理，不能追加需求改变当前 gate");
+		if (t.lifecycle?.phase === "complete") {
+			update(t,{brief:`${t.brief}\n\n## 追加需求\n${text}`});
+			await lifecycle.reopen(t);
+		} else if (t.lifecycle?.workspace && CRITICAL_RISK.test(text) && t.lifecycle.policy.review !== "human") {
+			if(t.lifecycle.policy.workspace === "direct") {
+				update(t,{status:"blocked",lifecycle:{...t.lifecycle,phase:"blocked",policy:{...t.lifecycle.policy,review:"human",template:"C",reason:"追加需求涉及关键风险"},error:"直改范围扩大，保留改动并先迁移隔离目录"}});
+				broadcast({type:"task.cancel",taskId:t.id,ts:Date.now()},c=>c.taskId===t.id);
+				throw new HttpError(409,"追加需求扩大到关键风险：直改暂停，必须迁移隔离后继续");
+			}
+			update(t,{lifecycle:{...t.lifecycle,policy:{...t.lifecycle.policy,review:"human",template:"C",reason:"追加需求涉及关键风险"},review:undefined,approval:undefined}});
+		}
+		if (t.lifecycle && !["developing", "changes_requested", "complete"].includes(t.lifecycle.phase)) throw new HttpError(409, "任务正在审查/集成或等待关键批准；请用批准/要求修改操作，不要直接继续 worker");
 		const touched = team.touched(t, p.viewer?.user);
 		if (touched.pings !== t.pings) Object.assign(t, touched);
 		await deliverMessage(t, text);
@@ -621,16 +667,21 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	},
 	"task.cancel": async (p) => {
 		const t = ownTask(p.id);
+		if (lifecycle.busy(t.id)) throw new HttpError(409, "Git 操作正在进行，不能在推送中间取消；请稍后重试");
 		if (handoff.busy(t.id)) throw new HttpError(409, `task ${t.id} is being handed off`);
+		// Publish cancellation before any await; approval checks cannot overtake tmux delivery.
+		update(t, { status: "cancelled", activity: undefined }, { kind: "cancel" });
 		broadcast({ type: "task.cancel", taskId: t.id, ts: Date.now() }, (c) => c.taskId === t.id);
 		if (!workerConnected(t.id) && t.tmuxTarget) await tmux("send-keys", "-t", t.tmuxTarget, "Escape").catch(() => {});
-		return update(t, { status: "cancelled", activity: undefined }, { kind: "cancel" });
+		return t;
 	},
 	"task.close": async (p) => {
 		const t = ownTask(p.id);
+		if (lifecycle.busy(t.id)) throw new HttpError(409, "Git 操作正在进行，不能关闭任务");
 		if (handoff.busy(t.id)) throw new HttpError(409, `task ${t.id} is being handed off`);
+		update(t, { closed: true, unread: false, ...(ACTIVE_STATUSES.includes(t.status) || t.lifecycle?.phase === "human_approval" ? { status: "cancelled" as TaskStatus } : {}) }, { kind: "close", text: "closed by user" });
 		if (t.tmuxTarget) await tmux("kill-window", "-t", t.tmuxTarget).catch(() => {});
-		return update(t, { closed: true, unread: false, ...(ACTIVE_STATUSES.includes(t.status) ? { status: "cancelled" as TaskStatus } : {}) }, { kind: "close", text: "closed by user" });
+		return t;
 	},
 	"task.ack": async (p) => {
 		// Per person (shared/team.ts): clears the person's pings; only the holder's ack marks the task read
@@ -650,8 +701,20 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 	},
 	"task.retry": async (p) => {
 		const t = ownTask(p.id);
+		if (await lifecycle.retry(t)) return t;
+		if (t.lifecycle?.workspace && !["developing","changes_requested"].includes(t.lifecycle.phase)) throw new HttpError(409,"当前阶段不能重启开发 worker");
 		await deliverMessage(t, String(p.text ?? "").trim() || "上一轮没有成功结束。请检查当时的状态和报错，从中断处继续，把任务做完；如果仍然无法继续，用 qa_report 说明原因。");
 		return t;
+	},
+	"task.approve": async (p) => {
+		const t = ownTask(p.id);
+		if (!p.viewer?.root && p.viewer?.user !== (t.reviewer ?? t.requester)) throw new HttpError(403, "仅任务验收人/请求人可批准");
+		return lifecycle.approve(t, String(p.sha ?? ""), p.viewer?.user ?? "root");
+	},
+	"task.changes": async (p) => {
+		const t = ownTask(p.id);
+		if (!p.viewer?.root && p.viewer?.user !== (t.reviewer ?? t.requester)) throw new HttpError(403, "仅任务验收人/请求人可要求修改");
+		return lifecycle.requestChanges(t, String(p.text ?? "请修复审查问题"));
 	},
 	"task.project": async (p) => projects.move(ownTask(p.id), p.project),
 	"task.screen": async (p) => {
@@ -718,6 +781,38 @@ const methods: Record<string, (p: any, from: string) => Promise<any>> = {
 		}
 	},
 };
+
+async function integrationIdentity(t:Task) {
+	const l=t.lifecycle!;
+	const coordinator=l.config?.integrationCoordinator ?? (mesh.enabled ? undefined : SELF);
+	if (!coordinator) throw new Error("Mesh 仓库自动集成须配置唯一 lifecycle[].integrationCoordinator，网络分区不允许各机器自行合并");
+	const remote=(await lifecycleGit(l.workspace!.repo,"remote","get-url","origin")).trim();
+	return {coordinator,key:JSON.stringify([normalizeRemote(remote) ?? remote,l.workspace!.baseBranch])};
+}
+const lifecycle = createLifecycle({
+	tasks,
+	configs: () => loadConfig().lifecycle ?? [],
+	worktreeRoot: join(paths.home, "worktrees"),
+	patch: (t, p) => update(t, p),
+	acquire: async t => {
+		const identity=await integrationIdentity(t);
+		update(t,{lifecycle:{...t.lifecycle!,lease:identity}}); // intent BEFORE RPC: a lost acquire reply must remain recoverable
+		const acquired=await call<boolean>(identity.coordinator,"integration.acquire",{key:identity.key,taskId:t.id});
+		if(!acquired) update(t,{lifecycle:{...t.lifecycle!,lease:undefined}});
+		return acquired;
+	},
+	release: async t => {
+		const {coordinator,key}=t.lifecycle!.lease ?? await integrationIdentity(t);
+		await call(coordinator,"integration.release",{key,taskId:t.id});
+		update(t,{lifecycle:{...t.lifecycle!,lease:undefined}});
+	},
+	workerActive: async (t) => (await liveWindows()).has(t.id),
+	stop: async (t) => {
+		if (t.tmuxTarget) await tmux("kill-window", "-t", t.tmuxTarget).catch(() => {});
+	},
+	resume: async (t, text) => deliverMessage(t, text),
+	review: (t, sha) => runAgentReview(t, sha, cfg.workerModel ?? cfg.model, join(taskDir(t.id), "review-home")),
+});
 
 const handoff = createHandoff({
 	self: SELF,
@@ -1125,6 +1220,7 @@ async function reconcile() {
 	const live = await liveWindows();
 	for (const t of tasks.values()) {
 		if (t.closed || t.status === "handoff") continue;
+		if (t.lifecycle?.workspace && !["developing", "changes_requested"].includes(t.lifecycle.phase)) continue;
 		if (!live.has(t.id) && t.tmuxTarget && Date.now() - t.updatedAt > 5000) {
 			const patch: Partial<Task> = { closed: true };
 			if (ACTIVE_STATUSES.includes(t.status)) patch.status = "exited";
@@ -1210,7 +1306,15 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	if (p === "/api/team/join" && m === "POST") return send(res, 200, team.join(await readJson(req)));
 
 	// ---- local clients (machine token) and team members (user tokens)
-	const viewer = viewerOf(req, url);
+	const suppliedToken = req.headers.authorization?.replace(/^Bearer /, "") ?? url.searchParams.get("token");
+	const workerTask = suppliedToken ? [...tasks.values()].find(t => {
+		try { return readFileSync(join(taskDir(t.id), "worker.token"), "utf8").trim() === suppliedToken; } catch { return false; }
+	}) : undefined;
+	if (workerTask) {
+		const allowed = (m === "POST" && p === `/api/tasks/${workerTask.id}/report`) || (m === "GET" && p === "/api/events" && url.searchParams.get("role") === "worker" && url.searchParams.get("task") === workerTask.id) || (m === "POST" && p === `/api/tasks/${workerTask.id}/comments`) || (m === "GET" && p === `/api/tasks/${workerTask.id}/comments`);
+		if (!allowed) throw new HttpError(403, "worker token 不可批准/配置/操作其他任务");
+	}
+	const viewer = workerTask ? {root:false,role:"member" as const} : viewerOf(req, url);
 	if (!viewer) throw new HttpError(401, "unauthorized");
 
 	if (p === "/api/events" && m === "GET") {
@@ -1332,6 +1436,30 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			if (m !== "POST") throw new HttpError(405, "method not allowed");
 			const t = ownTask(id);
 			const body = await readJson(req);
+			if (workerTask && workerTask.id !== id) throw new HttpError(403, "wrong worker");
+			if (t.lifecycle && t.lifecycle.policy.workspace !== "none") {
+				if (body.scope) {
+					if (lifecycle.busy(t.id) || (t.lifecycle && !["developing","changes_requested"].includes(t.lifecycle.phase))) throw new HttpError(409,"范围升级必须在开发阶段报告；当前生命周期正在处理");
+					const risk = body.scope.risk;
+					if (risk !== "critical" && risk !== "complex") throw new HttpError(400, "scope risk must be critical or complex");
+					if (t.lifecycle.policy.workspace === "direct") {
+						update(t, {status:"blocked",lifecycle:{...t.lifecycle,policy:{...t.lifecycle.policy,review:risk === "critical" || t.lifecycle.policy.review === "human" ? "human" : "agent",template:risk === "critical" || t.lifecycle.policy.review === "human" ? "C" : "B",reason:String(body.scope.reason ?? "范围扩大")},review:undefined,approval:undefined,phase:"blocked",error:"直改范围扩大，先保留改动；需要明确迁移到隔离 worktree 后继续"},summary:"工作范围扩大，直改已暂停；改动保留，禁止自动集成"});
+						broadcast({type:"task.cancel",taskId:t.id,ts:Date.now()},c=>c.taskId===t.id);
+						return send(res,200,{task:t});
+					}
+					update(t,{lifecycle:{...t.lifecycle,policy:{...t.lifecycle.policy,review:risk === "critical" ? "human" : (t.lifecycle.policy.review === "human" ? "human" : "agent"),template:risk === "critical" || t.lifecycle.policy.review === "human" ? "C" : "B",reason:String(body.scope.reason ?? "开发范围扩大")},review:undefined,approval:undefined}});
+				}
+				if (body.status === "done") {
+					await lifecycle.developed(t, String(body.summary ?? "开发完成"));
+					return send(res, 200, { task:t });
+				}
+				if (body.settled && t.lifecycle.phase === "quiescing") {
+					update(t,{lifecycle:{...t.lifecycle,workerSettled:true}});
+					setTimeout(() => void lifecycle.drive(t), 300);
+					return send(res, 200, {task:t});
+				}
+				if (!["developing","changes_requested"].includes(t.lifecycle.phase)) return send(res,200,{task:t});
+			}
 			handoff.onReport(t, body);
 			const patch: Partial<Task> = {};
 			if (body.status) patch.status = body.status;
@@ -1360,13 +1488,14 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		if (action === "comments" && m === "GET") return send(res, 200, await call(owner, "task.comments", { id, limit: url.searchParams.get("limit") ?? 100 }));
 		if (m !== "POST") throw new HttpError(405, "method not allowed");
 		const body = await readJson(req);
+		if (action === "handoff" && findTask(id).lifecycle?.workspace) throw new HttpError(409, "Git 生命周期任务不允许迁移所有权；请在原机器完成集成");
 		if (action === "project") return send(res, 200, { task: await moveTask(id, owner, body.project) });
 		if (action === "comments") {
-			const r = await call<{ task: Task; comment: any }>(owner, "task.comment", { id, text: body.text, toWorker: body.toWorker, by: viewer.root && body.asWorker ? AGENT : (viewer.user ?? "root") });
+			const r = await call<{ task: Task; comment: any }>(owner, "task.comment", { id, text: body.text, by: workerTask ? AGENT : (viewer.root && body.asWorker ? AGENT : (viewer.user ?? "root")), toWorker: workerTask ? false : body.toWorker });
 			if (r.task.machine !== SELF) mirrorTasks.set(r.task.id, r.task);
 			return send(res, 200, r);
 		}
-		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign"].includes(action ?? "")) throw new HttpError(404, "unknown action");
+		if (!["message", "cancel", "close", "ack", "snooze", "retry", "handoff", "assign", "approve", "changes"].includes(action ?? "")) throw new HttpError(404, "unknown action");
 		// Mesh RPC params are trusted: the owning hub learns who acts from here, never from the client body.
 		const task = await call<Task>(owner, `task.${action}`, { ...body, id, viewer, by: viewer.user });
 		if (task.machine !== SELF) mirrorTasks.set(task.id, task);
@@ -1480,6 +1609,16 @@ server.listen(cfg.port, cfg.host, () => {
 setInterval(backgroundUpdate, Math.max(1, cfg.update.cacheMinutes) * 60_000).unref();
 setInterval(maybeRestart, 60_000).unref();
 setInterval(() => attention.tick(), 30_000).unref();
+setInterval(() => {
+	for (const t of tasks.values()) {
+		if (!t.lifecycle) continue;
+		if (t.lifecycle.lease && !lifecycle.busy(t.id) && (["human_approval","complete","developing","blocked"].includes(t.lifecycle.phase) || ["cancelled","failed"].includes(t.status))) {
+			void lifecycle.recoverLease(t);
+		}
+		if (["reviewing","integrating","cleanup","ci"].includes(t.lifecycle.phase) || (t.lifecycle.phase === "quiescing" && t.lifecycle.workerSettled)) void lifecycle.drive(t);
+		else if (t.lifecycle.phase === "quiescing") void liveWindows().then(live => { if (!live.has(t.id)) void lifecycle.drive(t); });
+	}
+}, 10_000).unref();
 setInterval(() => void reconcile().catch(() => {}), 5000);
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
 	process.on(sig, () => {

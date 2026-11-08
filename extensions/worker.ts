@@ -10,6 +10,7 @@ const WORKER_RULES = `你是 quick-agent 工作流中的 **负责人 worker**。
 - 人类的注意力是最稀缺的资源。只有真正需要人类决策时（需求含糊到无法合理假设、破坏性或不可逆操作、缺少权限或凭证），才调用 qa_report(status="needs_input", needs_human=true, question="一句话的问题", options=["建议选项A","选项B"])，summary 里写清背景，然后结束本轮等待回复。这会立即通知人类；能合理假设的就自己决定，并在最终汇报里说明。
 - 遇到无法继续的阻塞，调用 qa_report(status="blocked")。
 - 完成后必须调用 qa_report(status="done")。summary 用简洁的中文写：做了什么、改了哪些文件、如何验证的、遗留问题。这是人类在收件箱里看到的内容，必须能独立看懂。
+- Git 生命周期由 hub 管理：只在指定 cwd 开发，显式提交自身改动，不要 git add .、stash/reset、合并目标分支、push 或清理 worktree。qa_report done 对编码任务只代表开发完成，hub 负责审查/批准/测试/推送/清理后才最终 done。范围扩大立即 qa_scope；直改被暂停时保留所有改动，不能继续抢占目录。
 - 较长任务中途可以用 status="progress" 汇报关键进展（不要频繁）。
 - 之后可能收到以【quick-agent 追加指令】开头的消息，把它当作同一任务的延续，处理完再次 qa_report。
 - 团队协作：简报里可能写着发起人、负责人和验收人（成员 id）。qa_report 的汇报和提问会自动交给该拍板的人。需要问某个具体的人、或让别人知道某件事时，用 qa_comment 在任务下评论并写 @成员id（例如 @alice）；收到以【团队评论】开头的消息时，那是队友在任务下写给你的。`;
@@ -61,6 +62,18 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 				content: [{ type: "text", text: error ? `Report NOT delivered: ${error}` : `Reported ${params.status} to the human's attention queue.` }],
 				details: { status: params.status, error },
 			};
+		},
+	});
+
+	pi.registerTool({
+		name: "qa_scope",
+		label: "Escalate task scope",
+		description: "开发发现范围扩大时立即升级策略，critical=资金/数据/权限风险；complex=复杂工程。只允许升级，不可绕过审查。",
+		parameters: Type.Object({risk:StringEnum(["critical","complex"] as const),reason:Type.String()}),
+		async execute(_id, p) {
+			if (!hub) throw new Error("hub client not initialised");
+			const task = await hub.report(taskId,{scope:p});
+			return {content:[{type:"text",text:JSON.stringify(task.lifecycle)}],details:{}};
 		},
 	});
 
@@ -129,7 +142,8 @@ export function setupWorker(pi: ExtensionAPI, taskId: string) {
 	});
 
 	pi.on("agent_settled", async (event, ctx) => {
-		if (cancelRequested || reportedThisRun) return;
+		if (cancelRequested) return;
+		if (reportedThisRun) { await report({settled:true}); return; }
 		// Stopped without an explicit report: surface the last answer so the human sees it.
 		const last = lastAssistantText(ctx);
 		void report({
