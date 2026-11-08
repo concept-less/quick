@@ -6,35 +6,8 @@
 <title>quick-agent</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23e61919'/></svg>">
 <style>
-/* ============================================================
-   quick-agent · design tokens (minimal brutalism)
-   paper/ink + ONE accent (signal red). Square corners, hairline
-   grid, mono micro-labels, no gradients, no soft shadows.
-   ============================================================ */
-:root{
-  --bg:#f4f4f0;--bg-2:#ebebe6;--bg-3:#e1e1db;--surface:#fbfbf9;
-  --fg:#0d0d0d;--fg-2:#55554f;--fg-3:#8c8c85;
-  --line:#d4d4cc;--line-2:#0d0d0d;
-  --acc:#e61919;--acc-fg:#ffffff;--acc-soft:rgba(230,25,25,.08);
-  --inv-bg:#0d0d0d;--inv-fg:#f4f4f0;
-  --term-bg:#0d0d0d;--term-fg:#d9d9d2;
-  --hard-c:var(--line-2);--hard:4px 4px 0 var(--hard-c);
-  --sans:"Inter","Helvetica Neue",ui-sans-serif,system-ui,-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
-  --mono:"JetBrains Mono","SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;
-  --r:0px;--bw:1px;
-  --t:.12s cubic-bezier(.2,0,0,1);
-  color-scheme:light;
-}
-:root[data-theme=dark]{
-  --bg:#0e0e0e;--bg-2:#161616;--bg-3:#1f1f1f;--surface:#121212;
-  --fg:#ececE6;--fg-2:#a3a39c;--fg-3:#6b6b66;
-  --line:#2a2a2a;--line-2:#ececE6;
-  --acc:#ff3b30;--acc-fg:#0e0e0e;--acc-soft:rgba(255,59,48,.12);
-  --inv-bg:#ececE6;--inv-fg:#0e0e0e;
-  --term-bg:#000;--term-fg:#cfcfc8;--hard-c:#4a4a46;
-  color-scheme:dark;
-}
+/*@tokens*/
+/* design tokens: shared/tokens.css (inlined here by ui/server.ts; also used by the browser extension) */
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001s!important;transition:none!important}}
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -189,6 +162,13 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .box .row{display:flex;align-items:center;gap:8px;padding:6px 6px 6px 14px}
 .box .hint{font:11px/1.3 var(--mono);color:var(--fg-3);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #sendBtn{min-width:76px}
+#skBtn{height:24px;padding:0 8px;font:11px/1 var(--mono);color:var(--fg-3);border-color:var(--line)}
+#skBtn:hover{color:var(--fg)}
+.tab kbd{border:0;background:none;padding:0;color:inherit;opacity:.55;font-size:10px}
+#tsearch{height:26px;width:150px;min-width:0;flex:0 1 150px;margin-left:8px;padding:0 8px;border:var(--bw) solid var(--line);background:var(--surface);font:12px var(--mono);outline:0;transition:border-color var(--t)}
+#tsearch:focus{border-color:var(--line-2)}
+#tsearch::placeholder{color:var(--fg-3)}
+.keys-t{width:100%;border-collapse:collapse;font-size:13px}.keys-t td{padding:7px 0;border-bottom:var(--bw) solid var(--line)}.keys-t td:last-child{text-align:right;white-space:nowrap}.keys-t kbd{margin-left:3px}
 #sendBtn.busy::before{content:"";width:7px;height:7px;background:currentColor;animation:pulse .6s steps(2,start) infinite}
 #thumbs{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px 0}#thumbs:empty{display:none}
 #thumbs div{position:relative}#thumbs img{height:56px;border:var(--bw) solid var(--line);display:block}
@@ -308,6 +288,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
   <select class="btn hide-m" id="modelSel" title="模型"></select>
   <select class="btn hide-m" id="thinkSel" title="思考级别" style="max-width:140px"></select>
   <div id="mobtabs"><button class="btn" id="mobToggle">任务</button></div>
+  <button class="btn icon hide-m" id="keysBtn" title="快捷键 (?)">⌨</button>
   <button class="btn icon" id="themeBtn" title="主题：跟随系统">◐</button>
   <a class="btn icon hide-m" id="dashLink" target="_blank" title="hub 面板（旧版）">↗</a>
 </header>
@@ -320,15 +301,16 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
         <div id="thumbs"></div>
         <textarea id="input" rows="1" placeholder="告诉前台 agent 你要做什么…" aria-label="消息"></textarea>
         <div class="row"><span class="hint" id="hint"></span>
+          <button class="btn" id="skBtn" type="button" title="切换发送键"></button>
           <button class="btn danger" id="stopBtn" style="display:none">■ 停止</button>
           <button class="btn primary" id="sendBtn">发送</button></div>
       </div>
     </div></div>
   </section>
   <aside id="side">
-    <div class="tabs"><button class="tab on" data-tab="tasks">任务<span class="badge" id="tBadge"></span></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span></button></div>
+    <div class="tabs"><button class="tab on" data-tab="tasks">任务<span class="badge" id="tBadge"></span><kbd class="mk1"></kbd></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span><kbd class="mk2"></kbd></button></div>
     <div id="pane-tasks" style="display:flex;flex-direction:column;flex:1;min-height:0">
-      <div class="filters"><button class="fchip on" data-f="open">进行中 / 待处理</button><button class="fchip" data-f="review" title="已读的完成任务">回顾</button><button class="fchip" data-f="all">全部</button><span class="grow"></span><span class="chip" id="tcount"></span></div>
+      <div class="filters"><button class="fchip on" data-f="open">进行中 / 待处理</button><button class="fchip" data-f="review" title="已读的完成任务">回顾</button><button class="fchip" data-f="all">全部</button><input id="tsearch" type="search" aria-label="搜索任务" autocomplete="off"><span class="grow"></span><span class="chip" id="tcount"></span></div>
       <div id="machines"></div>
       <div class="scroll" id="tlist" role="list"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
     </div>
@@ -514,22 +496,60 @@ function onAgent(e){
   }
 }
 function renderQueue(st,fu){const n=(st||[]).length+(fu||[]).length;$('#queue').textContent=n?'⏳ 排队中 '+n+' 条（当前回复结束后处理）':''}
-const HINT_IDLE='Enter 发送 · Shift+Enter 换行 · 可粘贴图片 · /tasks /qa on|off /name';
-function setStreaming(){$('#stopBtn').style.display=streaming?'':'none';$('#sendBtn').textContent=sending?'发送中':streaming?'排队发送':'发送 ↵';$('#sendBtn').classList.toggle('busy',sending);$('#sendBtn').disabled=sending;$('#hint').textContent=streaming?'回复中 · Enter 排队到本轮之后 · Alt+Enter 插入当前轮（steer）· Esc 停止':HINT_IDLE}
+/* ---------- keyboard: OS-aware labels + send key mode (persisted) ---------- */
+const IS_MAC=/Mac|iPhone|iPad/.test(navigator.platform||navigator.userAgent);
+const MOD=IS_MAC?'⌘':'Ctrl',SHIFT=IS_MAC?'⇧':'Shift',ALT=IS_MAC?'⌥':'Alt';
+const combo=(...k)=>IS_MAC?k.join(''):k.join('+');
+const kbd=(...k)=>k.map(x=>'<kbd>'+esc(x)+'</kbd>').join('');
+let sendKey=localStorage.qaSendKey==='mod'?'mod':'enter'; // enter: Enter sends · mod: ⌘/Ctrl+Enter sends
+const SEND_COMBO=()=>sendKey==='mod'?combo(MOD,'Enter'):'Enter';
+const NEWLINE_COMBO=()=>sendKey==='mod'?'Enter':combo(SHIFT,'Enter');
+/** Does this keydown mean "send" in the current mode? (IME composition never sends) */
+function isSendKey(e){if(e.key!=='Enter'||e.isComposing||e.keyCode===229)return false;const mod=e.metaKey||e.ctrlKey;return sendKey==='mod'?mod:(!e.shiftKey||mod)}
+function applySendKey(){
+  input.placeholder='告诉前台 agent 你要做什么…（'+SEND_COMBO()+' 发送，'+NEWLINE_COMBO()+' 换行）';
+  $('#skBtn').textContent=sendKey==='mod'?combo(MOD,'↵'):'↵';$('#skBtn').title='发送键：'+SEND_COMBO()+' 发送 · '+NEWLINE_COMBO()+' 换行（点击切换）';
+  const tm=$('#tmsg');if(tm)tm.placeholder='发给负责这个任务的 worker（'+SEND_COMBO()+' 发送）；窗口已关闭会自动恢复会话';
+  const hk=$('#detail .hintk');if(hk)hk.textContent=SEND_COMBO()+' 发送';
+  setStreaming();
+}
+function toggleSendKey(){sendKey=sendKey==='mod'?'enter':'mod';localStorage.qaSendKey=sendKey;applySendKey();toast('发送键：'+SEND_COMBO()+' 发送 · '+NEWLINE_COMBO()+' 换行','info',2000)}
+const HINT_IDLE=()=>SEND_COMBO()+' 发送 · '+NEWLINE_COMBO()+' 换行 · '+combo(MOD,'K')+' 搜索 · 可粘贴图片 · /tasks /qa on|off /name';
+function setStreaming(){$('#stopBtn').style.display=streaming?'':'none';$('#sendBtn').textContent=sending?'发送中':streaming?'排队发送':'发送 ↵';$('#sendBtn').classList.toggle('busy',sending);$('#sendBtn').disabled=sending;$('#hint').textContent=streaming?'回复中 · '+SEND_COMBO()+' 排队到本轮之后 · '+combo(ALT,SEND_COMBO())+' 插入当前轮（steer）· Esc 停止':HINT_IDLE()}
 
 /* ---------- composer ---------- */
 const input=$('#input');let pending=[],sending=false;
 function autosize(){input.style.height='auto';input.style.height=Math.min(input.scrollHeight,240)+'px'}
 input.addEventListener('input',autosize);
-input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();if(!sending)send(e.altKey?'steer':'followUp')}
+input.addEventListener('keydown',e=>{if(isSendKey(e)){e.preventDefault();if(!sending)send(e.altKey?'steer':'followUp')}
   else if(e.key==='Escape'&&streaming&&!input.value&&!selTask){e.preventDefault();e.stopPropagation();$('#stopBtn').click()}});
-// global keys: "/" focuses the composer, Esc closes task detail / image zoom
+// global keys: ⌘/Ctrl+K composer ⇄ task search, ⌘/Ctrl+1/2 side panel tabs, "/" composer, "?" shortcuts,
+// Esc closes image zoom / task detail / search
+const showSide=on=>{if(innerWidth<=900&&document.body.classList.contains('show-side')!==on)$('#mobToggle').click()};
+function switchTab(name){document.querySelector('.tab[data-tab="'+name+'"]')?.click();showSide(true)}
+function focusComposer(){showSide(false);input.focus()}
+function focusSearch(){switchTab('tasks');const s=$('#tsearch');s.focus();s.select()}
 document.addEventListener('keydown',e=>{
+  const mod=IS_MAC?e.metaKey&&!e.ctrlKey:e.ctrlKey&&!e.metaKey;
+  if(mod&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='k'){e.preventDefault();document.querySelector('.modal')?.querySelector('[data-x]')?.click();if(document.activeElement===input)focusSearch();else focusComposer();return}
   if(document.querySelector('.modal'))return;
+  if(mod&&!e.altKey&&!e.shiftKey&&(e.key==='1'||e.key==='2')){e.preventDefault();switchTab(e.key==='1'?'tasks':'intake');return}
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||'');
-  if(e.key==='Escape'){if($('#zoom').style.display==='flex'){$('#zoom').style.display='none';return}if(selTask){closeTask();return}}
-  if(e.key==='/'&&!typing&&!e.metaKey&&!e.ctrlKey){e.preventDefault();if(document.body.classList.contains('show-side'))$('#mobToggle').click();input.focus()}
+  if(e.key==='Escape'){if($('#zoom').style.display==='flex'){$('#zoom').style.display='none';return}if(selTask){closeTask();return}if(document.activeElement===$('#tsearch')){e.preventDefault();if($('#tsearch').value){$('#tsearch').value='';renderTasks()}else focusComposer();return}}
+  if(typing||e.metaKey||e.ctrlKey||e.altKey)return;
+  if(e.key==='/'){e.preventDefault();focusComposer()}
+  else if(e.key==='?'){e.preventDefault();showKeys()}
 });
+function showKeys(){
+  const rows=[['聚焦输入框 / 再按一次搜索任务',kbd(MOD,'K')],['任务面板 / 浏览器评论',kbd(MOD,'1')+' '+kbd(MOD,'2')],['发送消息',kbd(...SEND_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['换行',kbd(...NEWLINE_COMBO().split(IS_MAC?/(?=Enter)/:'+'))],['插入当前轮（steer）',kbd(ALT)+' + 发送键'],['停止回复（输入框为空时）',kbd('Esc')],['关闭任务详情 / 大图 / 清空搜索',kbd('Esc')],['任务列表上下移动 / 打开',kbd('↑')+kbd('↓')+' '+kbd('Enter')],['聚焦输入框',kbd('/')],['显示快捷键',kbd('?')]];
+  modal('<h3>快捷键</h3><div class="dc"><table class="keys-t">'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+r[1]+'</td></tr>').join('')+'</table><p class="lbl" style="margin-top:14px">发送键当前：'+esc(SEND_COMBO())+' 发送 · '+esc(NEWLINE_COMBO())+' 换行</p></div><div class="df"><button class="btn" data-sk>切换发送键</button><span class="grow"></span><button class="btn primary" data-x>关闭</button></div>',(dlg,close)=>{dlg.querySelector('[data-x]').onclick=close;dlg.querySelector('[data-sk]').onclick=()=>{close();toggleSendKey()};dlg.querySelector('[data-x]').focus()});
+}
+$('#keysBtn').onclick=showKeys;$('#skBtn').onclick=()=>{toggleSendKey();input.focus()};
+$('#tsearch').placeholder='搜索任务  '+combo(MOD,'K');
+$('#tsearch').addEventListener('input',()=>renderTasks());
+$('#tsearch').addEventListener('keydown',e=>{if(e.key==='ArrowDown'||e.key==='Enter'){const f=$('#tlist .titem');if(f){e.preventDefault();e.key==='Enter'?openTask(f.dataset.id):f.focus()}}});
+document.querySelector('.mk1').textContent=combo(MOD,'1');document.querySelector('.mk2').textContent=combo(MOD,'2');
+$('#keysBtn').title='快捷键（?）';
 document.addEventListener('click',e=>{const b=e.target.closest('.copy');if(!b)return;const code=b.closest('.code')?.querySelector('pre')?.textContent||'';navigator.clipboard?.writeText(code).then(()=>{b.textContent='已复制';setTimeout(()=>b.textContent='复制',1200)},()=>toast('复制失败','error'))});
 input.addEventListener('paste',e=>{for(const it of e.clipboardData?.items||[]){if(it.type.startsWith('image/')){e.preventDefault();const f=it.getAsFile();const r=new FileReader();r.onload=()=>{const [h,d]=String(r.result).split(',');pending.push({mimeType:h.slice(5,h.indexOf(';')),data:d});renderThumbs()};r.readAsDataURL(f)}}});
 function renderThumbs(){$('#thumbs').innerHTML=pending.map((p,i)=>'<div><img src="data:'+p.mimeType+';base64,'+p.data+'"><b data-i="'+i+'">×</b></div>').join('');$('#thumbs').querySelectorAll('b').forEach(b=>b.onclick=()=>{pending.splice(+b.dataset.i,1);renderThumbs()})}
@@ -610,8 +630,10 @@ let tRaf=0;function renderTasks(){if(tRaf)return;tRaf=requestAnimationFrame(()=>
 function _renderTasks(){
   if(!hubLoaded)return; // keep the loading skeleton until the first hub snapshot
   const all=[...tasks.values()].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
-  const list=taskFilter==='all'?all:taskFilter==='review'?all.filter(reviewed):all.filter(t=>!reviewed(t)&&(ACTIVE.includes(t.status)||t.unread||(!t.closed&&Date.now()-t.updatedAt<86400e3)));
-  $('#tlist').innerHTML=list.map(t=>{const fin=FIN.includes(t.status),detail=ACTIVE.includes(t.status)?t.activity:t.summary,line=fin?firstSentence(t.summary):(detail||t.cwd||'').split('\n')[0],more=fin&&t.summary&&t.summary.trim()!==line,open=more&&expanded.has(t.id);return '<div class="titem'+(t.id===selTask?' sel':'')+(t.unread?' unread':'')+'" data-id="'+esc(t.id)+'" tabindex="0" role="listitem" aria-label="'+esc(t.title+' '+(ST[t.status]||t.status)+(t.unread?' 未读':''))+'"><div class="trow"><span class="ttitle">'+esc(t.title)+'</span>'+stPill(t.status)+(fin&&t.unread?'<button class="ackb" data-ack title="知道了：标记已读并移到「回顾」">✓ 知道了</button>':'')+'</div><div class="trow"><span class="tidm">'+esc(t.id)+'</span>'+mtag(t)+'<span class="tsub'+(fin?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+ago(t.updatedAt)+'</span></div>'+(more?'<button class="tmore" data-more aria-expanded="'+open+'">'+(open?'▾ 收起汇报':'▸ 完整汇报')+'</button>'+(open?'<div class="tfull md">'+md(t.summary)+'</div>':''):'')+'</div>'}).join('')||'<div class="blank"><span class="lbl">'+(taskFilter==='open'?'全部清空':'空')+'</span>'+(taskFilter==='all'?'还没有任务。<br>在左侧告诉前台 agent 要做什么，它会派单到这里。':taskFilter==='review'?'还没有已读的完成任务。<br>点完成卡片上的「✓ 知道了」，它会移到这里。':'没有进行中或待处理的任务。')+'</div>';
+  const q=($('#tsearch')?.value||'').trim().toLowerCase();
+  const match=t=>!q||[t.id,t.title,t.cwd,t.machine,t.summary,ST[t.status]].some(v=>String(v||'').toLowerCase().includes(q));
+  const list=(q?all:taskFilter==='all'?all:taskFilter==='review'?all.filter(reviewed):all.filter(t=>!reviewed(t)&&(ACTIVE.includes(t.status)||t.unread||(!t.closed&&Date.now()-t.updatedAt<86400e3)))).filter(match);
+  $('#tlist').innerHTML=list.map(t=>{const fin=FIN.includes(t.status),detail=ACTIVE.includes(t.status)?t.activity:t.summary,line=fin?firstSentence(t.summary):(detail||t.cwd||'').split('\n')[0],more=fin&&t.summary&&t.summary.trim()!==line,open=more&&expanded.has(t.id);return '<div class="titem'+(t.id===selTask?' sel':'')+(t.unread?' unread':'')+'" data-id="'+esc(t.id)+'" tabindex="0" role="listitem" aria-label="'+esc(t.title+' '+(ST[t.status]||t.status)+(t.unread?' 未读':''))+'"><div class="trow"><span class="ttitle">'+esc(t.title)+'</span>'+stPill(t.status)+(fin&&t.unread?'<button class="ackb" data-ack title="知道了：标记已读并移到「回顾」">✓ 知道了</button>':'')+'</div><div class="trow"><span class="tidm">'+esc(t.id)+'</span>'+mtag(t)+'<span class="tsub'+(fin?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+ago(t.updatedAt)+'</span></div>'+(more?'<button class="tmore" data-more aria-expanded="'+open+'">'+(open?'▾ 收起汇报':'▸ 完整汇报')+'</button>'+(open?'<div class="tfull md">'+md(t.summary)+'</div>':''):'')+'</div>'}).join('')||(q?'<div class="blank"><span class="lbl">无匹配</span>没有标题、ID、目录或汇报包含「'+esc(q)+'」的任务。<br><kbd>Esc</kbd> 清空搜索</div>':'')||'<div class="blank"><span class="lbl">'+(taskFilter==='open'?'全部清空':'空')+'</span>'+(taskFilter==='all'?'还没有任务。<br>在左侧告诉前台 agent 要做什么，它会派单到这里。':taskFilter==='review'?'还没有已读的完成任务。<br>点完成卡片上的「✓ 知道了」，它会移到这里。':'没有进行中或待处理的任务。')+'</div>';
   $('#tlist').querySelectorAll('.titem').forEach(el=>{const ab=el.querySelector('[data-ack]'),mb=el.querySelector('[data-more]'),fb=el.querySelector('.tfull');
     if(ab){ab.onclick=e=>{e.stopPropagation();ackCard(el)};ab.onkeydown=e=>e.stopPropagation()}
     if(mb){mb.onclick=e=>{e.stopPropagation();const id=el.dataset.id;expanded.has(id)?expanded.delete(id):expanded.add(id);_renderTasks()};mb.onkeydown=e=>e.stopPropagation()}
@@ -635,10 +657,10 @@ async function openTask(id){
     '<dl class="dmeta"><dt>ID</dt><dd class="mono">'+esc(t.id)+'</dd><dt>机器</dt><dd class="mono">'+esc(t.machine||selfId)+'</dd><dt>目录</dt><dd class="mono">'+esc(t.cwd)+'</dd><dt>来源</dt><dd>'+esc(t.source?.kind||'-')+(t.source?.url?' · <a href="'+esc(t.source.url)+'" target="_blank">'+esc(t.source.url)+'</a>':'')+'</dd><dt>更新</dt><dd>'+ago(t.updatedAt)+'</dd>'+(t.activity&&ACTIVE.includes(t.status)?'<dt>当前</dt><dd class="mono">'+esc(t.activity)+'</dd>':'')+'</dl>'+
     '<div class="acts"><button class="btn" data-a="ack"'+(t.unread?'':' disabled')+'>✓ 标记已读</button><button class="btn danger" data-a="cancel"'+(ACTIVE.includes(t.status)?'':' disabled')+'>⊘ 中止</button><button class="btn danger" data-a="close"'+(t.closed?' disabled':'')+'>✕ 关闭窗口</button></div>'+
     (t.summary?'<div class="dsec"><h4>最新汇报</h4><div class="md">'+md(t.summary)+'</div></div>':'')+
-    '<div class="dsec send"><h4>追加指令</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；窗口已关闭会自动恢复会话"></textarea><div class="acts"><span class="hintk">⌘/Ctrl+Enter 发送</span><button class="btn primary" data-a="send">发送</button></div></div>'+
+    '<div class="dsec send"><h4>追加指令</h4><textarea id="tmsg" placeholder="发给负责这个任务的 worker；窗口已关闭会自动恢复会话"></textarea><div class="acts"><span class="hintk">'+esc(SEND_COMBO())+' 发送</span><button class="btn primary" data-a="send">发送</button></div></div>'+
     '<details class="dsec" id="briefSec"><summary>任务简报</summary><pre class="pre">'+esc(t.brief)+'</pre></details>'+'</div>';
   const ta=d.querySelector('#tmsg');ta.value=keep;if(briefOpen)d.querySelector('#briefSec').open=true;
-  ta.onkeydown=e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();d.querySelector('[data-a=send]').click()}};
+  ta.onkeydown=e=>{if(isSendKey(e)){e.preventDefault();d.querySelector('[data-a=send]').click()}};applySendKey();
   d.querySelector('[data-back]').onclick=closeTask;
   d.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{const a=b.dataset.a;
     if(a==='close'&&!confirm('关闭 '+t.id+' 的 worker 窗口？'))return;
@@ -655,7 +677,7 @@ function renderIntakes(){
   const list=[...intakes.values()].sort((a,b)=>b.createdAt-a.createdAt).slice(0,100);
   $('#ilist').innerHTML=list.map(i=>'<div class="icard"><div class="trow">'+stPill(i.status)+'<span class="tsub">'+esc(i.title||i.url||'')+'</span><span class="tago">'+ago(i.createdAt)+'</span></div><div class="ctext">'+esc(i.comment)+'</div>'+(i.url?'<div class="tsub"><a href="'+esc(i.url)+'" target="_blank">'+esc(i.url)+'</a></div>':'')+
     '<div class="trow" style="margin-top:6px"><span class="tidm">'+esc(i.id)+'</span>'+(i.machine&&i.machine!==selfId?'<span class="mach">@'+esc(i.machine)+'</span>':'')+(i.elements?.length?'<span class="tsub">'+i.elements.length+' 个元素 · '+esc(i.elements[0].selector||'')+'</span>':'<span class="grow"></span>')+(i.taskId?tidHtml(i.taskId):'')+'</div>'+
-    (i.screenshots?.length&&(!i.machine||i.machine===selfId)?'<div style="margin-top:6px"><img class="zoomable" loading="lazy" src="/api/hub/intake/'+encodeURIComponent(i.id)+'/screenshot?n='+(i.screenshots.length>1?1:0)+'"></div>':'')+'</div>').join('')||'<div class="blank"><span class="lbl">空</span>还没有浏览器评论。<br>安装浏览器插件后，在网页上按 <kbd>⌘/Ctrl</kbd> <kbd>Shift</kbd> <kbd>E</kbd> 框选元素写评论，评论会交给前台 agent 处理。<br><br><a class="btn" href="'+esc((S.hub||'')+'/extension.zip')+'">↓ 下载浏览器插件</a></div>';
+    (i.screenshots?.length&&(!i.machine||i.machine===selfId)?'<div style="margin-top:6px"><img class="zoomable" loading="lazy" src="/api/hub/intake/'+encodeURIComponent(i.id)+'/screenshot?n='+(i.screenshots.length>1?1:0)+'"></div>':'')+'</div>').join('')||'<div class="blank"><span class="lbl">空</span>还没有浏览器评论。<br>安装浏览器插件后，在网页上按 '+kbd(MOD,SHIFT,'E')+' 框选元素写评论，评论会交给前台 agent 处理。<br><br><a class="btn" href="'+esc((S.hub||'')+'/extension.zip')+'">↓ 下载浏览器插件</a></div>';
   $('#iBadge').textContent=list.filter(i=>i.status==='pending').length||'';
 }
 
@@ -694,7 +716,7 @@ function connect(){
       case 'ui.dialog.close':{const c=openDialogs.get(e.id);if(c)c();break}
     }};
 }
-connect();setInterval(renderTasks,60000);input.focus();
+applySendKey();connect();setInterval(renderTasks,60000);input.focus();
 </script>
 </body>
 </html>

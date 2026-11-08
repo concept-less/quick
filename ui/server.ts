@@ -323,6 +323,16 @@ function sameOrigin(req: IncomingMessage) {
 }
 
 const APP_HTML = join(REPO_ROOT, "ui", "app.html");
+const TOKENS_CSS = join(REPO_ROOT, "shared", "tokens.css");
+/** Design tokens are kept in shared/tokens.css (also shipped with the browser extension) and inlined here. */
+const tokens = () => {
+	try {
+		return readFileSync(TOKENS_CSS, "utf8");
+	} catch {
+		return "";
+	}
+};
+const appHtml = () => readFileSync(APP_HTML, "utf8").replace("/*@tokens*/", () => tokens());
 
 async function proxyHub(req: IncomingMessage, res: ServerResponse, path: string) {
 	const method = req.method ?? "GET";
@@ -360,7 +370,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 			return res.end();
 		}
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-		return res.end(authorized(req) ? readFileSync(APP_HTML, "utf8") : loginPage(url.searchParams.has("bad")));
+		return res.end(authorized(req) ? appHtml() : loginPage(url.searchParams.has("bad")));
 	}
 
 	if (!authorized(req)) throw new HttpError(401, "unauthorized");
@@ -438,8 +448,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 function loginPage(bad: boolean) {
 	return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>quick-agent</title>
-<style>:root{--bg:#f4f4f0;--fg:#0d0d0d;--fg2:#55554f;--line:#d4d4cc;--acc:#e61919;--inv:#f4f4f0;--hard:#0d0d0d;color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--bg:#0e0e0e;--fg:#ececE6;--fg2:#a3a39c;--line:#2a2a2a;--acc:#ff3b30;--inv:#0e0e0e;--hard:#4a4a46;color-scheme:dark}}
+<style>${tokens()}
+:root{--fg2:var(--fg-2);--inv:var(--inv-fg);--hard:var(--hard-c)}
 *{box-sizing:border-box}body{font:14px/1.65 "Inter","Helvetica Neue",ui-sans-serif,system-ui,-apple-system,"PingFang SC",sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:var(--bg);color:var(--fg);padding:20px}
 form{width:min(420px,100%);border:1px solid var(--fg);box-shadow:8px 8px 0 var(--hard)}
 h2{margin:0;padding:14px 18px;border-bottom:1px solid var(--fg);font:800 14px/1 "Inter","Helvetica Neue",ui-sans-serif,system-ui,sans-serif;text-transform:uppercase;display:flex;align-items:center;gap:10px}h2::before{content:"";width:12px;height:12px;background:var(--acc)}

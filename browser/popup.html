@@ -1,19 +1,8 @@
 <!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>quick-agent</title>
+<link rel="stylesheet" href="tokens.css">
 <style>
-/* same tokens as ui/app.html (minimal brutalism: paper/ink + one signal-red accent) */
-:root{
-	--bg:#f4f4f0;--bg-2:#ebebe6;--surface:#fbfbf9;--fg:#0d0d0d;--fg-2:#55554f;--fg-3:#8c8c85;
-	--line:#d4d4cc;--line-2:#0d0d0d;--acc:#e61919;--acc-fg:#fff;--inv-bg:#0d0d0d;--inv-fg:#f4f4f0;--hard-c:#0d0d0d;
-	--sans:"Inter","Helvetica Neue",ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
-	--mono:"JetBrains Mono","SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-	color-scheme:light;
-}
-@media (prefers-color-scheme:dark){:root{
-	--bg:#0e0e0e;--bg-2:#161616;--surface:#121212;--fg:#ececE6;--fg-2:#a3a39c;--fg-3:#6b6b66;
-	--line:#2a2a2a;--line-2:#ececE6;--acc:#ff3b30;--acc-fg:#0e0e0e;--inv-bg:#ececE6;--inv-fg:#0e0e0e;--hard-c:#4a4a46;
-	color-scheme:dark;
-}}
+/* design tokens: tokens.css (copy of shared/tokens.css, the same source as the Web UI) */
 *{box-sizing:border-box}
 body{width:340px;margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
 :focus{outline:none}:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
@@ -48,19 +37,40 @@ summary::before{content:"+";display:inline-block;width:14px}details[open] summar
 summary:hover{color:var(--fg)}
 .check{display:flex;gap:8px;align-items:flex-start;margin-top:12px;color:var(--fg-2);font:12px/1.5 var(--sans);text-transform:none;letter-spacing:0}
 .check input{margin-top:3px;accent-color:var(--fg)}
+.keys{margin-top:14px;border-top:1px solid var(--line-2)}
+.keys .k{display:flex;align-items:center;gap:8px;height:30px;border-bottom:1px solid var(--line);font-size:12px;color:var(--fg-2)}
+.keys .k span{flex:1}
+.seg{display:flex;margin-top:6px;border:1px solid var(--line-2)}
+.seg button{height:30px;border:0;border-right:1px solid var(--line-2);font:11.5px var(--mono);color:var(--fg-2)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--inv-bg);color:var(--inv-fg)}
+.seg button:active{transform:none}
+button .kh{margin-left:6px;opacity:.7;font:10.5px var(--mono)}
+button.primary .kh{margin-left:auto;margin-right:10px}
 .foot{border-top:1px solid var(--line);padding:8px 14px;color:var(--fg-3);font:10.5px/1.5 var(--mono)}
 </style></head><body>
 <h1><i class="mk"></i>quick-agent <i class="dot" id="dot" title="hub 连接状态"></i></h1>
 <main>
-<button class="primary" id="pick">在当前页面框选评论</button>
+<button class="primary" id="pick">在当前页面框选评论<span class="kh" id="pickKey"></span></button>
 <div id="pickErr"></div>
-<div class="hint">快捷键 <span id="shortcut"><kbd>…</kbd></span>（<a id="shortcuts">修改快捷键</a>，即 chrome://extensions/shortcuts）。<br>点击元素即可评论，Shift+点击多选，「框选区域」可拖出矩形，Esc 退出。</div>
 <div id="status"></div>
+<label>评论框发送键 <span class="kh" style="float:right;text-transform:none;letter-spacing:0"><kbd>M</kbd> 切换</span></label>
+<div class="seg" id="sendKey" role="radiogroup" aria-label="评论框发送键">
+	<button data-v="enter" role="radio">Enter 发送 · ⇧Enter 换行</button>
+	<button data-v="mod" role="radio" id="modOpt">⌘Enter 发送 · Enter 换行</button>
+</div>
+<div class="keys" id="keys">
+	<div class="k"><span>开始 / 退出框选</span><span id="kPick" style="flex:0"></span></div>
+	<div class="k"><span>打开本弹窗</span><span id="kPopup" style="flex:0"></span></div>
+	<div class="k"><span>多选 · 写评论 · 取消</span><span style="flex:0;white-space:nowrap"><kbd>⇧</kbd>+点击 <kbd>Enter</kbd> <kbd>Esc</kbd></span></div>
+	<div class="k"><span>弹窗内：框选 · 任务面板 · 设置</span><span style="flex:0;white-space:nowrap"><kbd>E</kbd> <kbd>D</kbd> <kbd>,</kbd></span></div>
+</div>
+<div class="hint"><a id="shortcuts">修改快捷键</a>（chrome://extensions/shortcuts）· 点击元素即可评论，「框选区域」可拖出矩形。</div>
 <details id="settings">
 	<summary>连接设置</summary>
 	<label for="hubUrl">Hub 地址（本机 hub 或 ssh -L 转发的端口）</label><input id="hubUrl" type="text" placeholder="http://127.0.0.1:7788">
 	<label for="token">Token（在 hub 所在机器运行 <code>quick token</code>）</label><input id="token" type="password" autocomplete="off">
-	<div class="row"><button id="save">保存并测试</button><button id="dash">打开任务面板</button></div>
+	<div class="row"><button id="save">保存并测试<span class="kh">↵</span></button><button id="dash">打开任务面板<span class="kh">D</span></button></div>
 	<label class="check"><input type="checkbox" id="auto"> <span>在所有网站自动显示评论角标、从页面加载起记录控制台错误（需额外授予“所有网站”权限，可随时关闭）</span></label>
 </details>
 </main>

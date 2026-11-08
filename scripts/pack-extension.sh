@@ -2,9 +2,11 @@
 # Build store-ready zips of the browser extension (only runtime files, no docs/dotfiles).
 #   scripts/pack-extension.sh            -> dist/quick-agent-extension-<ver>-chrome.zip (Chrome Web Store / Edge Add-ons)
 #                                           dist/quick-agent-extension-<ver>-firefox.zip (addons.mozilla.org, experimental)
-# Validates manifest.json (JSON, required keys, referenced files exist, no remote code patterns).
+# Syncs shared/tokens.css into browser/ first. Validates manifest.json (JSON, required keys, referenced files exist, no remote code patterns).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Design tokens live in shared/tokens.css; the extension ships a copy (browser/tokens.{css,js}).
+"$ROOT/scripts/sync-tokens.sh"
 exec python3 - "$ROOT" <<'PY'
 import json, os, re, sys, zipfile
 root = sys.argv[1]
@@ -28,6 +30,8 @@ refs = list(m.get("icons", {}).values()) + list(m.get("action", {}).get("default
 refs += [m["background"]["service_worker"], m["action"].get("default_popup", "")]
 for r in filter(None, refs):
     if r not in files: err.append(f"referenced file missing: {r}")
+if sum(1 for c in m.get("commands", {}).values() if "suggested_key" in c) > 4:
+    err.append("at most 4 commands may have a suggested_key")
 if "<all_urls>" in json.dumps(m.get("host_permissions", [])) + json.dumps(m.get("permissions", [])):
     err.append("<all_urls> in required permissions")
 for f in files:

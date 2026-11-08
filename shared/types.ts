@@ -97,7 +97,10 @@ export interface Intake {
 	/** Selection mode used in the page. */
 	mode?: "element" | "region";
 	elements: IntakeElement[];
+	/** Viewport coordinates at submit time (add viewport.scrollX/Y for document coordinates). */
 	region?: { x: number; y: number; width: number; height: number };
+	/** Where the page pin goes: element (selector) + offset as a fraction of its box; `doc` = document coordinates fallback. */
+	anchor?: { selector?: string; fx?: number; fy?: number; doc?: { x: number; y: number } };
 	viewport?: { width: number; height: number; dpr: number; scrollX: number; scrollY: number };
 	/** Absolute paths of stored screenshots. */
 	screenshots: string[];

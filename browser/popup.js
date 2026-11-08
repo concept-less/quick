@@ -29,32 +29,58 @@ async function test() {
 	}
 }
 
-async function showShortcut() {
-	const cmds = await chrome.commands.getAll();
-	const c = cmds.find((x) => x.name === "toggle-picker");
-	const keys = c?.shortcut;
-	$("shortcut").innerHTML = "";
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const MOD = IS_MAC ? "⌘" : "Ctrl";
+
+/** Render a Chrome shortcut string ("⌘⇧E" on mac, "Ctrl+Shift+E" elsewhere) as <kbd>s. */
+function renderKeys(target, keys) {
+	target.innerHTML = "";
 	if (!keys) {
-		$("shortcut").textContent = "未设置";
+		target.textContent = "未设置";
 		return;
 	}
-	// "⌘⇧E" on mac comes as a single string of symbols; "Ctrl+Shift+E" elsewhere.
 	const plus = keys.includes("+");
 	const parts = plus ? keys.split("+") : [...keys];
-	parts.forEach((k, i) => {
-		if (i && plus) $("shortcut").append("+");
+	for (const k of parts) {
 		const kbd = document.createElement("kbd");
 		kbd.textContent = k;
-		$("shortcut").append(kbd);
-	});
+		target.append(kbd, " ");
+	}
 }
+
+async function showShortcuts() {
+	const cmds = await chrome.commands.getAll();
+	const key = (n) => cmds.find((x) => x.name === n)?.shortcut || "";
+	renderKeys($("kPick"), key("toggle-picker"));
+	renderKeys($("kPopup"), key("_execute_action"));
+	$("pickKey").textContent = key("toggle-picker") || "E";
+}
+
+// ---------------------------------------------------------------- send key (shared with content.js via chrome.storage)
+async function showSendKey(v) {
+	if (!v) v = (await chrome.storage.local.get({ sendKey: "enter" })).sendKey;
+	for (const b of $("sendKey").querySelectorAll("button")) {
+		b.classList.toggle("on", b.dataset.v === v);
+		b.setAttribute("aria-checked", String(b.dataset.v === v));
+	}
+}
+async function setSendKey(v) {
+	await chrome.storage.local.set({ sendKey: v });
+	showSendKey(v);
+}
+$("modOpt").textContent = `${MOD}${IS_MAC ? "" : "+"}Enter 发送 · Enter 换行`;
+$("sendKey").addEventListener("click", (e) => {
+	const v = e.target.closest("button")?.dataset.v;
+	if (v) setSendKey(v);
+});
 
 async function init() {
 	const s = await chrome.storage.local.get({ hubUrl: DEFAULT_HUB, token: "" });
 	$("hubUrl").value = s.hubUrl;
 	$("token").value = s.token;
 	$("auto").checked = await chrome.permissions.contains({ origins: AUTO_ORIGINS });
-	showShortcut();
+	showShortcuts();
+	showSendKey();
 	if (s.token) test();
 	else {
 		status("还没配置：填写 Hub 地址和 Token 后点「保存并测试」", "err");
@@ -69,13 +95,14 @@ $("save").onclick = async () => {
 	await chrome.storage.local.set({ hubUrl, token: $("token").value.trim() });
 	test();
 };
-$("pick").onclick = async () => {
+async function pick() {
 	$("pickErr").style.display = "none";
 	const r = await send({ type: "qa-toggle-active" });
 	if (r?.ok) return window.close();
 	$("pickErr").textContent = r?.error || "无法在此页面运行";
 	$("pickErr").style.display = "block";
-};
+}
+$("pick").onclick = pick;
 $("dash").onclick = () => send({ type: "qa-open-dashboard" });
 $("shortcuts").onclick = () => chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
 $("auto").onchange = async (e) => {
@@ -86,5 +113,34 @@ $("auto").onchange = async (e) => {
 	else await chrome.permissions.remove({ origins: AUTO_ORIGINS });
 	await send({ type: "qa-auto-sync" });
 };
+
+// Popup keys (only when not typing in a field): E/Enter pick, D dashboard, "," settings, M send key.
+document.addEventListener("keydown", async (e) => {
+	const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+	if (typing) {
+		if (e.key === "Enter" && e.target.closest("#settings")) {
+			e.preventDefault();
+			$("save").click();
+		}
+		return;
+	}
+	if (e.metaKey || e.ctrlKey || e.altKey) return;
+	const k = e.key.toLowerCase();
+	if (k === "e" || (k === "enter" && document.activeElement === document.body)) {
+		e.preventDefault();
+		pick();
+	} else if (k === "d") {
+		e.preventDefault();
+		$("dash").click();
+	} else if (k === ",") {
+		e.preventDefault();
+		$("settings").open = !$("settings").open;
+		if ($("settings").open) $("hubUrl").focus();
+	} else if (k === "m") {
+		e.preventDefault();
+		const cur = (await chrome.storage.local.get({ sendKey: "enter" })).sendKey;
+		setSendKey(cur === "enter" ? "mod" : "enter");
+	}
+});
 
 init();

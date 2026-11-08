@@ -22,6 +22,7 @@ import {
 } from "../shared/types.ts";
 import { dashboardHtml } from "./dashboard.ts";
 import { Mesh } from "./mesh.ts";
+import { pageKey } from "./page-url.ts";
 import { autoUpdate, readState, readVersion, runUpgrade, type UpgradeResult } from "../shared/update.ts";
 import { createHandoff } from "./handoff.ts";
 import { createTeam } from "./team.ts";
@@ -765,6 +766,18 @@ function storeDataUrl(dir: string, name: string, dataUrl: string): string | unde
 	return file;
 }
 
+/** Pin anchor from the extension: selector + relative offset inside that element, document-coordinate fallback. */
+function cleanAnchor(a: any): Intake["anchor"] {
+	if (!a || typeof a !== "object") return undefined;
+	const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+	const out: NonNullable<Intake["anchor"]> = {};
+	if (typeof a.selector === "string" && a.selector) out.selector = a.selector.slice(0, 1000);
+	if (num(a.fx) !== undefined) out.fx = num(a.fx);
+	if (num(a.fy) !== undefined) out.fy = num(a.fy);
+	if (a.doc && num(a.doc.x) !== undefined && num(a.doc.y) !== undefined) out.doc = { x: a.doc.x, y: a.doc.y };
+	return Object.keys(out).length ? out : undefined;
+}
+
 function createIntake(body: any): Intake {
 	const comment = String(body.comment ?? "").trim();
 	if (!comment) throw new HttpError(400, "comment is required");
@@ -789,6 +802,7 @@ function createIntake(body: any): Intake {
 		mode: body.mode,
 		elements: Array.isArray(body.elements) ? body.elements.slice(0, 20) : [],
 		region: body.region,
+		anchor: cleanAnchor(body.anchor),
 		viewport: body.viewport,
 		screenshots,
 		consoleErrors: Array.isArray(body.consoleErrors) ? body.consoleErrors.slice(-30).map(String) : undefined,
@@ -1076,13 +1090,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 	// Browser badges: comments on a page (from any machine) and the status of their tasks.
 	if (p === "/api/pages" && m === "GET") {
 		const pageUrl = url.searchParams.get("url") ?? "";
-		const strip = (u: string) => u.split("#")[0];
+		const key = pageKey(pageUrl);
 		const list = allIntakes()
-			.filter((i) => i.url && strip(i.url) === strip(pageUrl))
+			.filter((i) => i.url && pageKey(i.url) === key)
 			.sort((a, b) => a.createdAt - b.createdAt)
 			.map((i) => {
 				const t = i.taskId ? (tasks.get(i.taskId) ?? mirrorTasks.get(i.taskId)) : undefined;
-				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine };
+				return { id: i.id, comment: i.comment, elements: i.elements.slice(0, 3), region: i.region, mode: i.mode, anchor: i.anchor, viewport: i.viewport, status: i.status, taskId: i.taskId, taskStatus: t?.status, taskTitle: t?.title, summary: t?.summary, machine: t?.machine };
 			});
 		return send(res, 200, { comments: list });
 	}

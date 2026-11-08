@@ -8,7 +8,7 @@ const DEFAULTS = { hubUrl: "http://127.0.0.1:7788", token: "" };
 const AUTO_ORIGINS = ["http://*/*", "https://*/*"];
 const AUTO_SCRIPTS = [
 	{ id: "qa-console-hook", js: ["console-hook.js"], matches: AUTO_ORIGINS, runAt: "document_start", world: "MAIN", allFrames: false },
-	{ id: "qa-content", js: ["content.js"], matches: AUTO_ORIGINS, runAt: "document_idle", allFrames: false },
+	{ id: "qa-content", js: ["tokens.js", "content.js"], matches: AUTO_ORIGINS, runAt: "document_idle", allFrames: false },
 ];
 
 async function settings() {
@@ -113,7 +113,7 @@ async function ensureInjected(tabId) {
 	} catch {}
 	// Console hook first (MAIN world) so errors from now on are recorded, then the picker UI.
 	await chrome.scripting.executeScript({ target: { tabId }, files: ["console-hook.js"], world: "MAIN" }).catch(() => {});
-	await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+	await chrome.scripting.executeScript({ target: { tabId }, files: ["tokens.js", "content.js"] });
 }
 
 /** Toggle the picker in a tab. Returns { ok, active } or throws a user-readable error. */

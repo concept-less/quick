@@ -19,6 +19,10 @@
     "toggle-picker": {
       "suggested_key": { "default": "Ctrl+Shift+E", "mac": "Command+Shift+E" },
       "description": "开始/取消框选评论"
+    },
+    "_execute_action": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "打开 quick-agent 弹窗"
     }
   },
   "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
