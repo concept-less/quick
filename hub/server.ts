@@ -34,6 +34,7 @@ import { applyActivity, applyProgress, finishProgress, restartProgress } from ".
 import { readTranscript } from "../shared/transcript.ts";
 import { createWatchdog } from "./watchdog.ts";
 import { EXPECT_SOURCE_LABEL, fmtMinutes } from "../shared/watchdog.ts";
+import { checkModelSpec, listPiModels, type PiModel } from "../shared/worker-model.ts";
 
 const run = promisify(execFile);
 const cfg = loadConfig();
@@ -658,7 +659,84 @@ function configureMachine(p: any, from: string): MachineInfo {
 	return machineInfo();
 }
 
+// ---------------------------------------------------------------- worker default model (config.json workerModel)
+
+const MODEL_LIST_TTL_MS = 60_000;
+let modelList: { at: number; models: PiModel[] } | undefined;
+let modelListing: Promise<PiModel[]> | undefined;
+/** Models of this machine's pi (cached for a minute; `refresh` forces a new `pi --list-models`). */
+async function piModels(refresh = false): Promise<PiModel[]> {
+	if (!refresh && modelList && Date.now() - modelList.at < MODEL_LIST_TTL_MS) return modelList.models;
+	modelListing ??= listPiModels().then(
+		(models) => {
+			modelList = { at: Date.now(), models };
+			return models;
+		},
+		(e) => {
+			modelList = undefined;
+			throw e;
+		},
+	).finally(() => (modelListing = undefined));
+	return modelListing;
+}
+
+/** Current worker model of this machine: raw setting, inherited value, effective model and the model list. */
+async function workerModelInfo(refresh = false) {
+	let models: PiModel[] = [];
+	let listError: string | undefined;
+	try {
+		models = await piModels(refresh);
+	} catch (e) {
+		listError = (e as Error).message;
+	}
+	const effective = cfg.workerModel ?? cfg.model;
+	const known = (spec: string) => checkModelSpec(spec, models).ok;
+	return {
+		machine: SELF,
+		workerModel: cfg.workerModel ?? null,
+		model: cfg.model,
+		frontModel: cfg.frontModel ?? null,
+		effective,
+		source: cfg.workerModel ? "workerModel" : "model",
+		/** Does the effective model exist in this machine's pi? (undefined when the list failed) */
+		effectiveKnown: listError ? undefined : known(effective),
+		models: models.map((m) => ({ provider: m.provider, id: m.id, thinking: m.thinking })),
+		listError,
+		listedAt: modelList?.at,
+	};
+}
+
+/** Set (string) or clear (null / "") this machine's worker default model; validated, persisted, live for new workers. */
+async function setWorkerModel(spec: unknown, from: string) {
+	let value: string | undefined;
+	if (spec !== null && spec !== undefined && spec !== "") {
+		let models: PiModel[];
+		try {
+			models = await piModels(true);
+		} catch (e) {
+			throw new HttpError(502, `${SELF}: 无法校验模型，未保存：${(e as Error).message}`);
+		}
+		const r = checkModelSpec(spec, models);
+		if (!r.ok) throw new HttpError(400, `${SELF}: ${r.error}，未保存`);
+		value = r.model;
+	}
+	saveConfigPatch((raw) => {
+		if (value) raw.workerModel = value;
+		else delete raw.workerModel;
+	});
+	const saved = loadConfig().workerModel;
+	if (saved !== value) throw new HttpError(500, `${SELF}: 写入 config.json 后读回的是 ${saved ?? "(未设置)"}，与 ${value ?? "(未设置)"} 不一致`);
+	const before = cfg.workerModel;
+	cfg.workerModel = value;
+	log(`[worker-model] ${before ?? "(inherit)"} -> ${value ?? `(inherit ${cfg.model})`} by ${from}`);
+	const info = await workerModelInfo();
+	broadcast({ type: "workerModel", info: { ...info, models: undefined } });
+	return info;
+}
+
 const methods: Record<string, (p: any, from: string) => Promise<any>> = {
+	"workerModel.info": async (p) => workerModelInfo(!!p.refresh),
+	"workerModel.set": async (p, from) => setWorkerModel(p.model, from),
 	"machine.info": async () => machineInfo(),
 	"machine.configure": async (p, from) => configureMachine(p, from),
 
@@ -1372,6 +1450,43 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		const machine = String(body.machine || SELF);
 		if (!mesh.reachable(machine)) throw new HttpError(400, `machine ${machine} is not reachable`);
 		return send(res, 200, { ...(await call(machine, "update.start", { action: body.action }, 20_000)), machine, self: machine === SELF });
+	}
+	if (p === "/api/worker-model" && m === "GET") {
+		// Worker default model of this / another / every machine (Web UI settings, `quick worker-model`).
+		const refresh = url.searchParams.get("refresh") === "1";
+		const one = (id: string) =>
+			call(id, "workerModel.info", { refresh }, 60_000)
+				.then((r) => ({ ...r, machine: id, self: id === SELF }))
+				.catch((e) => ({ machine: id, self: id === SELF, error: /unknown method/.test(e.message) ? "对方 hub 版本过旧，不支持远程设置 worker 模型（需先升级那台机器）" : e.message }));
+		if (url.searchParams.get("all") === "1") {
+			const list = mesh.machines().filter((x) => x.online || x.self);
+			return send(res, 200, { self: SELF, canEdit: can(viewer, "machine.configure"), machines: await Promise.all(list.map((x) => one(x.id))) });
+		}
+		const machine = url.searchParams.get("machine") || SELF;
+		if (!mesh.reachable(machine)) throw new HttpError(400, `machine ${machine} is not reachable (see /api/machines)`);
+		return send(res, 200, { ...(await one(machine)), canEdit: can(viewer, "machine.configure") });
+	}
+	if (p === "/api/worker-model" && m === "POST") {
+		// body: { model: "provider/id[:thinking]" | null, machine?: id, machines?: id[] | "all" }. Each machine validates against its own pi.
+		need(viewer, "machine.configure");
+		const body = await readJson(req);
+		if (!("model" in body)) throw new HttpError(400, "body.model is required (null clears the setting)");
+		const targets: string[] = body.machines === "all" ? mesh.machines().filter((x) => x.online || x.self).map((x) => x.id) : Array.isArray(body.machines) ? body.machines.map(String) : [String(body.machine || SELF)];
+		if (!targets.length) throw new HttpError(400, "no target machine");
+		const results = await Promise.all(
+			targets.map(async (id) => {
+				if (!mesh.reachable(id)) return { machine: id, ok: false, error: `machine ${id} is not reachable` };
+				try {
+					return { machine: id, ok: true, info: await call(id, "workerModel.set", { model: body.model ?? null }, 60_000) };
+				} catch (e) {
+					const msg = (e as Error).message;
+					return { machine: id, ok: false, status: (e as any).status, error: /unknown method/.test(msg) ? `${id}: 对方 hub 版本过旧，不支持远程设置 worker 模型` : msg };
+				}
+			}),
+		);
+		const failed = results.filter((r) => !r.ok);
+		const status = !failed.length ? 200 : failed.length === results.length ? ((failed.length === 1 && (failed[0] as any).status) || 400) : 207;
+		return send(res, status, { ok: !failed.length, results, ...(failed.length ? { error: failed.map((r) => r.error).join("；") } : {}) });
 	}
 	if (p === "/api/machines" && m === "GET") return send(res, 200, { self: SELF, machines: mesh.machines(), links: mesh.linkStatus() });
 	if (p === "/api/machine" && m === "POST") {

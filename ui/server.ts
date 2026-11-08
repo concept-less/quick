@@ -417,6 +417,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 		res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
 		return res.end(readFileSync(join(REPO_ROOT, "ui", "upgrade.js"), "utf8"));
 	}
+	if (p === "/worker-model.js" && m === "GET") {
+		// Worker default model setting in the header (see ui/worker-model.js), separate from the front model.
+		res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+		return res.end(readFileSync(join(REPO_ROOT, "ui", "worker-model.js"), "utf8"));
+	}
 	if (p.startsWith("/api/hub/")) return proxyHub(req, res, `/api/${p.slice("/api/hub/".length)}${url.search}`);
 
 	if (m === "GET" && p === "/api/models") {

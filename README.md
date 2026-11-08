@@ -632,6 +632,7 @@ quick team board                                 # 团队视图：所有进行�
   "uiPort": 7790,                         // Web UI（quick ui），只监听 127.0.0.1
   "token": "…自动生成…",
   "model": "tokenjoy/claude-opus-5-5",   // 前台和 worker 共用；也可以用 frontModel / workerModel 分开设置
+  // "workerModel": "tokenjoy/gpt-6.1-sol",   // worker 默认模型；Web UI 顶栏「WORKER」按钮可按机器设置（见下）
   "tmuxSession": "qa",
   "machine": { "id": "cloud", "description": "主力服务器，项目在 ~/work", "priority": 10, "resources": ["claude"], "resourceNotes": "无 GUI，网络稳定" },   // 见「机器资源与调度」
   //   machine.owner: 团队成员 id，机器 token 即代表他（见「团队协作」）
@@ -646,6 +647,8 @@ quick team board                                 # 团队视图：所有进行�
   ]
 }
 ```
+
+**worker 默认模型**：Web UI 顶栏的「WORKER <模型>」按钮（和右侧「前台」对话模型分开）打开设置面板，列出 mesh 里每台在线机器：生效的模型、来源（`workerModel` 设置 / 继承 `model`）、这台机器自己 `pi --list-models` 的可用模型（有思考能力的模型可选思考级别）。可以单台保存、恢复继承，或「应用到所有机器」（每台按自己的模型列表校验，部分失败会逐台列出，失败的机器不改）。保存由目标机器的 hub 校验后写入它的 config.json 并立即生效：之后新派发和恢复的 worker 用新模型，运行中的 worker 不受影响，前台模型不变。修改需要 owner 权限（`machine.configure`）。API：`GET /api/worker-model[?all=1|machine=id][&refresh=1]`，`POST /api/worker-model {"model": "provider/id[:thinking]" | null, "machine"?: id, "machines"?: [id…] | "all"}`。巡检 reviewer 没有设置 `watchdog.model` 时也跟随 worker 默认模型。
 
 修改配置后需要运行 `quick hub restart`，并在 pi 里执行 `/reload` 或新开一个 pi，才会生效。
 

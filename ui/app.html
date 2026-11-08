@@ -432,7 +432,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
   <button class="btn" id="focusBtn" title="专注模式：只有「需要你」会打扰，完成汇总留到结束">专注</button>
   <div class="grow"></div>
   <span class="chip hide-m" id="hubChip"><span class="dot" id="hubDot"></span><span id="hubText">hub</span></span>
-  <select class="btn hide-m" id="modelSel" title="模型"></select>
+  <select class="btn hide-m" id="modelSel" title="前台对话模型（只影响这里的对话，不影响 worker）"></select>
   <select class="btn hide-m" id="thinkSel" title="思考级别" style="max-width:140px"></select>
   <div id="mobtabs" role="tablist" aria-label="视图"><button data-v="side" role="tab">注意力</button><button data-v="chat" role="tab">对话</button><button id="mobToggle" hidden></button></div>
   <button class="btn icon hide-m" id="keysBtn" title="快捷键 (?)">?</button>
@@ -1188,5 +1188,6 @@ let cronTimer=0;applySendKey();connect();setInterval(()=>{renderTasks();renderCr
 </script>
 <script src="/team.js"></script>
 <script src="/upgrade.js" defer></script>
+<script src="/worker-model.js" defer></script>
 </body>
 </html>

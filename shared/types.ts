@@ -199,4 +199,6 @@ export type HubEvent =
 	| { type: "update.available"; machine: string; version: string; ts: number }
 	| { type: "update.job"; machine: string; job: { step: string; from: string; to?: string; error?: string; message?: string; received?: number; total?: number } }
 
-	| { type: "projects"; projects: import("./projects.ts").Project[] };
+	| { type: "projects"; projects: import("./projects.ts").Project[] }
+	/** Worker default model of this machine changed (config.json workerModel). */
+	| { type: "workerModel"; info: Record<string, unknown> };
