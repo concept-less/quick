@@ -90,7 +90,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .md table{border-collapse:collapse;margin:.7em 0;font-size:13px;display:block;overflow-x:auto}.md td,.md th{border:var(--bw) solid var(--line);padding:5px 10px;text-align:left}.md th{background:var(--bg-2);font-weight:600}
 .md a{word-break:break-all}
 .md hr{border:0;border-top:var(--bw) solid var(--line);margin:1em 0}
-.tid{font:500 11.5px/1 var(--mono);padding:2px 5px;border:var(--bw) solid var(--fg);color:var(--fg);cursor:pointer;white-space:nowrap;display:inline-block;vertical-align:1px;transition:background var(--t),color var(--t)}
+.tid{font:500 12px/1.4 var(--sans);padding:2px 5px;border:var(--bw) solid var(--fg);background:transparent;color:var(--fg);cursor:pointer;white-space:normal;overflow-wrap:anywhere;text-align:inherit;max-width:100%;display:inline-block;vertical-align:baseline;transition:background var(--t),color var(--t)}
 .tid:hover{background:var(--fg);color:var(--bg)}
 .think{margin:var(--s1) 0 var(--s2);color:var(--fg-2);font-size:13px}
 .think summary{cursor:pointer;list-style:none;user-select:none;display:inline-flex;align-items:center;gap:6px;font:500 10.5px/1.8 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3)}
@@ -502,16 +502,27 @@ function modal(html,onMount,onClose){const m=document.createElement('div');m.cla
 
 /* ---------- markdown (small, escape-first) ---------- */
 function inline(s){
-  s=esc(s);
-  const codes=[];s=s.replace(/`([^`\n]+)`/g,(_,c)=>{codes.push(c);return '\u0000'+(codes.length-1)+'\u0000'});
-  s=s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
-  s=s.replace(/(^|[\s(（])(https?:\/\/[^\s<)）]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  s=esc(String(s).replace(/\u0000/g,''));
+  // Protect code and links before task recognition; never rewrite their text or attributes.
+  const tokens=[],hold=html=>{tokens.push(html);return '\u0000'+(tokens.length-1)+'\u0000'};
+  s=s.replace(/`([^`\n]+)`/g,(_,c)=>hold('<code>'+c+'</code>'));
+  s=s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,(_,label,url)=>hold('<a href="'+url+'" target="_blank" rel="noopener">'+label+'</a>'));
+  s=s.replace(/(^|[\s(（])(https?:\/\/[^\s<)）]+)/g,(_,p,url)=>p+hold('<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>'));
   s=s.replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>').replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<i>$2</i>');
   s=linkTasks(s);
-  return s.replace(/\u0000(\d+)\u0000/g,(_,i)=>{const c=codes[+i];return tasks.has(c)?tidHtml(c):'<code>'+c+'</code>'});
+  return s.replace(/\u0000(\d+)\u0000/g,(_,i)=>tokens[+i]||'');
 }
-function linkTasks(html){return html.replace(/(^|[^\w\/#.-])(t[0-9a-f]{4})(?![\w-])/g,(m,p,id)=>tasks.has(id)?p+tidHtml(id):m)}
-const tidHtml=id=>'<span class="tid" data-task="'+esc(id)+'">'+esc(id)+'</span>';
+function linkTasks(html){
+  // Input is escaped text (or our inline formatting). Skip URLs even outside Markdown.
+  return html.replace(/(?:https?:\/\/|www\.)[^\s<>]+|(^|[^\w\/#.@-])(t[0-9a-f]{4})(?![\w-]|[./]\w)/g,(m,p,id)=>id?p+tidHtml(id):m);
+}
+function taskRefTitle(id){const title=tasks.get(id)?.title;return typeof title==='string'&&title.trim()?title.trim():'查看任务'}
+function shortTaskTitle(title){const chars=Array.from(title);return chars.length>32?chars.slice(0,32).join('')+'…':title}
+function tidHtml(id){const title=taskRefTitle(id);return '<button type="button" class="tid" data-task="'+esc(id)+'" title="'+esc(title)+'" aria-label="'+esc(title)+'">'+esc(shortTaskTitle(title))+'</button>'}
+function refreshTaskRefs(){
+  // Patch only labels: no message re-render, lost selection/details state, or per-reference requests.
+  document.querySelectorAll('.tid[data-task]').forEach(el=>{const title=taskRefTitle(el.dataset.task),label=shortTaskTitle(title);if(el.textContent!==label)el.textContent=label;if(el.title!==title)el.title=title;if(el.getAttribute('aria-label')!==title)el.setAttribute('aria-label',title)});
+}
 function md(src){
   const lines=String(src??'').replace(/\r/g,'').split('\n');let out='',i=0;
   const isTable=k=>/^\s*\|.*\|\s*$/.test(lines[k]||'')&&/^\s*\|[\s:|-]+\|\s*$/.test(lines[k+1]||'');
@@ -808,7 +819,7 @@ function ackCard(el){const id=el.dataset.id;if(el.classList.contains('leaving'))
   const done=()=>{expanded.delete(id);const prev=attn.get(id);if(prev)attn.set(id,{...prev,level:'archived'});_renderTasks();if(next?.dataset?.id)document.querySelector('.titem[data-id="'+CSS.escape(next.dataset.id)+'"]')?.focus({preventScroll:true});
     hubPost('tasks/'+encodeURIComponent(id)+'/ack').catch(e=>{if(prev)attn.set(id,prev);renderTasks();toast('确认失败：'+e.message,'error')})};
   setTimeout(done,matchMedia('(prefers-reduced-motion:reduce)').matches?0:300)}
-let tRaf=0;function renderTasks(){if(tRaf)return;tRaf=requestAnimationFrame(()=>{tRaf=0;_renderTasks()})}
+let tRaf=0;function renderTasks(){if(tRaf)return;tRaf=requestAnimationFrame(()=>{tRaf=0;_renderTasks();refreshTaskRefs()})}
 const ACT_BTN={reply:'回答',retry:'重试',ack:'知道了',snooze:'稍后',unsnooze:'现在处理',cancel:'中止',attach:'接管'};
 // compact (项目 view): fixed height — mark + title, one ellipsized line, a progress slot that is always there
 function cardHtml(i){const t=tasks.get(i.taskId)||{id:i.taskId,title:i.title,machine:i.machine,status:i.status};
@@ -976,7 +987,7 @@ async function openTask(id){
   if(!d.dataset.id||d.dataset.id!==id)d.innerHTML='<div class="dhead"><button class="btn icon" data-back title="返回 (Esc)">←</button><h3>'+esc(tasks.get(id)?.title||id)+'</h3></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div>',d.querySelector('[data-back]').onclick=closeTask;d.dataset.id=id;
   let r;try{r=await api('GET','/api/hub/tasks/'+encodeURIComponent(id)+'?events=1')}catch(e){if(seq===detailSeq)d.innerHTML='<div class="dhead"><button class="btn icon" data-back>←</button><h3>'+esc(id)+'</h3></div><div class="blank">'+esc(e.message)+'</div>';d.querySelector('[data-back]').onclick=closeTask;return}
   if(seq!==detailSeq)return;
-  const t=r.task;tasks.set(t.id,t);const i=attn.get(t.id);
+  const t=r.task;tasks.set(t.id,t);refreshTaskRefs();const i=attn.get(t.id);
   const keep=d.querySelector('#tmsg')?.value||'';const briefOpen=d.querySelector('#briefSec')?.open;
   const keepLog=d.dataset.id===id?d.querySelector('#tlog'):null,keepTop=keepLog?.scrollTop,rawOpen=d.querySelector('#dprog .praw')?.open;
   const showProg=i&&(ACTIVE.includes(t.status)&&t.status!=='starting'||t.progress?.steps?.length);
@@ -1159,7 +1170,7 @@ async function loadHub(){
   try{const [tr,mr,ar,pr]=await Promise.all([api('GET','/api/hub/tasks'),api('GET','/api/hub/machines'),api('GET','/api/hub/attention?archived=200'),api('GET','/api/hub/projects').catch(()=>({projects:[]}))]);
     projects=pr.projects||[];
     tasks.clear();for(const t of tr.tasks)tasks.set(t.id,t);attn.clear();for(const i of ar.items||[])attn.set(i.taskId,i);counts=ar.counts||counts;focus=ar.focus||focus;selfId=mr.self||'';machines=mr.machines||[];
-    hubLoaded=true;renderMachines();renderTasks();for(let i=0;i<nodes.length;i++)renderMsg(i);loadCron();
+    hubLoaded=true;renderMachines();renderTasks();refreshTaskRefs();loadCron();
   }catch(e){setHub(false);if(!hubLoaded){const off='<div class="blank"><span class="lbl">hub 离线</span>无法连接 hub：'+esc(e.message)+'<br>运行 <code>quick hub start</code> 或检查 mesh 状态，连接后会自动刷新。</div>';$('#tlist').innerHTML=off}}
 }
 function onHub(e){
