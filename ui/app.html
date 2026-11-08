@@ -222,6 +222,14 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
 .tsub{font-size:12px;color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 .tago{font-size:11px;line-height:1;color:var(--fg-3);flex:0 0 auto}
 .tidm{font:11px/1 var(--mono);color:var(--fg-3);flex:0 0 auto}
+/* finished cards: one-line conclusion, one-click 知道了, full report folded */
+.ackb{flex:0 0 auto;height:24px;padding:0 10px;border:var(--bw) solid var(--inv-bg);background:var(--inv-bg);color:var(--inv-fg);font:600 12px/1 var(--sans);cursor:pointer;white-space:nowrap;transition:background var(--t),border-color var(--t)}
+.ackb:hover,.ackb:focus-visible{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
+.tsub.tline{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.5}
+.tmore{border:0;background:none;padding:2px 0;margin-top:4px;color:var(--fg-3);font:11px/1.4 var(--mono);cursor:pointer}.tmore:hover{color:var(--fg)}
+.tfull{margin-top:6px;padding-top:8px;border-top:var(--bw) solid var(--line);font-size:12.5px;max-height:360px;overflow:auto;cursor:auto}
+.titem.leaving{transition:opacity .16s ease,max-height .2s ease .1s,padding .2s ease .1s;opacity:0;max-height:0!important;padding-top:0;padding-bottom:0;pointer-events:none}
+@media (prefers-reduced-motion:reduce){.titem.leaving{transition:none}}
 /* status tag: glyph + label, encoded by fill rather than hue */
 .st{display:inline-flex;align-items:center;gap:5px;font:600 10.5px/1 var(--mono);letter-spacing:.06em;padding:0 6px;height:19px;border:var(--bw) solid var(--line);color:var(--fg-2);white-space:nowrap;flex:0 0 auto;background:transparent}
 .st::before{content:"";width:6px;height:6px;background:currentColor;flex:0 0 auto}
@@ -326,7 +334,7 @@ select.btn{padding:0 6px 0 8px;max-width:200px;font:12px var(--mono);appearance:
   <aside id="side">
     <div class="tabs"><button class="tab on" data-tab="tasks">任务<span class="badge" id="tBadge"></span></button><button class="tab" data-tab="intake">浏览器评论<span class="badge" id="iBadge"></span></button></div>
     <div id="pane-tasks" style="display:flex;flex-direction:column;flex:1;min-height:0">
-      <div class="filters"><button class="fchip on" data-f="open">进行中 / 待处理</button><button class="fchip" data-f="all">全部</button><span class="grow"></span><span class="chip" id="tcount"></span></div>
+      <div class="filters"><button class="fchip on" data-f="open">进行中 / 待处理</button><button class="fchip" data-f="review" title="已读的完成任务">回顾</button><button class="fchip" data-f="all">全部</button><span class="grow"></span><span class="chip" id="tcount"></span></div>
       <div id="machines"></div>
       <div class="scroll" id="tlist" role="list"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
     </div>
@@ -593,13 +601,28 @@ function showDialog(d){
 /* ---------- tasks panel ---------- */
 function renderMachines(){$('#machines').innerHTML=machines.map(m=>'<span title="'+esc((m.description||'')+(m.hops>1?' · 经 '+m.via:''))+'"><span class="dot '+(m.online?'on':'off')+'"></span>'+esc(m.id)+(m.self?' (本机)':'')+(m.activeTasks?' ['+m.activeTasks+']':'')+'</span>').join('')||'<span>单机模式</span>'}
 const mtag=t=>t.machine&&t.machine!==selfId?'<span class="mach">@'+esc(t.machine)+'</span>':'';
+const FIN=['done','cancelled'],reviewed=t=>FIN.includes(t.status)&&!t.unread,expanded=new Set();
+// first sentence of a markdown report: prefer the first prose line over a heading
+function firstSentence(s){if(!s)return '';const clean=l=>l.replace(/^\s*(#{1,6}|[-*+>]|\d+[.)])\s+/,'').replace(/\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/[*_`]{1,3}/g,'').trim();
+  const lines=s.split('\n').filter(l=>l.trim()&&!/^\s*(```|\||---)/.test(l)),prose=lines.find(l=>!/^\s*#/.test(l)),l=clean(prose||lines[0]||'');
+  const m=l.match(/^.+?[。！？!?](?=\s|$|[^。！？!?])|^.+?\.(?=\s|$)/);const r=(m?m[0]:l).trim();return r.length>160?r.slice(0,158)+'…':r}
+// one-click 知道了: collapse the card in place, then persist via task.ack; it moves to 「回顾」
+function ackCard(el){const id=el.dataset.id,t=tasks.get(id);if(!t||el.classList.contains('leaving'))return;
+  const next=el.nextElementSibling||el.previousElementSibling;el.style.maxHeight=el.offsetHeight+'px';void el.offsetHeight;el.classList.add('leaving');
+  const done=()=>{t.unread=false;expanded.delete(id);_renderTasks();if(next?.dataset?.id)document.querySelector('.titem[data-id="'+CSS.escape(next.dataset.id)+'"]')?.focus({preventScroll:true});
+    api('POST','/api/hub/tasks/'+encodeURIComponent(id)+'/ack',{}).catch(e=>{t.unread=true;renderTasks();toast('标记已读失败：'+e.message,'error')})};
+  setTimeout(done,matchMedia('(prefers-reduced-motion:reduce)').matches?0:300)}
 let tRaf=0;function renderTasks(){if(tRaf)return;tRaf=requestAnimationFrame(()=>{tRaf=0;_renderTasks()})}
 function _renderTasks(){
   if(!hubLoaded)return; // keep the loading skeleton until the first hub snapshot
   const all=[...tasks.values()].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
-  const list=taskFilter==='all'?all:all.filter(t=>ACTIVE.includes(t.status)||t.unread||(!t.closed&&Date.now()-t.updatedAt<86400e3));
-  $('#tlist').innerHTML=list.map(t=>{const detail=ACTIVE.includes(t.status)?t.activity:t.summary;return '<div class="titem'+(t.id===selTask?' sel':'')+(t.unread?' unread':'')+'" data-id="'+esc(t.id)+'" tabindex="0" role="listitem" aria-label="'+esc(t.title+' '+(ST[t.status]||t.status)+(t.unread?' 未读':''))+'"><div class="trow"><span class="ttitle">'+esc(t.title)+'</span>'+stPill(t.status)+'</div><div class="trow"><span class="tidm">'+esc(t.id)+'</span>'+mtag(t)+'<span class="tsub">'+esc((detail||t.cwd||'').split('\n')[0])+'</span><span class="tago">'+ago(t.updatedAt)+'</span></div></div>'}).join('')||'<div class="blank"><span class="lbl">'+(taskFilter==='all'?'空':'全部清空')+'</span>'+(taskFilter==='all'?'还没有任务。<br>在左侧告诉前台 agent 要做什么，它会派单到这里。':'没有进行中或待处理的任务。')+'</div>';
-  $('#tlist').querySelectorAll('.titem').forEach(el=>{el.onclick=()=>openTask(el.dataset.id);el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openTask(el.dataset.id)}else if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();const n=e.key==='ArrowDown'?el.nextElementSibling:el.previousElementSibling;n?.focus()}}});
+  const list=taskFilter==='all'?all:taskFilter==='review'?all.filter(reviewed):all.filter(t=>!reviewed(t)&&(ACTIVE.includes(t.status)||t.unread||(!t.closed&&Date.now()-t.updatedAt<86400e3)));
+  $('#tlist').innerHTML=list.map(t=>{const fin=FIN.includes(t.status),detail=ACTIVE.includes(t.status)?t.activity:t.summary,line=fin?firstSentence(t.summary):(detail||t.cwd||'').split('\n')[0],more=fin&&t.summary&&t.summary.trim()!==line,open=more&&expanded.has(t.id);return '<div class="titem'+(t.id===selTask?' sel':'')+(t.unread?' unread':'')+'" data-id="'+esc(t.id)+'" tabindex="0" role="listitem" aria-label="'+esc(t.title+' '+(ST[t.status]||t.status)+(t.unread?' 未读':''))+'"><div class="trow"><span class="ttitle">'+esc(t.title)+'</span>'+stPill(t.status)+(fin&&t.unread?'<button class="ackb" data-ack title="知道了：标记已读并移到「回顾」">✓ 知道了</button>':'')+'</div><div class="trow"><span class="tidm">'+esc(t.id)+'</span>'+mtag(t)+'<span class="tsub'+(fin?' tline':'')+'" title="'+esc(line)+'">'+esc(line)+'</span><span class="tago">'+ago(t.updatedAt)+'</span></div>'+(more?'<button class="tmore" data-more aria-expanded="'+open+'">'+(open?'▾ 收起汇报':'▸ 完整汇报')+'</button>'+(open?'<div class="tfull md">'+md(t.summary)+'</div>':''):'')+'</div>'}).join('')||'<div class="blank"><span class="lbl">'+(taskFilter==='open'?'全部清空':'空')+'</span>'+(taskFilter==='all'?'还没有任务。<br>在左侧告诉前台 agent 要做什么，它会派单到这里。':taskFilter==='review'?'还没有已读的完成任务。<br>点完成卡片上的「✓ 知道了」，它会移到这里。':'没有进行中或待处理的任务。')+'</div>';
+  $('#tlist').querySelectorAll('.titem').forEach(el=>{const ab=el.querySelector('[data-ack]'),mb=el.querySelector('[data-more]'),fb=el.querySelector('.tfull');
+    if(ab){ab.onclick=e=>{e.stopPropagation();ackCard(el)};ab.onkeydown=e=>e.stopPropagation()}
+    if(mb){mb.onclick=e=>{e.stopPropagation();const id=el.dataset.id;expanded.has(id)?expanded.delete(id):expanded.add(id);_renderTasks()};mb.onkeydown=e=>e.stopPropagation()}
+    if(fb)fb.onclick=e=>e.stopPropagation();
+    el.onclick=()=>openTask(el.dataset.id);el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openTask(el.dataset.id)}else if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();const n=e.key==='ArrowDown'?el.nextElementSibling:el.previousElementSibling;n?.focus()}}});
   const act=all.filter(t=>ACTIVE.includes(t.status)).length,un=all.filter(t=>t.unread).length;
   $('#tcount').textContent=act+' 运行 / '+all.length;$('#tcount').title=act+' 个运行中，共 '+all.length+' 个任务';$('#tBadge').textContent=un||'';
 }
