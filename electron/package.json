@@ -1,7 +1,7 @@
 {
   "name": "quick-agent-desktop",
   "productName": "quick-agent",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "quick-agent desktop client (Electron): front-agent chat, task inbox/board, native notifications.",
   "main": "src/main.cjs",
